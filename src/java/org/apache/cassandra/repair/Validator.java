@@ -44,7 +44,7 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.repair.messages.ValidationResponse;
+import org.apache.cassandra.repair.messages.ValidationComplete;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.tracing.Tracing;
@@ -53,7 +53,7 @@ import org.apache.cassandra.utils.MerkleTree;
 import org.apache.cassandra.utils.MerkleTree.RowHash;
 import org.apache.cassandra.utils.MerkleTrees;
 
-import static org.apache.cassandra.net.Verb.VALIDATION_RSP;
+import static org.apache.cassandra.net.Verb.REPAIR_REQ;
 
 /**
  * Handles the building of a merkle tree for a column family.
@@ -391,7 +391,7 @@ public class Validator implements Runnable
     public void fail()
     {
         logger.error("Failed creating a merkle tree for {}, {} (see log for details)", desc, initiator);
-        respond(new ValidationResponse(desc));
+        respond(new ValidationComplete(desc));
     }
 
     /**
@@ -410,7 +410,7 @@ public class Validator implements Runnable
             Tracing.traceRepair("Local completed merkle tree for {} for {}.{}", initiator, desc.keyspace, desc.columnFamily);
 
         }
-        respond(new ValidationResponse(desc, trees));
+        respond(new ValidationComplete(desc, trees));
     }
 
     private boolean initiatorIsRemote()
@@ -418,11 +418,11 @@ public class Validator implements Runnable
         return !FBUtilities.getBroadcastAddressAndPort().equals(initiator);
     }
 
-    private void respond(ValidationResponse response)
+    private void respond(ValidationComplete response)
     {
         if (initiatorIsRemote())
         {
-            MessagingService.instance().send(Message.out(VALIDATION_RSP, response), initiator);
+            MessagingService.instance().send(Message.out(REPAIR_REQ, response), initiator);
             return;
         }
 
@@ -434,7 +434,7 @@ public class Validator implements Runnable
          */
         StageManager.getStage(Stage.ANTI_ENTROPY).execute(() ->
         {
-            ValidationResponse movedResponse = response;
+            ValidationComplete movedResponse = response;
             try
             {
                 movedResponse = response.tryMoveOffHeap();
@@ -443,7 +443,7 @@ public class Validator implements Runnable
             {
                 logger.error("Failed to move local merkle tree for {} off heap", desc, e);
             }
-            ActiveRepairService.instance.handleMessage(Message.out(VALIDATION_RSP, movedResponse));
+            ActiveRepairService.instance.handleMessage(initiator, movedResponse);
         });
     }
 }
