@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.concurrent;
 
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -25,13 +24,11 @@ import java.util.concurrent.locks.LockSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.util.concurrent.FastThreadLocalThread;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnable
 {
     private static final Logger logger = LoggerFactory.getLogger(SEPWorker.class);
-    private static final boolean SET_THREAD_NAME = Boolean.parseBoolean(System.getProperty("cassandra.set_sep_thread_name", "true"));
 
     final Long workerId;
     final Thread thread;
@@ -48,7 +45,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
     {
         this.pool = pool;
         this.workerId = workerId;
-        thread = new FastThreadLocalThread(this, pool.poolName + "-Worker-" + workerId);
+        thread = new Thread(this, pool.poolName + "-Worker-" + workerId);
         thread.setDaemon(true);
         set(initialState);
         thread.start();
@@ -96,8 +93,6 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
                 assigned = get().assigned;
                 if (assigned == null)
                     continue;
-                if (SET_THREAD_NAME)
-                    Thread.currentThread().setName(assigned.name + "-" + workerId);
                 task = assigned.tasks.poll();
 
                 // if we do have tasks assigned, nobody will change our state so we can simply set it to WORKING
@@ -125,7 +120,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
                 assigned.returnWorkPermit();
                 if (shutdown)
                 {
-                    if (assigned.getActiveTaskCount() == 0)
+                    if (assigned.getActiveCount() == 0)
                         assigned.shutdown.signalAll();
                     return;
                 }
@@ -152,9 +147,9 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
             if (assigned != null)
                 assigned.returnWorkPermit();
             if (task != null)
-                logger.error("Failed to execute task, unexpected exception killed worker", t);
+                logger.error("Failed to execute task, unexpected exception killed worker: {}", t);
             else
-                logger.error("Unexpected exception killed worker", t);
+                logger.error("Unexpected exception killed worker: {}", t);
         }
     }
 
@@ -244,7 +239,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
         // we should always have a thread about to wake up, but most threads are sleeping
         long sleep = 10000L * pool.spinningCount.get();
         sleep = Math.min(1000000, sleep);
-        sleep *= ThreadLocalRandom.current().nextDouble();
+        sleep *= Math.random();
         sleep = Math.max(10000, sleep);
 
         long start = System.nanoTime();

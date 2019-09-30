@@ -18,18 +18,25 @@
 package org.apache.cassandra.io.sstable.format;
 
 import com.google.common.base.CharMatcher;
-
-import org.apache.cassandra.schema.TableMetadata;
+import com.google.common.collect.ImmutableList;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.db.ColumnSerializer;
+import org.apache.cassandra.db.OnDiskAtom;
 import org.apache.cassandra.db.RowIndexEntry;
-import org.apache.cassandra.db.SerializationHeader;
+import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
+import org.apache.cassandra.db.compaction.AbstractCompactedRow;
+import org.apache.cassandra.db.compaction.CompactionController;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
+import org.apache.cassandra.io.util.FileDataInput;
+
+import java.util.Iterator;
 
 /**
  * Provides the accessors to data on disk.
  */
 public interface SSTableFormat
 {
-    static boolean enableSSTableDevelopmentTestMode = Boolean.getBoolean("cassandra.test.sstableformatdevelopment");
+    static boolean enableSSTableDevelopmentTestMode = Boolean.valueOf(System.getProperty("cassandra.test.sstableformatdevelopment","false"));
 
 
     Version getLatestVersion();
@@ -38,21 +45,23 @@ public interface SSTableFormat
     SSTableWriter.Factory getWriterFactory();
     SSTableReader.Factory getReaderFactory();
 
-    RowIndexEntry.IndexSerializer<?> getIndexSerializer(TableMetadata metadata, Version version, SerializationHeader header);
+    Iterator<OnDiskAtom> getOnDiskIterator(FileDataInput in, ColumnSerializer.Flag flag, int expireBefore, CFMetaData cfm, Version version);
+
+    AbstractCompactedRow getCompactedRowWriter(CompactionController controller, ImmutableList<OnDiskAtomIterator> onDiskAtomIterators);
+
+    RowIndexEntry.IndexSerializer<?> getIndexSerializer(CFMetaData cfm);
 
     public static enum Type
     {
+        //Used internally to refer to files with no
+        //format flag in the filename
+        LEGACY("big", BigFormat.instance),
+
         //The original sstable format
         BIG("big", BigFormat.instance);
 
         public final SSTableFormat info;
         public final String name;
-
-        public static Type current()
-        {
-            return BIG;
-        }
-
         private Type(String name, SSTableFormat info)
         {
             //Since format comes right after generation
@@ -67,6 +76,10 @@ public interface SSTableFormat
         {
             for (Type valid : Type.values())
             {
+                //This is used internally for old sstables
+                if (valid == LEGACY)
+                    continue;
+
                 if (valid.name.equalsIgnoreCase(name))
                     return valid;
             }

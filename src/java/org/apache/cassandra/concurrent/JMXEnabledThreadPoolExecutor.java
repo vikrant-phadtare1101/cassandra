@@ -20,7 +20,6 @@ package org.apache.cassandra.concurrent;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.cassandra.metrics.ThreadPoolMetrics;
@@ -52,11 +51,6 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName, priority), "internal");
     }
 
-    public JMXEnabledThreadPoolExecutor(NamedThreadFactory threadFactory, String jmxPath)
-    {
-        this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), threadFactory, jmxPath);
-    }
-
     public JMXEnabledThreadPoolExecutor(int corePoolSize,
             long keepAliveTime,
             TimeUnit unit,
@@ -77,23 +71,10 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
     {
         super(corePoolSize, maxPoolSize, keepAliveTime, unit, workQueue, threadFactory);
         super.prestartAllCoreThreads();
-        metrics = new ThreadPoolMetrics(this, jmxPath, threadFactory.id).register();
+        metrics = new ThreadPoolMetrics(this, jmxPath, threadFactory.id);
 
         mbeanName = "org.apache.cassandra." + jmxPath + ":type=" + threadFactory.id;
         MBeanWrapper.instance.registerMBean(this, mbeanName);
-    }
-
-    public JMXEnabledThreadPoolExecutor(int corePoolSize,
-                                        int maxPoolSize,
-                                        long keepAliveTime,
-                                        TimeUnit unit,
-                                        BlockingQueue<Runnable> workQueue,
-                                        NamedThreadFactory threadFactory,
-                                        String jmxPath,
-                                        RejectedExecutionHandler rejectedExecutionHandler)
-    {
-        this(corePoolSize, maxPoolSize, keepAliveTime, unit, workQueue, threadFactory, jmxPath);
-        setRejectedExecutionHandler(rejectedExecutionHandler);
     }
 
     public JMXEnabledThreadPoolExecutor(Stage stage)

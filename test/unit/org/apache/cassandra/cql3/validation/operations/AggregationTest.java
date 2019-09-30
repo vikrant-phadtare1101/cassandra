@@ -18,45 +18,29 @@
 package org.apache.cassandra.cql3.validation.operations;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Calendar;
-import java.util.Collections;
 import java.util.Date;
-import java.util.Locale;
 import java.util.TimeZone;
-import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.commons.lang3.time.DateUtils;
 
 import org.junit.Test;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.joran.ReconfigureOnChangeTask;
-import ch.qos.logback.classic.spi.TurboFilterList;
-import ch.qos.logback.classic.turbo.ReconfigureOnChangeFilter;
-import ch.qos.logback.classic.turbo.TurboFilter;
-import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.UntypedResultSet.Row;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.TypeParser;
+import org.apache.cassandra.cql3.functions.Functions;
+import org.apache.cassandra.cql3.functions.UDAggregate;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.transport.Event;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.messages.ResultMessage;
 
-import static ch.qos.logback.core.CoreConstants.RECONFIGURE_ON_CHANGE_TASK;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -67,21 +51,10 @@ public class AggregationTest extends CQLTester
     @Test
     public void testNonExistingOnes() throws Throwable
     {
-        assertInvalidThrowMessage(String.format("Aggregate '%s.aggr_does_not_exist' doesn't exist", KEYSPACE),
-                                  InvalidRequestException.class,
-                                  "DROP AGGREGATE " + KEYSPACE + ".aggr_does_not_exist");
-
-        assertInvalidThrowMessage(String.format("Aggregate '%s.aggr_does_not_exist(int, text)' doesn't exist", KEYSPACE),
-                                  InvalidRequestException.class,
-                                  "DROP AGGREGATE " + KEYSPACE + ".aggr_does_not_exist(int,text)");
-
-        assertInvalidThrowMessage("Aggregate 'keyspace_does_not_exist.aggr_does_not_exist' doesn't exist",
-                                  InvalidRequestException.class,
-                                  "DROP AGGREGATE keyspace_does_not_exist.aggr_does_not_exist");
-
-        assertInvalidThrowMessage("Aggregate 'keyspace_does_not_exist.aggr_does_not_exist(int, text)' doesn't exist",
-                                  InvalidRequestException.class,
-                                  "DROP AGGREGATE keyspace_does_not_exist.aggr_does_not_exist(int,text)");
+        assertInvalidMessage("Cannot drop non existing aggregate", "DROP AGGREGATE " + KEYSPACE + ".aggr_does_not_exist");
+        assertInvalidMessage("Cannot drop non existing aggregate", "DROP AGGREGATE " + KEYSPACE + ".aggr_does_not_exist(int,text)");
+        assertInvalidMessage("Cannot drop non existing aggregate", "DROP AGGREGATE keyspace_does_not_exist.aggr_does_not_exist");
+        assertInvalidMessage("Cannot drop non existing aggregate", "DROP AGGREGATE keyspace_does_not_exist.aggr_does_not_exist(int,text)");
 
         execute("DROP AGGREGATE IF EXISTS " + KEYSPACE + ".aggr_does_not_exist");
         execute("DROP AGGREGATE IF EXISTS " + KEYSPACE + ".aggr_does_not_exist(int,text)");
@@ -136,7 +109,6 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT COUNT(b), count(c), count(e), count(f) FROM %s LIMIT 2"), row(4L, 3L, 3L, 3L));
         assertRows(execute("SELECT COUNT(b), count(c), count(e), count(f) FROM %s WHERE a = 1 LIMIT 2"),
                    row(4L, 3L, 3L, 3L));
-        assertRows(execute("SELECT AVG(CAST(b AS double)) FROM %s"), row(11.0/4));
     }
 
     @Test
@@ -157,6 +129,9 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT COUNT(*) as myCount FROM %s"), row(0L));
         assertColumnNames(execute("SELECT COUNT(1) as myCount FROM %s"), "mycount");
         assertRows(execute("SELECT COUNT(1) as myCount FROM %s"), row(0L));
+
+        // Test invalid call
+        assertInvalidSyntaxMessage("Only COUNT(1) is supported, got COUNT(2)", "SELECT COUNT(2) FROM %s");
 
         // Test with other aggregates
         assertColumnNames(execute("SELECT COUNT(*), max(b), b FROM %s"), "count", "system.max(b)", "b");
@@ -257,7 +232,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT count(b.x), max(b.x) as max, b.x, c.x as first FROM %s"),
                    row(3L, 8, 2, null));
 
-        assertInvalidMessage("Invalid field selection: system.max(b) of type blob is not a user type",
+        assertInvalidMessage("Invalid field selection: max(b) of type blob is not a user type",
                              "SELECT max(b).x as max FROM %s");
     }
 
@@ -331,6 +306,26 @@ public class AggregationTest extends CQLTester
     }
 
     @Test
+    public void testFunctionsWithCompactStorage() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int , b int, c double, primary key(a, b) ) WITH COMPACT STORAGE");
+
+        execute("INSERT INTO %s (a, b, c) VALUES (1, 1, 11.5)");
+        execute("INSERT INTO %s (a, b, c) VALUES (1, 2, 9.5)");
+        execute("INSERT INTO %s (a, b, c) VALUES (1, 3, 9.0)");
+
+        assertRows(execute("SELECT max(b), min(b), sum(b), avg(b) , max(c), sum(c), avg(c) FROM %s"),
+                   row(3, 1, 6, 2, 11.5, 30.0, 10.0));
+
+        assertRows(execute("SELECT COUNT(*) FROM %s"), row(3L));
+        assertRows(execute("SELECT COUNT(1) FROM %s"), row(3L));
+        assertRows(execute("SELECT COUNT(*) FROM %s WHERE a = 1 AND b > 1"), row(2L));
+        assertRows(execute("SELECT COUNT(1) FROM %s WHERE a = 1 AND b > 1"), row(2L));
+        assertRows(execute("SELECT max(b), min(b), sum(b), avg(b) , max(c), sum(c), avg(c) FROM %s WHERE a = 1 AND b > 1"),
+                   row(3, 2, 5, 2, 9.5, 18.5, 9.25));
+    }
+
+    @Test
     public void testInvalidCalls() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b int, c int, primary key (a, b))");
@@ -340,6 +335,7 @@ public class AggregationTest extends CQLTester
 
         assertInvalidSyntax("SELECT max(b), max(c) FROM %s WHERE max(a) = 1");
         assertInvalidMessage("aggregate functions cannot be used as arguments of aggregate functions", "SELECT max(sum(c)) FROM %s");
+        assertInvalidSyntax("SELECT COUNT(2) FROM %s");
     }
 
     @Test
@@ -391,7 +387,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + copySign + "(c, d) FROM %s"), row(1.2), row(-1.3), row(1.4));
         assertRows(execute("SELECT max(" + copySign + "(c, d)) FROM %s"), row(1.4));
         assertRows(execute("SELECT " + copySign + "(c, max(c)) FROM %s"), row(1.2));
-        assertRows(execute("SELECT " + copySign + "(max(c), c) FROM %s"), row(-1.4));;
+        assertRows(execute("SELECT " + copySign + "(max(c), c) FROM %s"), row(-1.4));
     }
 
     @Test
@@ -427,7 +423,7 @@ public class AggregationTest extends CQLTester
         schemaChange("CREATE OR REPLACE AGGREGATE " + a + "(double) " +
                      "SFUNC " + shortFunctionName(f) + " " +
                      "STYPE double " +
-                     "INITCOND 1");
+                     "INITCOND 0");
 
         assertLastSchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.AGGREGATE,
                                KEYSPACE, parseFunctionName(a).name,
@@ -472,7 +468,7 @@ public class AggregationTest extends CQLTester
 
         // DROP AGGREGATE must not succeed against a scalar
         assertInvalidMessage("matches multiple function definitions", "DROP AGGREGATE " + f);
-        assertInvalidMessage("doesn't exist", "DROP AGGREGATE " + f + "(double, double)");
+        assertInvalidMessage("non existing", "DROP AGGREGATE " + f + "(double, double)");
 
         String a = createAggregate(KEYSPACE,
                                    "double",
@@ -489,7 +485,7 @@ public class AggregationTest extends CQLTester
 
         // DROP FUNCTION must not succeed against an aggregate
         assertInvalidMessage("matches multiple function definitions", "DROP FUNCTION " + a);
-        assertInvalidMessage("doesn't exist", "DROP FUNCTION " + a + "(double)");
+        assertInvalidMessage("non existing function", "DROP FUNCTION " + a + "(double)");
 
         // ambigious
         assertInvalidMessage("matches multiple function definitions", "DROP AGGREGATE " + a);
@@ -668,37 +664,37 @@ public class AggregationTest extends CQLTester
                                         "LANGUAGE java " +
                                         "AS 'return a.toString();'");
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(double)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE double " +
                              "FINALFUNC " + shortFunctionName(fFinal));
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(int)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE double " +
                              "FINALFUNC " + shortFunctionName(fFinal));
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(double)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE int " +
                              "FINALFUNC " + shortFunctionName(fFinal));
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(double)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE int");
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(int)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE double");
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(double)" +
                              "SFUNC " + shortFunctionName(fState2) + " " +
                              "STYPE double " +
                              "FINALFUNC " + shortFunctionName(fFinal));
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(double)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE double " +
@@ -724,13 +720,13 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return a.toString();'");
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(int)" +
                              "SFUNC " + shortFunctionName(fState) + "_not_there " +
                              "STYPE int " +
                              "FINALFUNC " + shortFunctionName(fFinal));
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggrInvalid(int)" +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE int " +
@@ -813,7 +809,7 @@ public class AggregationTest extends CQLTester
     @Test
     public void testJavaAggregateWithoutStateOrFinal() throws Throwable
     {
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".jSumFooNE1(int) " +
                              "SFUNC jSumFooNEstate " +
                              "STYPE int");
@@ -826,7 +822,7 @@ public class AggregationTest extends CQLTester
                                   "LANGUAGE java " +
                                   "AS 'return Integer.valueOf(a + b);'");
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".jSumFooNE2(int) " +
                              "SFUNC " + shortFunctionName(f) + " " +
                              "STYPE int " +
@@ -866,9 +862,6 @@ public class AggregationTest extends CQLTester
                                    "STYPE int " +
                                    "FINALFUNC " + shortFunctionName(fFinal) + " " +
                                    "INITCOND 42");
-
-        assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(a)),
-                   row("42"));
 
         // 42 + 1 + 2 + 3 = 48
         assertRows(execute("SELECT " + a + "(b) FROM %s"), row("48"));
@@ -914,51 +907,6 @@ public class AggregationTest extends CQLTester
     }
 
     @Test
-    public void testJavaAggregateEmpty() throws Throwable
-    {
-        createTable("CREATE TABLE %s (a int primary key, b int)");
-
-        String fState = createFunction(KEYSPACE,
-                                       "int, int",
-                                       "CREATE FUNCTION %s(a int, b int) " +
-                                       "CALLED ON NULL INPUT " +
-                                       "RETURNS int " +
-                                       "LANGUAGE java " +
-                                       "AS 'return Integer.valueOf((a!=null?a.intValue():0) + b.intValue());'");
-
-        String a = createAggregate(KEYSPACE,
-                                   "int, int",
-                                   "CREATE AGGREGATE %s(int) " +
-                                   "SFUNC " + shortFunctionName(fState) + " " +
-                                   "STYPE int");
-
-        assertRows(execute("SELECT " + a + "(b) FROM %s"), row(new Object[]{null}));
-    }
-
-    @Test
-    public void testJavaAggregateStateEmpty() throws Throwable
-    {
-        createTable("CREATE TABLE %s (a int primary key, b uuid)");
-
-        String fState = createFunction(KEYSPACE,
-                                       "int, int",
-                                       "CREATE FUNCTION %s(state map<uuid, int>, type uuid) " +
-                                       "RETURNS NULL ON NULL INPUT " +
-                                       "RETURNS map<uuid, int> " +
-                                       "LANGUAGE java " +
-                                       "AS 'return state;'");
-
-        String a = createAggregate(KEYSPACE,
-                                   "int, int",
-                                   "CREATE AGGREGATE %s(uuid) " +
-                                   "SFUNC " + shortFunctionName(fState) + " " +
-                                   "STYPE map<uuid, int> " +
-                                   "INITCOND {}");
-
-        assertRows(execute("SELECT " + a + "(b) FROM %s"), row(Collections.emptyMap()));
-    }
-
-    @Test
     public void testJavaAggregateComplex() throws Throwable
     {
         createTable("CREATE TABLE %s (a int primary key, b int)");
@@ -1001,9 +949,6 @@ public class AggregationTest extends CQLTester
                                    "STYPE tuple<bigint, int> "+
                                    "FINALFUNC " + shortFunctionName(fFinal) + " " +
                                    "INITCOND (0, 0)");
-
-        assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(a)),
-                   row("(0, 0)"));
 
         // 1 + 2 + 3 = 6 / 3 = 2
         assertRows(execute("SELECT " + a + "(b) FROM %s"), row(2d));
@@ -1109,7 +1054,7 @@ public class AggregationTest extends CQLTester
                                        "SFUNC " + shortFunctionName(fState) + " " +
                                        "STYPE int");
 
-            ResultMessage.Prepared prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls());
+            ResultMessage.Prepared prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
             assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
             execute("DROP AGGREGATE " + a + "(int)");
@@ -1121,7 +1066,7 @@ public class AggregationTest extends CQLTester
                     "SFUNC " + shortFunctionName(fState) + " " +
                     "STYPE int");
 
-            prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls());
+            prepared = QueryProcessor.prepare("SELECT " + a + "(b) FROM " + otherKS + ".jsdp", ClientState.forInternalCalls(), false);
             assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
             execute("DROP KEYSPACE " + otherKS + ";");
@@ -1152,12 +1097,12 @@ public class AggregationTest extends CQLTester
                                    "SFUNC " + shortFunctionName(fState) + " " +
                                    "STYPE int ");
 
-        assertInvalidMessage("doesn't exist",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggInv(int) " +
                              "SFUNC " + shortFunctionName(a) + " " +
                              "STYPE int ");
 
-        assertInvalidMessage("isn't a scalar function",
+        assertInvalidMessage("does not exist or is not a scalar function",
                              "CREATE AGGREGATE " + KEYSPACE + ".aggInv(int) " +
                              "SFUNC " + shortFunctionName(fState) + " " +
                              "STYPE int " +
@@ -1299,6 +1244,35 @@ public class AggregationTest extends CQLTester
     }
 
     @Test
+    public void testBrokenAggregate() throws Throwable
+    {
+        createTable("CREATE TABLE %s (key int primary key, val int)");
+        execute("INSERT INTO %s (key, val) VALUES (?, ?)", 1, 1);
+
+        String fState = createFunction(KEYSPACE,
+                                       "int, int",
+                                       "CREATE FUNCTION %s(a int, b int) " +
+                                       "CALLED ON NULL INPUT " +
+                                       "RETURNS int " +
+                                       "LANGUAGE javascript " +
+                                       "AS 'a + b;'");
+
+        String a = createAggregate(KEYSPACE,
+                                   "int",
+                                   "CREATE AGGREGATE %s(int) " +
+                                   "SFUNC " + shortFunctionName(fState) + " " +
+                                   "STYPE int ");
+
+        UDAggregate f = (UDAggregate) Functions.find(parseFunctionName(a)).get(0);
+
+        Functions.addOrReplaceFunction(UDAggregate.createBroken(f.name(), f.argTypes(), f.returnType(),
+                                                                null, new InvalidRequestException("foo bar is broken")));
+
+        assertInvalidThrowMessage("foo bar is broken", InvalidRequestException.class,
+                                  "SELECT " + a + "(val) FROM %s");
+    }
+
+    @Test
     public void testWrongStateType() throws Throwable
     {
         createTable("CREATE TABLE %s (key int primary key, val int)");
@@ -1381,18 +1355,18 @@ public class AggregationTest extends CQLTester
                              "FINALFUNC " + shortFunctionName(fFinal) + ' ' +
                              "INITCOND 1");
 
-        assertInvalidMessage("expecting EOF", // specifying a function using "keyspace.functionname" is a syntax error
+        assertInvalidMessage("missing EOF", // specifying a function using "keyspace.functionname" is a syntax error
                              "CREATE AGGREGATE " + KEYSPACE_PER_TEST + ".test_wrong_ks(int) " +
                              "SFUNC " + shortFunctionName(fState) + ' ' +
                              "STYPE " + type + " " +
                              "FINALFUNC " + fFinalWrong + ' ' +
                              "INITCOND 1");
 
-        assertInvalidMessage("expecting EOF", // specifying a function using "keyspace.functionname" is a syntax error
+        assertInvalidMessage("missing EOF", // specifying a function using "keyspace.functionname" is a syntax error
                              "CREATE AGGREGATE " + KEYSPACE_PER_TEST + ".test_wrong_ks(int) " +
                              "SFUNC " + shortFunctionName(fState) + ' ' +
                              "STYPE " + type + ' ' +
-                             "FINALFUNC " + SchemaConstants.SYSTEM_KEYSPACE_NAME + ".min " +
+                             "FINALFUNC " + SystemKeyspace.NAME + ".min " +
                              "INITCOND 1");
     }
 
@@ -1423,7 +1397,7 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("cannot be frozen",
+        assertInvalidMessage("The function state type should not be frozen",
                              "CREATE AGGREGATE %s(set<int>) " +
                              "SFUNC " + parseFunctionName(fState).name + ' ' +
                              "STYPE frozen<set<int>> " +
@@ -1438,13 +1412,10 @@ public class AggregationTest extends CQLTester
                                              "FINALFUNC " + parseFunctionName(fFinal).name + ' ' +
                                              "INITCOND null");
 
-        assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(aggregation)),
-                   row((Object) null));
-
         assertRows(execute("SELECT " + aggregation + "(b) FROM %s"),
                    row(set(7, 8, 9)));
 
-        assertInvalidMessage("Argument 'frozen<set<int>>' cannot be frozen; remove frozen<> modifier from 'frozen<set<int>>'",
+        assertInvalidMessage("The function arguments should not be frozen",
                              "DROP AGGREGATE %s (frozen<set<int>>);");
     }
 
@@ -1475,7 +1446,7 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("cannot be frozen",
+        assertInvalidMessage("The function state type should not be frozen",
                              "CREATE AGGREGATE %s(list<int>) " +
                              "SFUNC " + parseFunctionName(fState).name + ' ' +
                              "STYPE frozen<list<int>> " +
@@ -1493,7 +1464,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + aggregation + "(b) FROM %s"),
                    row(list(7, 8, 9)));
 
-        assertInvalidMessage("Argument 'frozen<list<int>>' cannot be frozen; remove frozen<> modifier from 'frozen<list<int>>'",
+        assertInvalidMessage("The function arguments should not be frozen",
                              "DROP AGGREGATE %s (frozen<list<int>>);");
     }
 
@@ -1524,7 +1495,7 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("cannot be frozen",
+        assertInvalidMessage("The function state type should not be frozen",
                              "CREATE AGGREGATE %s(map<int, int>) " +
                              "SFUNC " + parseFunctionName(fState).name + ' ' +
                              "STYPE frozen<map<int, int>> " +
@@ -1542,7 +1513,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + aggregation + "(b) FROM %s"),
                    row(map(7, 8, 9, 10)));
 
-        assertInvalidMessage("Argument 'frozen<map<int, int>>' cannot be frozen; remove frozen<> modifier from 'frozen<map<int, int>>'",
+        assertInvalidMessage("The function arguments should not be frozen",
                              "DROP AGGREGATE %s (frozen<map<int, int>>);");
     }
 
@@ -1573,7 +1544,7 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("cannot be frozen",
+        assertInvalidMessage("The function state type should not be frozen",
                              "CREATE AGGREGATE %s(tuple<int, int>) " +
                              "SFUNC " + parseFunctionName(fState).name + ' ' +
                              "STYPE frozen<tuple<int, int>> " +
@@ -1591,7 +1562,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + aggregation + "(b) FROM %s"),
                    row(tuple(7, 8)));
 
-        assertInvalidMessage("Argument 'tuple<int, int>' cannot be frozen; remove frozen<> modifier from 'tuple<int, int>'",
+        assertInvalidMessage("The function arguments should not be frozen",
                              "DROP AGGREGATE %s (frozen<tuple<int, int>>);");
     }
 
@@ -1623,7 +1594,7 @@ public class AggregationTest extends CQLTester
                                        "LANGUAGE java " +
                                        "AS 'return state;'");
 
-        assertInvalidMessage("cannot be frozen",
+        assertInvalidMessage("The function state type should not be frozen",
                              "CREATE AGGREGATE %s(" + myType + ") " +
                              "SFUNC " + parseFunctionName(fState).name + ' ' +
                              "STYPE frozen<" + myType + "> " +
@@ -1641,7 +1612,7 @@ public class AggregationTest extends CQLTester
         assertRows(execute("SELECT " + aggregation + "(b).f FROM %s"),
                    row(7));
 
-        assertInvalidMessage(String.format("Argument 'frozen<%s>' cannot be frozen; remove frozen<> modifier from 'frozen<%s>'", myType, myType),
+        assertInvalidMessage("The function arguments should not be frozen",
                              "DROP AGGREGATE %s (frozen<" + myType + ">);");
     }
 
@@ -1676,9 +1647,6 @@ public class AggregationTest extends CQLTester
                                       "STYPE text " +
                                       "FINALFUNC " + shortFunctionName(fCONf) + ' ' +
                                       "INITCOND ''");
-
-        assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(aCON)),
-                   row("''"));
 
         String fRNON = createFunction(KEYSPACE,
                                       "text, text",
@@ -1718,126 +1686,6 @@ public class AggregationTest extends CQLTester
     }
 
     @Test
-    public void testEmptyListAndNullInitcond() throws Throwable
-    {
-        String f = createFunction(KEYSPACE,
-                                      "list, int",
-                                      "CREATE FUNCTION %s(s list<text>, i int) " +
-                                      "CALLED ON NULL INPUT " +
-                                      "RETURNS list<text> " +
-                                      "LANGUAGE java " +
-                                      "AS 'if (i != null) s.add(String.valueOf(i)); return s;'");
-
-        String a = createAggregate(KEYSPACE,
-                                       "int",
-                                       "CREATE AGGREGATE %s(int) " +
-                                       "SFUNC " + shortFunctionName(f) + ' ' +
-                                       "STYPE list<text> " +
-                                       "INITCOND [  ]");
-
-        assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(a)),
-                   row("[]"));
-
-        createTable("CREATE TABLE %s (a int primary key, b int)");
-        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
-        execute("INSERT INTO %s (a, b) VALUES (2, null)");
-        execute("INSERT INTO %s (a, b) VALUES (3, 2)");
-        assertRows(execute("SELECT " + a + "(b) FROM %s"), row(Arrays.asList("1", "2")));
-    }
-
-    @Test
-    public void testLogbackReload() throws Throwable
-    {
-        // see https://issues.apache.org/jira/browse/CASSANDRA-11033
-
-        // make logback's scan interval 1ms - boilerplate, but necessary for this test
-        configureLogbackScanPeriod(1L);
-        try
-        {
-
-            createTable("CREATE TABLE %s (" +
-                        "   year int PRIMARY KEY," +
-                        "   country text," +
-                        "   title text)");
-
-            String[] countries = Locale.getISOCountries();
-            ThreadLocalRandom rand = ThreadLocalRandom.current();
-            for (int i = 0; i < 10000; i++)
-            {
-                execute("INSERT INTO %s (year, country, title) VALUES (1980,?,?)",
-                        countries[rand.nextInt(countries.length)],
-                        "title-" + i);
-            }
-
-            String albumCountByCountry = createFunction(KEYSPACE,
-                                                        "map<text,bigint>,text,text",
-                                                        "CREATE FUNCTION IF NOT EXISTS %s(state map<text,bigint>,country text, album_title text)\n" +
-                                                        " RETURNS NULL ON NULL INPUT\n" +
-                                                        " RETURNS map<text,bigint>\n" +
-                                                        " LANGUAGE java\n" +
-                                                        " AS $$\n" +
-                                                        "   if(state.containsKey(country)) {\n" +
-                                                        "       Long newCount = (Long)state.get(country) + 1;\n" +
-                                                        "       state.put(country, newCount);\n" +
-                                                        "   } else {\n" +
-                                                        "       state.put(country, 1L);\n" +
-                                                        "   }\n" +
-                                                        "   return state;\n" +
-                                                        " $$;");
-
-            String releasesByCountry = createAggregate(KEYSPACE,
-                                                       "text, text",
-                                                       " CREATE AGGREGATE IF NOT EXISTS %s(text, text)\n" +
-                                                       " SFUNC " + shortFunctionName(albumCountByCountry) + '\n' +
-                                                       " STYPE map<text,bigint>\n" +
-                                                       " INITCOND { };");
-
-            long tEnd = System.currentTimeMillis() + 150;
-            while (System.currentTimeMillis() < tEnd)
-            {
-                execute("SELECT " + releasesByCountry + "(country,title) FROM %s WHERE year=1980");
-            }
-        }
-        finally
-        {
-            configureLogbackScanPeriod(60000L);
-        }
-    }
-
-    private static void configureLogbackScanPeriod(long millis)
-    {
-        Logger l = LoggerFactory.getLogger(AggregationTest.class);
-        ch.qos.logback.classic.Logger logbackLogger = (ch.qos.logback.classic.Logger) l;
-        LoggerContext ctx = logbackLogger.getLoggerContext();
-        TurboFilterList turboFilterList = ctx.getTurboFilterList();
-        boolean done = false;
-        for (TurboFilter turboFilter : turboFilterList)
-        {
-            if (turboFilter instanceof ReconfigureOnChangeFilter)
-            {
-                ReconfigureOnChangeFilter reconfigureFilter = (ReconfigureOnChangeFilter) turboFilter;
-                reconfigureFilter.setContext(ctx);
-                reconfigureFilter.setRefreshPeriod(millis);
-                reconfigureFilter.stop();
-                reconfigureFilter.start(); // start() sets the next check timestammp
-                done = true;
-                break;
-            }
-        }
-
-        ReconfigureOnChangeTask roct = (ReconfigureOnChangeTask) ctx.getObject(RECONFIGURE_ON_CHANGE_TASK);
-        if (roct != null)
-        {
-            // New functionality in logback - they replaced ReconfigureOnChangeFilter (which runs in the logging code)
-            // with an async ReconfigureOnChangeTask - i.e. in a thread that does not become sandboxed.
-            // Let the test run anyway, just we cannot reconfigure it (and it is pointless to reconfigure).
-            return;
-        }
-
-        assertTrue("ReconfigureOnChangeFilter not in logback's turbo-filter list - do that by adding scan=\"true\" to logback-test.xml's configuration element", done);
-    }
-
-    @Test
     public void testOrReplaceOptionals() throws Throwable
     {
         String fState = createFunction(KEYSPACE,
@@ -1869,230 +1717,26 @@ public class AggregationTest extends CQLTester
                            "STYPE list<text> ";
 
         // Test replacing INITCOND
-        execute(ddlPrefix + "INITCOND [  ] ");
-        checkOptionals(a, null, "[]");
+        for (String condition : new String[]{"", "INITCOND null"})
+        {
+            execute(ddlPrefix + "INITCOND [  ] ");
+            checkOptionals(a, null, ByteBuffer.allocate(4));
 
-        execute(ddlPrefix);
-        checkOptionals(a, null, null);
-
-        execute(ddlPrefix + "INITCOND [  ] ");
-        checkOptionals(a, null, "[]");
-
-        execute(ddlPrefix + "INITCOND null");
-        checkOptionals(a, null, null);
+            execute(ddlPrefix + condition);
+            checkOptionals(a, null, null);
+        }
 
         // Test replacing FINALFUNC
-        execute(ddlPrefix + "FINALFUNC " + shortFunctionName(fFinal) + ' ');
+        execute(ddlPrefix + "FINALFUNC " + shortFunctionName(fFinal) + " ");
         checkOptionals(a, shortFunctionName(fFinal), null);
 
         execute(ddlPrefix);
         checkOptionals(a, null, null);
     }
 
-    private void checkOptionals(String aggregateName, String finalFunc, String initCond) throws Throwable
+    private void checkOptionals(String aggregateName, String finalFunc, ByteBuffer initCond) throws Throwable
     {
-        assertRows(execute("SELECT final_func, initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(aggregateName)),
+        assertRows(execute("SELECT final_func, initcond FROM system.schema_aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, shortFunctionName(aggregateName)),
                    row(finalFunc, initCond));
-    }
-
-    @Test
-    public void testCustomTypeInitcond() throws Throwable
-    {
-        try
-        {
-            String type = "DynamicCompositeType(s => UTF8Type, i => Int32Type)";
-
-            executeNet(ProtocolVersion.CURRENT,
-                       "CREATE FUNCTION " + KEYSPACE + ".f11064(i 'DynamicCompositeType(s => UTF8Type, i => Int32Type)')\n" +
-                       "RETURNS NULL ON NULL INPUT\n" +
-                       "RETURNS '" + type + "'\n" +
-                       "LANGUAGE java\n" +
-                       "AS 'return i;'");
-
-            // create aggregate using the 'composite syntax' for composite types
-            executeNet(ProtocolVersion.CURRENT,
-                       "CREATE AGGREGATE " + KEYSPACE + ".a11064()\n" +
-                       "SFUNC f11064 " +
-                       "STYPE '" + type + "'\n" +
-                       "INITCOND 's@foo:i@32'");
-
-            AbstractType<?> compositeType = TypeParser.parse(type);
-            ByteBuffer compositeTypeValue = compositeType.fromString("s@foo:i@32");
-            String compositeTypeString = compositeType.asCQL3Type().toCQLLiteral(compositeTypeValue, ProtocolVersion.CURRENT);
-            // ensure that the composite type is serialized using the 'blob syntax'
-            assertTrue(compositeTypeString.startsWith("0x"));
-
-            // ensure that the composite type is 'serialized' using the 'blob syntax' in the schema
-            assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, "a11064"),
-                       row(compositeTypeString));
-
-            // create aggregate using the 'blob syntax' for composite types
-            executeNet(ProtocolVersion.CURRENT,
-                       "CREATE AGGREGATE " + KEYSPACE + ".a11064_2()\n" +
-                       "SFUNC f11064 " +
-                       "STYPE '" + type + "'\n" +
-                       "INITCOND " + compositeTypeString);
-
-            // ensure that the composite type is 'serialized' using the 'blob syntax' in the schema
-            assertRows(execute("SELECT initcond FROM system_schema.aggregates WHERE keyspace_name=? AND aggregate_name=?", KEYSPACE, "a11064_2"),
-                       row(compositeTypeString));
-        }
-        finally
-        {
-            try
-            {
-                execute("DROP AGGREGATE " + KEYSPACE + ".a11064_2");
-            }
-            catch (Exception ignore)
-            {
-            }
-            try
-            {
-                execute("DROP AGGREGATE " + KEYSPACE + ".a11064");
-            }
-            catch (Exception ignore)
-            {
-            }
-            try
-            {
-                execute("DROP FUNCTION " + KEYSPACE + ".f11064");
-            }
-            catch (Exception ignore)
-            {
-            }
-        }
-    }
-
-    @Test
-    public void testArithmeticCorrectness() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, val decimal)");
-        execute("insert into %s (bucket, val) values (1, 0.25)");
-        execute("insert into %s (bucket, val) values (2, 0.25)");
-        execute("insert into %s (bucket, val) values (3, 0.5);");
-
-        BigDecimal a = new BigDecimal("0.25");
-        a = a.add(new BigDecimal("0.25"));
-        a = a.add(new BigDecimal("0.5"));
-        a = a.divide(new BigDecimal(3), RoundingMode.HALF_EVEN);
-
-        assertRows(execute("select avg(val) from %s where bucket in (1, 2, 3);"),
-                   row(a));
-    }
-
-    @Test
-    public void testAggregatesWithoutOverflow() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 tinyint, v2 smallint, v3 int, v4 bigint, v5 varint)");
-        for (int i = 1; i <= 3; i++)
-            execute("insert into %s (bucket, v1, v2, v3, v4, v5) values (?, ?, ?, ?, ?, ?)", i,
-                    (byte) ((Byte.MAX_VALUE / 3) + i), (short) ((Short.MAX_VALUE / 3) + i), (Integer.MAX_VALUE / 3) + i, (Long.MAX_VALUE / 3) + i,
-                    BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(i)));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3), avg(v4), avg(v5) from %s where bucket in (1, 2, 3);"),
-                   row((byte) ((Byte.MAX_VALUE / 3) + 2), (short) ((Short.MAX_VALUE / 3) + 2), (Integer.MAX_VALUE / 3) + 2, (Long.MAX_VALUE / 3) + 2,
-                       BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(2))));
-
-        for (int i = 1; i <= 3; i++)
-            execute("insert into %s (bucket, v1, v2, v3, v4, v5) values (?, ?, ?, ?, ?, ?)", i + 3,
-                    (byte) (100 + i), (short) (100 + i), 100 + i, 100L + i, BigInteger.valueOf(100 + i));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3), avg(v4), avg(v5) from %s where bucket in (4, 5, 6);"),
-                   row((byte) 102, (short) 102, 102, 102L, BigInteger.valueOf(102)));
-    }
-
-    @Test
-    public void testAggregateOverflow() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 tinyint, v2 smallint, v3 int, v4 bigint, v5 varint)");
-        for (int i = 1; i <= 3; i++)
-            execute("insert into %s (bucket, v1, v2, v3, v4, v5) values (?, ?, ?, ?, ?, ?)", i,
-                    Byte.MAX_VALUE, Short.MAX_VALUE, Integer.MAX_VALUE, Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(2)));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3), avg(v4), avg(v5) from %s where bucket in (1, 2, 3);"),
-                   row(Byte.MAX_VALUE, Short.MAX_VALUE, Integer.MAX_VALUE, Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(2))));
-
-        execute("truncate %s");
-
-        for (int i = 1; i <= 3; i++)
-            execute("insert into %s (bucket, v1, v2, v3, v4, v5) values (?, ?, ?, ?, ?, ?)", i,
-                    Byte.MIN_VALUE, Short.MIN_VALUE, Integer.MIN_VALUE, Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(2)));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3), avg(v4), avg(v5) from %s where bucket in (1, 2, 3);"),
-                   row(Byte.MIN_VALUE, Short.MIN_VALUE, Integer.MIN_VALUE, Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(2))));
-
-    }
-
-    @Test
-    public void testDoubleAggregatesPrecision() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 float, v2 double, v3 decimal)");
-
-        for (int i = 1; i <= 3; i++)
-            execute("insert into %s (bucket, v1, v2, v3) values (?, ?, ?, ?)", i,
-                    Float.MAX_VALUE, Double.MAX_VALUE, BigDecimal.valueOf(Double.MAX_VALUE).add(BigDecimal.valueOf(2)));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3) from %s where bucket in (1, 2, 3);"),
-                   row(Float.MAX_VALUE, Double.MAX_VALUE, BigDecimal.valueOf(Double.MAX_VALUE).add(BigDecimal.valueOf(2))));
-
-        execute("insert into %s (bucket, v1, v2, v3) values (?, ?, ?, ?)", 4, (float) 100.10, 100.10, BigDecimal.valueOf(100.10));
-        execute("insert into %s (bucket, v1, v2, v3) values (?, ?, ?, ?)", 5, (float) 110.11, 110.11, BigDecimal.valueOf(110.11));
-        execute("insert into %s (bucket, v1, v2, v3) values (?, ?, ?, ?)", 6, (float) 120.12, 120.12, BigDecimal.valueOf(120.12));
-
-        assertRows(execute("select avg(v1), avg(v2), avg(v3) from %s where bucket in (4, 5, 6);"),
-                   row((float) 110.11, 110.11, BigDecimal.valueOf(110.11)));
-    }
-
-    @Test
-    public void testNan() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 float, v2 double)");
-
-        for (int i = 1; i <= 10; i++)
-            if (i != 5)
-                execute("insert into %s (bucket, v1, v2) values (?, ?, ?)", i, (float) i, (double) i);
-
-        execute("insert into %s (bucket, v1, v2) values (?, ?, ?)", 5, Float.NaN, Double.NaN);
-
-        assertRows(execute("select avg(v1), avg(v2) from %s where bucket in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);"),
-                   row(Float.NaN, Double.NaN));
-        assertRows(execute("select sum(v1), sum(v2) from %s where bucket in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);"),
-                   row(Float.NaN, Double.NaN));
-    }
-
-    @Test
-    public void testInfinity() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 float, v2 double)");
-        for (boolean positive: new boolean[] { true, false})
-        {
-            final float FLOAT_INFINITY = positive ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY;
-            final double DOUBLE_INFINITY = positive ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
-
-            for (int i = 1; i <= 10; i++)
-                if (i != 5)
-                    execute("insert into %s (bucket, v1, v2) values (?, ?, ?)", i, (float) i, (double) i);
-
-            execute("insert into %s (bucket, v1, v2) values (?, ?, ?)", 5, FLOAT_INFINITY, DOUBLE_INFINITY);
-
-            assertRows(execute("select avg(v1), avg(v2) from %s where bucket in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);"),
-                       row(FLOAT_INFINITY, DOUBLE_INFINITY));
-            assertRows(execute("select sum(v1), avg(v2) from %s where bucket in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);"),
-                       row(FLOAT_INFINITY, DOUBLE_INFINITY));
-
-            execute("truncate %s");
-        }
-    }
-
-    @Test
-    public void testSumPrecision() throws Throwable
-    {
-        createTable("create table %s (bucket int primary key, v1 float, v2 double, v3 decimal)");
-
-        for (int i = 1; i <= 17; i++)
-            execute("insert into %s (bucket, v1, v2, v3) values (?, ?, ?, ?)", i, (float) (i / 10.0), i / 10.0, BigDecimal.valueOf(i / 10.0));
-
-        assertRows(execute("select sum(v1), sum(v2), sum(v3) from %s;"),
-                   row((float) 15.3, 15.3, BigDecimal.valueOf(15.3)));
     }
 }

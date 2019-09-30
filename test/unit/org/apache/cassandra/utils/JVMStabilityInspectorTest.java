@@ -17,30 +17,25 @@
  */
 package org.apache.cassandra.utils;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.net.SocketException;
-
-import org.junit.BeforeClass;
-import org.junit.Test;
-
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSReadError;
 
 import static java.util.Arrays.asList;
+
+import org.junit.Test;
+
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.net.SocketException;
+import java.util.Arrays;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class JVMStabilityInspectorTest
 {
-    @BeforeClass
-    public static void initDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     @Test
     public void testKill() throws Exception
     {

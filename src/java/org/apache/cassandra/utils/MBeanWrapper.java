@@ -19,7 +19,6 @@
 package org.apache.cassandra.utils;
 
 import java.lang.management.ManagementFactory;
-import java.util.function.Consumer;
 import javax.management.MBeanServer;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
@@ -41,49 +40,37 @@ public interface MBeanWrapper
 
     // Passing true for graceful will log exceptions instead of rethrowing them
     public void registerMBean(Object obj, ObjectName mbeanName, OnException onException);
-    default void registerMBean(Object obj, ObjectName mbeanName)
-    {
-        registerMBean(obj, mbeanName, OnException.THROW);
-    }
+    public void registerMBean(Object obj, ObjectName mbeanName);
 
     public void registerMBean(Object obj, String mbeanName, OnException onException);
-    default void registerMBean(Object obj, String mbeanName)
-    {
-        registerMBean(obj, mbeanName, OnException.THROW);
-    }
+    public void registerMBean(Object obj, String mbeanName);
 
     public boolean isRegistered(ObjectName mbeanName, OnException onException);
-    default boolean isRegistered(ObjectName mbeanName)
-    {
-        return isRegistered(mbeanName, OnException.THROW);
-    }
+    public boolean isRegistered(ObjectName mbeanName);
 
     public boolean isRegistered(String mbeanName, OnException onException);
-    default boolean isRegistered(String mbeanName)
-    {
-        return isRegistered(mbeanName, OnException.THROW);
-    }
+    public boolean isRegistered(String mbeanName);
 
     public void unregisterMBean(ObjectName mbeanName, OnException onException);
-    default void unregisterMBean(ObjectName mbeanName)
-    {
-        unregisterMBean(mbeanName, OnException.THROW);
-    }
+    public void unregisterMBean(ObjectName mbeanName);
 
     public void unregisterMBean(String mbeanName, OnException onException);
-    default void unregisterMBean(String mbeanName)
-    {
-        unregisterMBean(mbeanName, OnException.THROW);
-    }
+    public void unregisterMBean(String mbeanName);
 
     static class NoOpMBeanWrapper implements MBeanWrapper
     {
         public void registerMBean(Object obj, ObjectName mbeanName, OnException onException) {}
+        public void registerMBean(Object obj, ObjectName mbeanName) {}
         public void registerMBean(Object obj, String mbeanName, OnException onException) {}
+        public void registerMBean(Object obj, String mbeanName) {}
         public boolean isRegistered(ObjectName mbeanName, OnException onException) { return false; }
+        public boolean isRegistered(ObjectName mbeanName) { return false; }
         public boolean isRegistered(String mbeanName, OnException onException) { return false; }
+        public boolean isRegistered(String mbeanName) { return false; }
         public void unregisterMBean(ObjectName mbeanName, OnException onException) {}
+        public void unregisterMBean(ObjectName mbeanName) {}
         public void unregisterMBean(String mbeanName, OnException onException) {}
+        public void unregisterMBean(String mbeanName) {}
     }
 
     static class PlatformMBeanWrapper implements MBeanWrapper
@@ -100,6 +87,10 @@ public interface MBeanWrapper
                 onException.handler.accept(e);
             }
         }
+        public void registerMBean(Object obj, ObjectName mbeanName)
+        {
+            registerMBean(obj, mbeanName, OnException.THROW);
+        }
 
         public void registerMBean(Object obj, String mbeanName, OnException onException)
         {
@@ -111,6 +102,10 @@ public interface MBeanWrapper
             {
                 onException.handler.accept(e);
             }
+        }
+        public void registerMBean(Object obj, String mbeanName)
+        {
+            registerMBean(obj, mbeanName, OnException.THROW);
         }
 
         public boolean isRegistered(ObjectName mbeanName, OnException onException)
@@ -125,6 +120,10 @@ public interface MBeanWrapper
             }
             return false;
         }
+        public boolean isRegistered(ObjectName mbeanName)
+        {
+            return isRegistered(mbeanName, OnException.THROW);
+        }
 
         public boolean isRegistered(String mbeanName, OnException onException)
         {
@@ -138,6 +137,10 @@ public interface MBeanWrapper
             }
             return false;
         }
+        public boolean isRegistered(String mbeanName)
+        {
+            return isRegistered(mbeanName, OnException.THROW);
+        }
 
         public void unregisterMBean(ObjectName mbeanName, OnException onException)
         {
@@ -149,6 +152,10 @@ public interface MBeanWrapper
             {
                 onException.handler.accept(e);
             }
+        }
+        public void unregisterMBean(ObjectName mbeanName)
+        {
+            unregisterMBean(mbeanName, OnException.THROW);
         }
 
         public void unregisterMBean(String mbeanName, OnException onException)
@@ -162,18 +169,46 @@ public interface MBeanWrapper
                 onException.handler.accept(e);
             }
         }
+        public void unregisterMBean(String mbeanName)
+        {
+            unregisterMBean(mbeanName, OnException.THROW);
+        }
     }
 
     public enum OnException
     {
-        THROW(e -> { throw new RuntimeException(e); }),
-        LOG(e -> { logger.error("Error in MBean wrapper: ", e); }),
-        IGNORE(e -> {});
+        THROW(new Consumer<Exception>()
+        {
+            public void accept(Exception e)
+            {
+                throw new RuntimeException(e);
+            }
+        }),
+        LOG(new Consumer<Exception>()
+        {
+            public void accept(Exception e)
+            {
+                logger.error("Error in MBean wrapper: ", e);
+            }
+        }),
+        IGNORE(new Consumer<Exception>()
+        {
+            public void accept(Exception e)
+            {
+
+            }
+        });
 
         private Consumer<Exception> handler;
         OnException(Consumer<Exception> handler)
         {
             this.handler = handler;
         }
+    }
+
+    // Locally defined Consumer interface, to be compatible with Java 7. Only needed for cassandra-2.2
+    interface Consumer<T>
+    {
+        void accept(T e);
     }
 }

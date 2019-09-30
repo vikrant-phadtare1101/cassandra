@@ -17,14 +17,12 @@
  */
 package org.apache.cassandra.serializers;
 
-import io.netty.util.concurrent.FastThreadLocal;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.text.ParseException;
-import java.util.Date;
-import java.util.TimeZone;
+import java.util.*;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.time.DateUtils;
@@ -34,8 +32,7 @@ public class TimestampSerializer implements TypeSerializer<Date>
 
     //NOTE: This list is used below and if you change the order
     //      you need to update the default format and json formats in the code below.
-    private static final String[] dateStringPatterns = new String[]
-    {
+    private static final String[] dateStringPatterns = new String[] {
             "yyyy-MM-dd HH:mm",
             "yyyy-MM-dd HH:mm:ss",
             "yyyy-MM-dd HH:mm z",
@@ -76,7 +73,7 @@ public class TimestampSerializer implements TypeSerializer<Date>
             "yyyy-MM-dd'T'HH:mm:ss.SSS z",
             "yyyy-MM-dd'T'HH:mm:ss.SSS zz",
             "yyyy-MM-dd'T'HH:mm:ss.SSS zzz",
-            "yyyy-MM-dd'T'HH:mm:ss.SSSX",  // UTC_FORMAT
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
             "yyyy-MM-dd'T'HH:mm:ss.SSSXX",
             "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
             "yyyy-MM-dd",
@@ -91,7 +88,7 @@ public class TimestampSerializer implements TypeSerializer<Date>
     private static final String DEFAULT_FORMAT = dateStringPatterns[6];
     private static final Pattern timestampPattern = Pattern.compile("^-?\\d+$");
 
-    private static final FastThreadLocal<SimpleDateFormat> FORMATTER = new FastThreadLocal<SimpleDateFormat>()
+    private static final ThreadLocal<SimpleDateFormat> FORMATTER = new ThreadLocal<SimpleDateFormat>()
     {
         protected SimpleDateFormat initialValue()
         {
@@ -99,19 +96,8 @@ public class TimestampSerializer implements TypeSerializer<Date>
         }
     };
 
-    private static final String UTC_FORMAT = dateStringPatterns[40];
-    private static final FastThreadLocal<SimpleDateFormat> FORMATTER_UTC = new FastThreadLocal<SimpleDateFormat>()
-    {
-        protected SimpleDateFormat initialValue()
-        {
-            SimpleDateFormat sdf = new SimpleDateFormat(UTC_FORMAT);
-            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-            return sdf;
-        }
-    };
-
     private static final String TO_JSON_FORMAT = dateStringPatterns[19];
-    private static final FastThreadLocal<SimpleDateFormat> FORMATTER_TO_JSON = new FastThreadLocal<SimpleDateFormat>()
+    private static final ThreadLocal<SimpleDateFormat> FORMATTER_TO_JSON = new ThreadLocal<SimpleDateFormat>()
     {
         protected SimpleDateFormat initialValue()
         {
@@ -120,9 +106,7 @@ public class TimestampSerializer implements TypeSerializer<Date>
             return sdf;
         }
     };
-
-
-
+    
     public static final TimestampSerializer instance = new TimestampSerializer();
 
     public Date deserialize(ByteBuffer bytes)
@@ -163,8 +147,8 @@ public class TimestampSerializer implements TypeSerializer<Date>
             throw new MarshalException(String.format("Unable to coerce '%s' to a formatted date (long)", source), e1);
         }
     }
-
-    public static SimpleDateFormat getJsonDateFormatter()
+    
+    public static SimpleDateFormat getJsonDateFormatter() 
     {
     	return FORMATTER_TO_JSON.get();
     }
@@ -180,25 +164,8 @@ public class TimestampSerializer implements TypeSerializer<Date>
         return value == null ? "" : FORMATTER.get().format(value);
     }
 
-    public String toStringUTC(Date value)
-    {
-        return value == null ? "" : FORMATTER_UTC.get().format(value);
-    }
-
     public Class<Date> getType()
     {
         return Date.class;
-    }
-
-    /**
-     * Builds CQL literal for a timestamp using time zone UTC and fixed date format.
-     * @see #FORMATTER_UTC
-     */
-    @Override
-    public String toCQLLiteral(ByteBuffer buffer)
-    {
-        return buffer == null || !buffer.hasRemaining()
-             ? "null"
-             : FORMATTER_UTC.get().format(deserialize(buffer));
     }
 }

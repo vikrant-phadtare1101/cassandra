@@ -22,14 +22,13 @@ package org.apache.cassandra.stress.settings;
 
 
 import java.io.PrintStream;
-import java.io.Serializable;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import com.google.common.collect.ImmutableList;
 
-public abstract class GroupedOptions implements Serializable
+public abstract class GroupedOptions
 {
 
     int accepted = 0;
@@ -115,18 +114,6 @@ public abstract class GroupedOptions implements Serializable
         }
     }
 
-    public String getOptionAsString()
-    {
-        StringBuilder sb = new StringBuilder();
-        for (Option option : options())
-        {
-            sb.append(option.getOptionAsString());
-            sb.append("; ");
-        }
-        return sb.toString();
-    }
-
-
     public static List<? extends Option> merge(List<? extends Option> ... optionss)
     {
         ImmutableList.Builder<Option> builder = ImmutableList.builder();
@@ -141,12 +128,12 @@ public abstract class GroupedOptions implements Serializable
         return builder.build();
     }
 
-    static String formatLong(String longDisplay, String description)
+    public static String formatLong(String longDisplay, String description)
     {
         return String.format("%-40s %s", longDisplay, description);
     }
 
-    static String formatMultiLine(String longDisplay, String description)
+    public static String formatMultiLine(String longDisplay, String description)
     {
         return String.format("%-36s %s", longDisplay, description);
     }

@@ -17,10 +17,6 @@
  */
 package org.apache.cassandra.cql3.validation.entities;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Locale;
-
 import org.junit.Test;
 
 import org.apache.cassandra.cql3.CQLTester;
@@ -114,7 +110,7 @@ public class TupleTypeTest extends CQLTester
             row(0, 4, tuple(null, "1"))
         );
 
-        assertInvalidMessage("Invalid tuple literal: too many elements. Type frozen<tuple<int, text>> expects 2 but got 3",
+        assertInvalidMessage("Invalid tuple literal: too many elements. Type tuple<int, text> expects 2 but got 3",
                              "INSERT INTO %s(k, t) VALUES (1,'1:2:3')");
     }
 
@@ -125,7 +121,7 @@ public class TupleTypeTest extends CQLTester
 
         assertInvalidSyntax("INSERT INTO %s (k, t) VALUES (0, ())");
 
-        assertInvalidMessage("Invalid tuple literal for t: too many elements. Type frozen<tuple<int, text, double>> expects 3 but got 4",
+        assertInvalidMessage("Invalid tuple literal for t: too many elements. Type tuple<int, text, double> expects 3 but got 4",
                              "INSERT INTO %s (k, t) VALUES (0, (2, 'foo', 3.1, 'bar'))");
 
         createTable("CREATE TABLE %s (k int PRIMARY KEY, t frozen<tuple<int, tuple<int, text, double>>>)");
@@ -133,7 +129,7 @@ public class TupleTypeTest extends CQLTester
                              "INSERT INTO %s (k, t) VALUES (0, ?)",
                              tuple(1, tuple(1, "1", 1.0, 1)));
 
-        assertInvalidMessage("Invalid tuple literal for t: component 1 is not of type frozen<tuple<int, text, double>>",
+        assertInvalidMessage("Invalid tuple literal for t: component 1 is not of type tuple<int, text, double>",
                              "INSERT INTO %s (k, t) VALUES (0, (1, (1, '1', 1.0, 1)))");
     }
 
@@ -215,23 +211,4 @@ public class TupleTypeTest extends CQLTester
         assertInvalidMessage("Not enough bytes to read 0th component",
                              "INSERT INTO %s (pk, t) VALUES (?, ?)", 1, Long.MAX_VALUE);
     }
-
-    @Test
-    public void testTupleModification() throws Throwable
-    {
-        createTable("CREATE TABLE %s(pk int PRIMARY KEY, value tuple<int, int>)");
-        assertInvalidMessage("Invalid operation (value = value + (1, 1)) for tuple column value",
-                             "UPDATE %s SET value += (1, 1) WHERE k=0;");
-    }
-
-    @Test
-    public void testReversedTypeTuple() throws Throwable
-    {
-        // CASSANDRA-13717
-        createTable("CREATE TABLE %s (id int, tdemo frozen<tuple<timestamp, varchar>>, primary key (id, tdemo)) with clustering order by (tdemo desc)");
-        execute("INSERT INTO %s (id, tdemo) VALUES (1, ('2017-02-03 03:05+0000','Europe'))");
-        DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mmX", Locale.ENGLISH);
-        assertRows(execute("SELECT tdemo FROM %s"), row(tuple( df.parse("2017-02-03 03:05+0000"), "Europe")));
-    }
 }
-

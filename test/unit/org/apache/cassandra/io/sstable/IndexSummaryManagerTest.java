@@ -22,8 +22,6 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Sets;
@@ -38,26 +36,20 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.RowUpdateBuilder;
-import org.apache.cassandra.db.compaction.AntiCompactionTest;
+import org.apache.cassandra.cache.CachingOptions;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionInterruptedException;
 import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.compaction.OperationType;
+import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.metrics.CompactionMetrics;
 import org.apache.cassandra.metrics.RestorableMeter;
-import org.apache.cassandra.schema.CachingParams;
-import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.MigrationManager;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static com.google.common.collect.ImmutableMap.of;
 import static java.util.Arrays.asList;
@@ -88,15 +80,16 @@ public class IndexSummaryManagerTest
     {
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    KeyspaceParams.simple(1),
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARDLOWiINTERVAL)
                                                 .minIndexInterval(8)
                                                 .maxIndexInterval(256)
-                                                .caching(CachingParams.CACHE_NOTHING),
+                                                .caching(CachingOptions.NONE),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARDRACE)
                                                 .minIndexInterval(8)
                                                 .maxIndexInterval(256)
-                                                .caching(CachingParams.CACHE_NOTHING));
+                                                .caching(CachingOptions.NONE));
     }
 
     @Before
@@ -106,15 +99,15 @@ public class IndexSummaryManagerTest
         String cfname = CF_STANDARDLOWiINTERVAL; // index interval of 8, no key caching
         Keyspace keyspace = Keyspace.open(ksname);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
-        originalMinIndexInterval = cfs.metadata().params.minIndexInterval;
-        originalMaxIndexInterval = cfs.metadata().params.maxIndexInterval;
+        originalMinIndexInterval = cfs.metadata.getMinIndexInterval();
+        originalMaxIndexInterval = cfs.metadata.getMaxIndexInterval();
         originalCapacity = IndexSummaryManager.instance.getMemoryPoolCapacityInMB();
     }
 
     @After
     public void afterTest()
     {
-        for (CompactionInfo.Holder holder : CompactionManager.instance.active.getCompactions())
+        for (CompactionInfo.Holder holder : CompactionMetrics.getCompactions())
         {
             holder.stop();
         }
@@ -123,10 +116,8 @@ public class IndexSummaryManagerTest
         String cfname = CF_STANDARDLOWiINTERVAL; // index interval of 8, no key caching
         Keyspace keyspace = Keyspace.open(ksname);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
-
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval).build(), true);
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().maxIndexInterval(originalMaxIndexInterval).build(), true);
-
+        cfs.metadata.minIndexInterval(originalMinIndexInterval);
+        cfs.metadata.maxIndexInterval(originalMaxIndexInterval);
         IndexSummaryManager.instance.setMemoryPoolCapacityInMB(originalCapacity);
     }
 
@@ -145,7 +136,7 @@ public class IndexSummaryManagerTest
 
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), originalOffHeapSize * sstables.size());
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), originalOffHeapSize * sstables.size());
         }
         for (SSTableReader sstable : sstables)
             assertEquals(BASE_SAMPLING_LEVEL, sstable.getIndexSummarySamplingLevel());
@@ -153,15 +144,17 @@ public class IndexSummaryManagerTest
         return sstables;
     }
 
-    private void validateData(ColumnFamilyStore cfs, int numPartition)
+    private void validateData(ColumnFamilyStore cfs, int numRows)
     {
-        for (int i = 0; i < numPartition; i++)
+        for (int i = 0; i < numRows; i++)
         {
-            Row row = Util.getOnlyRowUnfiltered(Util.cmd(cfs, String.format("%3d", i)).build());
-            Cell cell = row.getCell(cfs.metadata().getColumn(ByteBufferUtil.bytes("val")));
+            DecoratedKey key = Util.dk(String.format("%3d", i));
+            QueryFilter filter = QueryFilter.getIdentityFilter(key, cfs.getColumnFamilyName(), System.currentTimeMillis());
+            ColumnFamily row = cfs.getColumnFamily(filter);
+            assertNotNull(row);
+            Cell cell = row.getColumn(Util.cellname("column"));
             assertNotNull(cell);
             assertEquals(100, cell.value().array().length);
-
         }
     }
 
@@ -173,7 +166,7 @@ public class IndexSummaryManagerTest
         }
     };
 
-    private void createSSTables(String ksname, String cfname, int numSSTables, int numPartition)
+    private void createSSTables(String ksname, String cfname, int numSSTables, int numRows)
     {
         Keyspace keyspace = Keyspace.open(ksname);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
@@ -184,15 +177,12 @@ public class IndexSummaryManagerTest
         ByteBuffer value = ByteBuffer.wrap(new byte[100]);
         for (int sstable = 0; sstable < numSSTables; sstable++)
         {
-            for (int p = 0; p < numPartition; p++)
+            for (int row = 0; row < numRows; row++)
             {
-
-                String key = String.format("%3d", p);
-                new RowUpdateBuilder(cfs.metadata(), 0, key)
-                    .clustering("column")
-                    .add("val", value)
-                    .build()
-                    .applyUnsafe();
+                DecoratedKey key = Util.dk(String.format("%3d", row));
+                Mutation rm = new Mutation(ksname, key.getKey());
+                rm.add(cfname, Util.cellname("column"), value, 0);
+                rm.applyUnsafe();
             }
             futures.add(cfs.forceFlush());
         }
@@ -207,8 +197,8 @@ public class IndexSummaryManagerTest
                 throw new RuntimeException(e);
             }
         }
-        assertEquals(numSSTables, cfs.getLiveSSTables().size());
-        validateData(cfs, numPartition);
+        assertEquals(numSSTables, cfs.getSSTables().size());
+        validateData(cfs, numRows);
     }
 
     @Test
@@ -222,42 +212,42 @@ public class IndexSummaryManagerTest
         int numRows = 256;
         createSSTables(ksname, cfname, numSSTables, numRows);
 
-        List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
+        List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
             sstable.overrideReadMeter(new RestorableMeter(100.0, 100.0));
 
         for (SSTableReader sstable : sstables)
-            assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
+            assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
 
         // double the min_index_interval
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval * 2).build(), true);
+        cfs.metadata.minIndexInterval(originalMinIndexInterval * 2);
         IndexSummaryManager.instance.redistributeSummaries();
-        for (SSTableReader sstable : cfs.getLiveSSTables())
+        for (SSTableReader sstable : cfs.getSSTables())
         {
-            assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
-            assertEquals(numRows / cfs.metadata().params.minIndexInterval, sstable.getIndexSummarySize());
+            assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
+            assertEquals(numRows / cfs.metadata.getMinIndexInterval(), sstable.getIndexSummarySize());
         }
 
         // return min_index_interval to its original value
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval).build(), true);
+        cfs.metadata.minIndexInterval(originalMinIndexInterval);
         IndexSummaryManager.instance.redistributeSummaries();
-        for (SSTableReader sstable : cfs.getLiveSSTables())
+        for (SSTableReader sstable : cfs.getSSTables())
         {
-            assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
-            assertEquals(numRows / cfs.metadata().params.minIndexInterval, sstable.getIndexSummarySize());
+            assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
+            assertEquals(numRows / cfs.metadata.getMinIndexInterval(), sstable.getIndexSummarySize());
         }
 
         // halve the min_index_interval, but constrain the available space to exactly what we have now; as a result,
         // the summary shouldn't change
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval / 2).build(), true);
-        SSTableReader sstable = cfs.getLiveSSTables().iterator().next();
+        cfs.metadata.minIndexInterval(originalMinIndexInterval / 2);
+        SSTableReader sstable = cfs.getSSTables().iterator().next();
         long summarySpace = sstable.getIndexSummaryOffHeapSize();
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(asList(sstable), OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), summarySpace);
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), summarySpace);
         }
 
-        sstable = cfs.getLiveSSTables().iterator().next();
+        sstable = cfs.getSSTables().iterator().next();
         assertEquals(originalMinIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
         assertEquals(numRows / originalMinIndexInterval, sstable.getIndexSummarySize());
 
@@ -266,34 +256,34 @@ public class IndexSummaryManagerTest
         int previousSize = sstable.getIndexSummarySize();
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(asList(sstable), OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (long) Math.ceil(summarySpace * 1.5));
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (long) Math.ceil(summarySpace * 1.5));
         }
-        sstable = cfs.getLiveSSTables().iterator().next();
+        sstable = cfs.getSSTables().iterator().next();
         assertEquals(previousSize * 1.5, (double) sstable.getIndexSummarySize(), 1);
         assertEquals(previousInterval * (1.0 / 1.5), sstable.getEffectiveIndexInterval(), 0.001);
 
         // return min_index_interval to it's original value (double it), but only give the summary enough space
         // to have an effective index interval of twice the new min
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval).build(), true);
+        cfs.metadata.minIndexInterval(originalMinIndexInterval);
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(asList(sstable), OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (long) Math.ceil(summarySpace / 2.0));
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (long) Math.ceil(summarySpace / 2.0));
         }
-        sstable = cfs.getLiveSSTables().iterator().next();
+        sstable = cfs.getSSTables().iterator().next();
         assertEquals(originalMinIndexInterval * 2, sstable.getEffectiveIndexInterval(), 0.001);
         assertEquals(numRows / (originalMinIndexInterval * 2), sstable.getIndexSummarySize());
 
         // raise the min_index_interval above our current effective interval, but set the max_index_interval lower
         // than what we actually have space for (meaning the index summary would ideally be smaller, but this would
         // result in an effective interval above the new max)
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval * 4).build(), true);
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().maxIndexInterval(originalMinIndexInterval * 4).build(), true);
+        cfs.metadata.minIndexInterval(originalMinIndexInterval * 4);
+        cfs.metadata.maxIndexInterval(originalMinIndexInterval * 4);
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(asList(sstable), OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), 10);
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), 10);
         }
-        sstable = cfs.getLiveSSTables().iterator().next();
-        assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
+        sstable = cfs.getSSTables().iterator().next();
+        assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
     }
 
     @Test
@@ -307,41 +297,41 @@ public class IndexSummaryManagerTest
         int numRows = 256;
         createSSTables(ksname, cfname, numSSTables, numRows);
 
-        List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
+        List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
             sstable.overrideReadMeter(new RestorableMeter(100.0, 100.0));
 
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), 10);
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), 10);
         }
-        sstables = new ArrayList<>(cfs.getLiveSSTables());
+        sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
-            assertEquals(cfs.metadata().params.maxIndexInterval, sstable.getEffectiveIndexInterval(), 0.01);
+            assertEquals(cfs.metadata.getMaxIndexInterval(), sstable.getEffectiveIndexInterval(), 0.01);
 
         // halve the max_index_interval
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().maxIndexInterval(cfs.metadata().params.maxIndexInterval / 2).build(), true);
+        cfs.metadata.maxIndexInterval(cfs.metadata.getMaxIndexInterval() / 2);
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), 1);
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), 1);
         }
-        sstables = new ArrayList<>(cfs.getLiveSSTables());
+        sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
         {
-            assertEquals(cfs.metadata().params.maxIndexInterval, sstable.getEffectiveIndexInterval(), 0.01);
-            assertEquals(numRows / cfs.metadata().params.maxIndexInterval, sstable.getIndexSummarySize());
+            assertEquals(cfs.metadata.getMaxIndexInterval(), sstable.getEffectiveIndexInterval(), 0.01);
+            assertEquals(numRows / cfs.metadata.getMaxIndexInterval(), sstable.getIndexSummarySize());
         }
 
         // return max_index_interval to its original value
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().maxIndexInterval(cfs.metadata().params.maxIndexInterval * 2).build(), true);
+        cfs.metadata.maxIndexInterval(cfs.metadata.getMaxIndexInterval() * 2);
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), 1);
+            redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), 1);
         }
-        for (SSTableReader sstable : cfs.getLiveSSTables())
+        for (SSTableReader sstable : cfs.getSSTables())
         {
-            assertEquals(cfs.metadata().params.maxIndexInterval, sstable.getEffectiveIndexInterval(), 0.01);
-            assertEquals(numRows / cfs.metadata().params.maxIndexInterval, sstable.getIndexSummarySize());
+            assertEquals(cfs.metadata.getMaxIndexInterval(), sstable.getEffectiveIndexInterval(), 0.01);
+            assertEquals(numRows / cfs.metadata.getMaxIndexInterval(), sstable.getIndexSummarySize());
         }
     }
 
@@ -356,9 +346,9 @@ public class IndexSummaryManagerTest
         int numRows = 256;
         createSSTables(ksname, cfname, numSSTables, numRows);
 
-        int minSamplingLevel = (BASE_SAMPLING_LEVEL * cfs.metadata().params.minIndexInterval) / cfs.metadata().params.maxIndexInterval;
+        int minSamplingLevel = (BASE_SAMPLING_LEVEL * cfs.metadata.getMinIndexInterval()) / cfs.metadata.getMaxIndexInterval();
 
-        List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
+        List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
             sstable.overrideReadMeter(new RestorableMeter(100.0, 100.0));
 
@@ -367,7 +357,7 @@ public class IndexSummaryManagerTest
         // there should be enough space to not downsample anything
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * numSSTables));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * numSSTables));
         }
         for (SSTableReader sstable : sstables)
             assertEquals(BASE_SAMPLING_LEVEL, sstable.getIndexSummarySamplingLevel());
@@ -378,7 +368,7 @@ public class IndexSummaryManagerTest
         assert sstables.size() == 4;
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * (numSSTables / 2)));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * (numSSTables / 2)));
         }
         for (SSTableReader sstable : sstables)
             assertEquals(BASE_SAMPLING_LEVEL / 2, sstable.getIndexSummarySamplingLevel());
@@ -387,7 +377,7 @@ public class IndexSummaryManagerTest
         // everything should get cut to a quarter
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * (numSSTables / 4)));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * (numSSTables / 4)));
         }
         for (SSTableReader sstable : sstables)
             assertEquals(BASE_SAMPLING_LEVEL / 4, sstable.getIndexSummarySamplingLevel());
@@ -396,7 +386,7 @@ public class IndexSummaryManagerTest
         // upsample back up to half
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * (numSSTables / 2) + 4));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * (numSSTables / 2) + 4));
         }
         assert sstables.size() == 4;
         for (SSTableReader sstable : sstables)
@@ -406,7 +396,7 @@ public class IndexSummaryManagerTest
         // upsample back up to the original index summary
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * numSSTables));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * numSSTables));
         }
         for (SSTableReader sstable : sstables)
             assertEquals(BASE_SAMPLING_LEVEL, sstable.getIndexSummarySamplingLevel());
@@ -418,7 +408,7 @@ public class IndexSummaryManagerTest
         sstables.get(1).overrideReadMeter(new RestorableMeter(50.0, 50.0));
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * 3));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * 3));
         }
         Collections.sort(sstables, hotnessComparator);
         assertEquals(BASE_SAMPLING_LEVEL / 2, sstables.get(0).getIndexSummarySamplingLevel());
@@ -434,7 +424,7 @@ public class IndexSummaryManagerTest
         sstables.get(1).overrideReadMeter(new RestorableMeter(higherRate, higherRate));
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * 3));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * 3));
         }
         Collections.sort(sstables, hotnessComparator);
         assertEquals(BASE_SAMPLING_LEVEL / 2, sstables.get(0).getIndexSummarySamplingLevel());
@@ -452,7 +442,7 @@ public class IndexSummaryManagerTest
 
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (singleSummaryOffHeapSpace * 3) + 50);
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (singleSummaryOffHeapSpace * 3) + 50);
         }
         Collections.sort(sstables, hotnessComparator);
 
@@ -476,7 +466,7 @@ public class IndexSummaryManagerTest
         sstables.get(3).overrideReadMeter(new RestorableMeter(128.0, 128.0));
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), (long) (singleSummaryOffHeapSpace + (singleSummaryOffHeapSpace * (92.0 / BASE_SAMPLING_LEVEL))));
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), (long) (singleSummaryOffHeapSpace + (singleSummaryOffHeapSpace * (92.0 / BASE_SAMPLING_LEVEL))));
         }
         Collections.sort(sstables, hotnessComparator);
         assertEquals(1, sstables.get(0).getIndexSummarySize());  // at the min sampling level
@@ -489,7 +479,7 @@ public class IndexSummaryManagerTest
         // Don't leave enough space for even the minimal index summaries
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
         {
-            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.id, txn), 10);
+            sstables = redistributeSummaries(Collections.EMPTY_LIST, of(cfs.metadata.cfId, txn), 10);
         }
         for (SSTableReader sstable : sstables)
             assertEquals(1, sstable.getIndexSummarySize());  // at the min sampling level
@@ -511,17 +501,14 @@ public class IndexSummaryManagerTest
         int numRows = 256;
         for (int row = 0; row < numRows; row++)
         {
-            String key = String.format("%3d", row);
-            new RowUpdateBuilder(cfs.metadata(), 0, key)
-            .clustering("column")
-            .add("val", value)
-            .build()
-            .applyUnsafe();
+            DecoratedKey key = Util.dk(String.valueOf(row));
+            Mutation rm = new Mutation(ksname, key.getKey());
+            rm.add(cfname, Util.cellname("column"), value, 0);
+            rm.applyUnsafe();
         }
-
         cfs.forceBlockingFlush();
 
-        List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
+        List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         assertEquals(1, sstables.size());
         SSTableReader original = sstables.get(0);
 
@@ -532,7 +519,7 @@ public class IndexSummaryManagerTest
             {
                 sstable = sstable.cloneWithNewSummarySamplingLevel(cfs, samplingLevel);
                 assertEquals(samplingLevel, sstable.getIndexSummarySamplingLevel());
-                int expectedSize = (numRows * samplingLevel) / (cfs.metadata().params.minIndexInterval * BASE_SAMPLING_LEVEL);
+                int expectedSize = (numRows * samplingLevel) / (sstable.metadata.getMinIndexInterval() * BASE_SAMPLING_LEVEL);
                 assertEquals(expectedSize, sstable.getIndexSummarySize(), 1);
                 txn.update(sstable, true);
                 txn.checkpoint();
@@ -577,60 +564,72 @@ public class IndexSummaryManagerTest
         {
             for (int row = 0; row < numRows; row++)
             {
-                String key = String.format("%3d", row);
-                new RowUpdateBuilder(cfs.metadata(), 0, key)
-                .clustering("column")
-                .add("val", value)
-                .build()
-                .applyUnsafe();
+                DecoratedKey key = Util.dk(String.valueOf(row));
+                Mutation rm = new Mutation(ksname, key.getKey());
+                rm.add(cfname, Util.cellname("column"), value, 0);
+                rm.applyUnsafe();
             }
             cfs.forceBlockingFlush();
         }
 
-        assertTrue(manager.getAverageIndexInterval() >= cfs.metadata().params.minIndexInterval);
+        assertTrue(manager.getAverageIndexInterval() >= cfs.metadata.getMinIndexInterval());
         Map<String, Integer> intervals = manager.getIndexIntervals();
         for (Map.Entry<String, Integer> entry : intervals.entrySet())
             if (entry.getKey().contains(CF_STANDARDLOWiINTERVAL))
-                assertEquals(cfs.metadata().params.minIndexInterval, entry.getValue(), 0.001);
+                assertEquals(cfs.metadata.getMinIndexInterval(), entry.getValue(), 0.001);
 
         manager.setMemoryPoolCapacityInMB(0);
         manager.redistributeSummaries();
-        assertTrue(manager.getAverageIndexInterval() > cfs.metadata().params.minIndexInterval);
+        assertTrue(manager.getAverageIndexInterval() > cfs.metadata.getMinIndexInterval());
         intervals = manager.getIndexIntervals();
         for (Map.Entry<String, Integer> entry : intervals.entrySet())
         {
             if (entry.getKey().contains(CF_STANDARDLOWiINTERVAL))
-                assertTrue(entry.getValue() >= cfs.metadata().params.minIndexInterval);
+                assertTrue(entry.getValue() >= cfs.metadata.getMinIndexInterval());
         }
     }
 
     @Test
     public void testCancelIndex() throws Exception
     {
-        testCancelIndexHelper((cfs) -> CompactionManager.instance.stopCompaction("INDEX_SUMMARY"));
+        testCancelIndexHelper(new CancelFunction()
+        {
+            public void cancel(ColumnFamilyStore cfs)
+            {
+                CompactionManager.instance.stopCompaction("INDEX_SUMMARY");
+            }
+        });
     }
 
     @Test
     public void testCancelIndexInterrupt() throws Exception
     {
-        testCancelIndexHelper((cfs) -> CompactionManager.instance.interruptCompactionFor(Collections.singleton(cfs.metadata()), (sstable) -> true, false));
+        testCancelIndexHelper(new CancelFunction()
+        {
+            public void cancel(ColumnFamilyStore cfs)
+            {
+                CompactionManager.instance.interruptCompactionFor(Collections.singleton(cfs.metadata), false);
+            }
+        });
     }
 
-    public void testCancelIndexHelper(Consumer<ColumnFamilyStore> cancelFunction) throws Exception
+    private static interface CancelFunction
+    {
+        void cancel(ColumnFamilyStore cfs);
+    }
+
+    public void testCancelIndexHelper(CancelFunction cf) throws Exception
     {
         String ksname = KEYSPACE1;
         String cfname = CF_STANDARDLOWiINTERVAL; // index interval of 8, no key caching
         Keyspace keyspace = Keyspace.open(ksname);
         final ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
-        cfs.disableAutoCompaction();
-        final int numSSTables = 8;
+        final int numSSTables = 4;
+        final int numTries = 4;
         int numRows = 256;
         createSSTables(ksname, cfname, numSSTables, numRows);
 
-        List<SSTableReader> allSSTables = new ArrayList<>(cfs.getLiveSSTables());
-        List<SSTableReader> sstables = allSSTables.subList(0, 4);
-        List<SSTableReader> compacting = allSSTables.subList(4, 8);
-
+        final List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
             sstable.overrideReadMeter(new RestorableMeter(100.0, 100.0));
 
@@ -640,79 +639,62 @@ public class IndexSummaryManagerTest
         final AtomicReference<CompactionInterruptedException> exception = new AtomicReference<>();
         // barrier to control when redistribution runs
         final CountDownLatch barrier = new CountDownLatch(1);
-        CompactionInfo.Holder ongoingCompaction = new CompactionInfo.Holder()
-        {
-            public CompactionInfo getCompactionInfo()
-            {
-                return new CompactionInfo(cfs.metadata(), OperationType.UNKNOWN, 0, 0, UUID.randomUUID(), compacting);
-            }
-        };
-        try (LifecycleTransaction ignored = cfs.getTracker().tryModify(compacting, OperationType.UNKNOWN))
-        {
-            CompactionManager.instance.active.beginCompaction(ongoingCompaction);
 
-            Thread t = NamedThreadFactory.createThread(new Runnable()
+        Thread t = new Thread(new Runnable()
+        {
+            public void run()
             {
-                public void run()
+                try
                 {
-                    try
+                    // Don't leave enough space for even the minimal index summaries
+                    try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
                     {
-                        // Don't leave enough space for even the minimal index summaries
-                        try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.UNKNOWN))
-                        {
-                            IndexSummaryManager.redistributeSummaries(new ObservableRedistribution(of(cfs.metadata.id, txn),
-                                                                                                   0,
-                                                                                                   singleSummaryOffHeapSpace,
-                                                                                                   barrier));
-                        }
-                    }
-                    catch (CompactionInterruptedException ex)
-                    {
-                        exception.set(ex);
-                    }
-                    catch (IOException ignored)
-                    {
+                        IndexSummaryManager.redistributeSummaries(new ObservableRedistribution(Collections.EMPTY_LIST,
+                                                                                               of(cfs.metadata.cfId, txn),
+                                                                                               singleSummaryOffHeapSpace,
+                                                                                               barrier));
                     }
                 }
-            });
-
-            t.start();
-            while (CompactionManager.instance.getActiveCompactions() < 2 && t.isAlive())
-                Thread.sleep(1);
-            // to ensure that the stop condition check in IndexSummaryRedistribution::redistributeSummaries
-            // is made *after* the halt request is made to the CompactionManager, don't allow the redistribution
-            // to proceed until stopCompaction has been called.
-            cancelFunction.accept(cfs);
-            // allows the redistribution to proceed
-            barrier.countDown();
-            t.join();
-        }
-        finally
-        {
-            CompactionManager.instance.active.finishCompaction(ongoingCompaction);
-        }
+                catch (CompactionInterruptedException ex)
+                {
+                    exception.set(ex);
+                }
+                catch (IOException ignored)
+                {
+                }
+            }
+        });
+        t.start();
+        while (CompactionManager.instance.getActiveCompactions() == 0 && t.isAlive())
+            Thread.yield();
+        // to ensure that the stop condition check in IndexSummaryRedistribution::redistributeSummaries
+        // is made *after* the halt request is made to the CompactionManager, don't allow the redistribution
+        // to proceed until stopCompaction has been called.
+        cf.cancel(cfs);
+        // allows the redistribution to proceed
+        barrier.countDown();
+        t.join();
 
         assertNotNull("Expected compaction interrupted exception", exception.get());
-        assertTrue("Expected no active compactions", CompactionManager.instance.active.getCompactions().isEmpty());
+        assertTrue("Expected no active compactions", CompactionMetrics.getCompactions().isEmpty());
 
-        Set<SSTableReader> beforeRedistributionSSTables = new HashSet<>(allSSTables);
-        Set<SSTableReader> afterCancelSSTables = new HashSet<>(cfs.getLiveSSTables());
+        Set<SSTableReader> beforeRedistributionSSTables = new HashSet<>(sstables);
+        Set<SSTableReader> afterCancelSSTables = new HashSet<>(cfs.getSSTables());
         Set<SSTableReader> disjoint = Sets.symmetricDifference(beforeRedistributionSSTables, afterCancelSSTables);
         assertTrue(String.format("Mismatched files before and after cancelling redistribution: %s",
                                  Joiner.on(",").join(disjoint)),
                    disjoint.isEmpty());
-        Util.assertOnDiskState(cfs, 8);
+
         validateData(cfs, numRows);
     }
 
     private static List<SSTableReader> redistributeSummaries(List<SSTableReader> compacting,
-                                                             Map<TableId, LifecycleTransaction> transactions,
+                                                             Map<UUID, LifecycleTransaction> transactions,
                                                              long memoryPoolBytes)
     throws IOException
     {
-        long nonRedistributingOffHeapSize = compacting.stream().mapToLong(SSTableReader::getIndexSummaryOffHeapSize).sum();
-        return IndexSummaryManager.redistributeSummaries(new IndexSummaryRedistribution(transactions,
-                                                                                        nonRedistributingOffHeapSize,
+        return IndexSummaryManager.redistributeSummaries(new IndexSummaryRedistribution(compacting,
+                                                                                        transactions,
                                                                                         memoryPoolBytes));
     }
 
@@ -720,12 +702,12 @@ public class IndexSummaryManagerTest
     {
         CountDownLatch barrier;
 
-        ObservableRedistribution(Map<TableId, LifecycleTransaction> transactions,
-                                 long nonRedistributingOffHeapSize,
+        ObservableRedistribution(List<SSTableReader> compacting,
+                                 Map<UUID, LifecycleTransaction> transactions,
                                  long memoryPoolBytes,
                                  CountDownLatch barrier)
         {
-            super(transactions, nonRedistributingOffHeapSize, memoryPoolBytes);
+            super(compacting, transactions, memoryPoolBytes);
             this.barrier = barrier;
         }
 

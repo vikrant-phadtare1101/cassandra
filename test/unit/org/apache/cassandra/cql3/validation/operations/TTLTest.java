@@ -9,51 +9,35 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import org.apache.cassandra.config.Config;
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.Attributes;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.db.BufferExpiringCell;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.ExpirationDateOverflowHandling;
+import org.apache.cassandra.db.ExpiringCell;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.rows.AbstractCell;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.utils.FBUtilities;
 
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 public class TTLTest extends CQLTester
 {
     public static String NEGATIVE_LOCAL_EXPIRATION_TEST_DIR = "test/data/negative-local-expiration-test/%s";
 
-    public static int MAX_TTL = Attributes.MAX_TTL;
+    public static int MAX_TTL = ExpiringCell.MAX_TTL;
 
     public static final String SIMPLE_NOCLUSTERING = "table1";
     public static final String SIMPLE_CLUSTERING = "table2";
     public static final String COMPLEX_NOCLUSTERING = "table3";
     public static final String COMPLEX_CLUSTERING = "table4";
-    private Config.CorruptedTombstoneStrategy corruptTombstoneStrategy;
-    @Before
-    public void before()
-    {
-        corruptTombstoneStrategy = DatabaseDescriptor.getCorruptedTombstoneStrategy();
-    }
-
-    @After
-    public void after()
-    {
-        DatabaseDescriptor.setCorruptedTombstoneStrategy(corruptTombstoneStrategy);
-    }
 
     @Test
     public void testTTLPerRequestLimit() throws Throwable
     {
         createTable("CREATE TABLE %s (k int PRIMARY KEY, i int)");
         // insert with low TTL should not be denied
-        execute("INSERT INTO %s (k, i) VALUES (1, 1) USING TTL ?", 10);
+        execute("INSERT INTO %s (k, i) VALUES (1, 1) USING TTL ?", 10); // max ttl
 
         try
         {
@@ -77,7 +61,7 @@ public class TTLTest extends CQLTester
         execute("TRUNCATE %s");
 
         // insert with low TTL should not be denied
-        execute("UPDATE %s USING TTL ? SET i = 1 WHERE k = 2", 5);
+        execute("UPDATE %s USING TTL ? SET i = 1 WHERE k = 2", 5); // max ttl
 
         try
         {
@@ -100,6 +84,7 @@ public class TTLTest extends CQLTester
         }
     }
 
+
     @Test
     public void testTTLDefaultLimit() throws Throwable
     {
@@ -112,7 +97,7 @@ public class TTLTest extends CQLTester
         {
             assertTrue(e.getCause()
                         .getMessage()
-                        .contains("default_time_to_live must be greater than or equal to 0 (got -1)"));
+                        .contains("default_time_to_live cannot be smaller than 0"));
         }
         try
         {
@@ -134,32 +119,9 @@ public class TTLTest extends CQLTester
     }
 
     @Test
-    public void testCapWarnExpirationOverflowPolicy() throws Throwable
+    public void testRejectExpirationDateOverflowPolicy() throws Throwable
     {
-        // We don't test that the actual warn is logged here, only on dtest
-        testCapExpirationDateOverflowPolicy(ExpirationDateOverflowHandling.ExpirationDateOverflowPolicy.CAP);
-    }
-
-    @Test
-    public void testCapNoWarnExpirationOverflowPolicy() throws Throwable
-    {
-        testCapExpirationDateOverflowPolicy(ExpirationDateOverflowHandling.ExpirationDateOverflowPolicy.CAP_NOWARN);
-    }
-
-    @Test
-    public void testCapNoWarnExpirationOverflowPolicyDefaultTTL() throws Throwable
-    {
-        ExpirationDateOverflowHandling.policy = ExpirationDateOverflowHandling.policy.CAP_NOWARN;
-        createTable("CREATE TABLE %s (k int PRIMARY KEY, i int) WITH default_time_to_live=" + MAX_TTL);
-        execute("INSERT INTO %s (k, i) VALUES (1, 1)");
-        checkTTLIsCapped("i");
-        ExpirationDateOverflowHandling.policy = ExpirationDateOverflowHandling.policy.REJECT;
-    }
-
-    @Test
-    public void testRejectExpirationOverflowPolicy() throws Throwable
-    {
-        //ExpirationDateOverflowHandling.expirationDateOverflowPolicy = ExpirationDateOverflowHandling.expirationDateOverflowPolicy.REJECT;
+        Attributes.policy = Attributes.ExpirationDateOverflowPolicy.REJECT;
         createTable("CREATE TABLE %s (k int PRIMARY KEY, i int)");
         try
         {
@@ -181,50 +143,74 @@ public class TTLTest extends CQLTester
     }
 
     @Test
+    public void testCapExpirationDatePolicyDefaultTTL() throws Throwable
+    {
+        Attributes.policy = Attributes.ExpirationDateOverflowPolicy.CAP;
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, i int) WITH default_time_to_live=" + MAX_TTL);
+        execute("INSERT INTO %s (k, i) VALUES (1, 1)");
+        checkTTLIsCapped("i");
+        Attributes.policy = Attributes.ExpirationDateOverflowPolicy.REJECT;
+    }
+
+    @Test
+    public void testCapExpirationDatePolicyPerRequest() throws Throwable
+    {
+        // Test cap policy
+        Attributes.policy = Attributes.ExpirationDateOverflowPolicy.CAP;
+
+        // simple column, clustering, flush
+        baseCapExpirationDateOverflowTest(true, true, true);
+        // simple column, clustering, noflush
+        baseCapExpirationDateOverflowTest(true, true, false);
+        // simple column, noclustering, flush
+        baseCapExpirationDateOverflowTest(true, false, true);
+        // simple column, noclustering, noflush
+        baseCapExpirationDateOverflowTest(true, false, false);
+        // complex column, clustering, flush
+        baseCapExpirationDateOverflowTest(false, true, true);
+        // complex column, clustering, noflush
+        baseCapExpirationDateOverflowTest(false, true, false);
+        // complex column, noclustering, flush
+        baseCapExpirationDateOverflowTest(false, false, true);
+        // complex column, noclustering, noflush
+        baseCapExpirationDateOverflowTest(false, false, false);
+        // complex column, noclustering, flush
+        baseCapExpirationDateOverflowTest(false, false, false);
+
+        // Return to previous policy
+        Attributes.policy = Attributes.ExpirationDateOverflowPolicy.REJECT;
+    }
+
+    @Test
     public void testRecoverOverflowedExpirationWithScrub() throws Throwable
     {
-        // this tests writes corrupt tombstones on purpose, disable the strategy:
-        DatabaseDescriptor.setCorruptedTombstoneStrategy(Config.CorruptedTombstoneStrategy.disabled);
         baseTestRecoverOverflowedExpiration(false, false);
         baseTestRecoverOverflowedExpiration(true, false);
         baseTestRecoverOverflowedExpiration(true, true);
-        // we reset the corrupted ts strategy after each test in @After above
     }
 
-    public void testCapExpirationDateOverflowPolicy(ExpirationDateOverflowHandling.ExpirationDateOverflowPolicy policy) throws Throwable
-    {
-        ExpirationDateOverflowHandling.policy = policy;
-
-        // simple column, clustering, flush
-        testCapExpirationDateOverflowPolicy(true, true, true);
-        // simple column, clustering, noflush
-        testCapExpirationDateOverflowPolicy(true, true, false);
-        // simple column, noclustering, flush
-        testCapExpirationDateOverflowPolicy(true, false, true);
-        // simple column, noclustering, noflush
-        testCapExpirationDateOverflowPolicy(true, false, false);
-        // complex column, clustering, flush
-        testCapExpirationDateOverflowPolicy(false, true, true);
-        // complex column, clustering, noflush
-        testCapExpirationDateOverflowPolicy(false, true, false);
-        // complex column, noclustering, flush
-        testCapExpirationDateOverflowPolicy(false, false, true);
-        // complex column, noclustering, noflush
-        testCapExpirationDateOverflowPolicy(false, false, false);
-
-        // Return to previous policy
-        ExpirationDateOverflowHandling.policy = ExpirationDateOverflowHandling.ExpirationDateOverflowPolicy.REJECT;
-    }
-
-    public void testCapExpirationDateOverflowPolicy(boolean simple, boolean clustering, boolean flush) throws Throwable
+    public void baseCapExpirationDateOverflowTest(boolean simple, boolean clustering, boolean flush) throws Throwable
     {
         // Create Table
-        createTable(simple, clustering);
+        if (simple)
+        {
+            if (clustering)
+                createTable("create table %s (k int, a int, b int, primary key(k, a))");
+            else
+                createTable("create table %s (k int primary key, a int, b int)");
+        }
+        else
+        {
+            if (clustering)
+                createTable("create table %s (k int, a int, b set<text>, primary key(k, a))");
+            else
+                createTable("create table %s (k int primary key, a int, b set<text>)");
+        }
 
         // Insert data with INSERT and UPDATE
         if (simple)
         {
-            execute("INSERT INTO %s (k, a) VALUES (?, ?) USING TTL " + MAX_TTL, 2, 2);
+            execute("INSERT INTO %s (k, a, b) VALUES (?, ?, ?) USING TTL " + MAX_TTL, 2, 2, 2);
             if (clustering)
                 execute("UPDATE %s USING TTL " + MAX_TTL + " SET b = 1 WHERE k = 1 AND a = 1;");
             else
@@ -270,6 +256,108 @@ public class TTLTest extends CQLTester
         testRecoverOverflowedExpirationWithScrub(false, false, runScrub, reinsertOverflowedTTL);
     }
 
+    private void verifyData(boolean simple) throws Throwable
+    {
+        if (simple)
+        {
+            assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, 2));
+        }
+        else
+        {
+            assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
+        }
+        // Cannot retrieve TTL from collections
+        if (simple)
+            checkTTLIsCapped("b");
+    }
+
+    /**
+     * Verify that the computed TTL is approximately equal to the maximum allowed ttl given the
+     * {@link ExpiringCell#getLocalDeletionTime()} field limitation (CASSANDRA-14092)
+     */
+    private void checkTTLIsCapped(String field) throws Throwable
+    {
+
+        // TTL is computed dynamically from row expiration time, so if it is
+        // equal or higher to the minimum max TTL we compute before the query
+        // we are fine.
+        int minMaxTTL = computeMaxTTL();
+        UntypedResultSet execute = execute("SELECT ttl(" + field + ") FROM %s");
+        for (UntypedResultSet.Row row : execute)
+        {
+            int ttl = row.getInt("ttl(" + field + ")");
+            assertTrue(ttl >= minMaxTTL);
+        }
+    }
+
+    /**
+     * The max TTL is computed such that the TTL summed with the current time is equal to the maximum
+     * allowed expiration time {@link BufferExpiringCell#getLocalDeletionTime()} (2038-01-19T03:14:06+00:00)
+     */
+    private int computeMaxTTL()
+    {
+        int nowInSecs = (int) (System.currentTimeMillis() / 1000);
+        return BufferExpiringCell.MAX_DELETION_TIME - nowInSecs;
+    }
+
+    public void testRecoverOverflowedExpirationWithScrub(boolean simple, boolean clustering, boolean runScrub, boolean reinsertOverflowedTTL) throws Throwable
+    {
+        if (reinsertOverflowedTTL)
+        {
+            assert runScrub;
+        }
+
+        createTable(simple, clustering);
+
+        Keyspace keyspace = Keyspace.open(KEYSPACE);
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(currentTable());
+
+        assertEquals(0, cfs.getSSTables().size());
+
+        copySSTablesToTableDir(currentTable(), simple, clustering);
+
+        cfs.loadNewSSTables();
+
+        if (runScrub)
+        {
+            cfs.scrub(true, false, false, reinsertOverflowedTTL, 1);
+        }
+
+        if (reinsertOverflowedTTL)
+        {
+            if (simple)
+                assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, 2));
+            else
+                assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
+
+            cfs.forceMajorCompaction();
+
+            if (simple)
+                assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, 2));
+            else
+                assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
+        }
+        else
+        {
+            assertEmpty(execute("SELECT * from %s"));
+        }
+    }
+
+    private void copySSTablesToTableDir(String table, boolean simple, boolean clustering) throws IOException
+    {
+        File destDir = Keyspace.open(keyspace()).getColumnFamilyStore(table).directories.getCFDirectories().iterator().next();
+        File sourceDir = getTableDir(table, simple, clustering);
+        for (File file : sourceDir.listFiles())
+        {
+            copyFile(file, destDir);
+        }
+    }
+
+    private static File getTableDir(String table, boolean simple, boolean clustering)
+    {
+        return new File(String.format(NEGATIVE_LOCAL_EXPIRATION_TEST_DIR, getTableName(simple, clustering)));
+    }
+
     private void createTable(boolean simple, boolean clustering)
     {
         if (simple)
@@ -288,104 +376,7 @@ public class TTLTest extends CQLTester
         }
     }
 
-    private void verifyData(boolean simple) throws Throwable
-    {
-        if (simple)
-        {
-            assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, null));
-        }
-        else
-        {
-            assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
-        }
-        // Cannot retrieve TTL from collections
-        if (simple)
-            checkTTLIsCapped("b");
-    }
-
-    /**
-     * Verify that the computed TTL is equal to the maximum allowed ttl given the
-     * {@link AbstractCell#localDeletionTime()} field limitation (CASSANDRA-14092)
-     */
-    private void checkTTLIsCapped(String field) throws Throwable
-    {
-
-        // TTL is computed dynamically from row expiration time, so if it is
-        // equal or higher to the minimum max TTL we compute before the query
-        // we are fine.
-        int minMaxTTL = computeMaxTTL();
-        UntypedResultSet execute = execute("SELECT ttl(" + field + ") FROM %s WHERE k = 1");
-        for (UntypedResultSet.Row row : execute)
-        {
-            int ttl = row.getInt("ttl(" + field + ")");
-            assertTrue(ttl >= minMaxTTL);
-        }
-    }
-
-    /**
-     * The max TTL is computed such that the TTL summed with the current time is equal to the maximum
-     * allowed expiration time {@link org.apache.cassandra.db.rows.Cell#MAX_DELETION_TIME} (2038-01-19T03:14:06+00:00)
-     */
-    private int computeMaxTTL()
-    {
-        int nowInSecs = (int) (System.currentTimeMillis() / 1000);
-        return AbstractCell.MAX_DELETION_TIME - nowInSecs;
-    }
-
-    public void testRecoverOverflowedExpirationWithScrub(boolean simple, boolean clustering, boolean runScrub, boolean reinsertOverflowedTTL) throws Throwable
-    {
-        if (reinsertOverflowedTTL)
-        {
-            assert runScrub;
-        }
-
-        createTable(simple, clustering);
-
-        Keyspace keyspace = Keyspace.open(KEYSPACE);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(currentTable());
-
-        assertEquals(0, cfs.getLiveSSTables().size());
-
-        copySSTablesToTableDir(currentTable(), simple, clustering);
-
-        cfs.loadNewSSTables();
-
-        if (runScrub)
-        {
-            cfs.scrub(true, false, true, reinsertOverflowedTTL, 1);
-        }
-
-        if (reinsertOverflowedTTL)
-        {
-            if (simple)
-                assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, null));
-            else
-                assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
-
-            cfs.forceMajorCompaction();
-
-            if (simple)
-                assertRows(execute("SELECT * from %s"), row(1, 1, 1), row(2, 2, null));
-            else
-                assertRows(execute("SELECT * from %s"), row(1, 1, set("v11", "v12", "v13", "v14")), row(2, 2, set("v21", "v22", "v23", "v24")));
-        }
-        else
-        {
-            assertEmpty(execute("SELECT * from %s"));
-        }
-    }
-
-    private void copySSTablesToTableDir(String table, boolean simple, boolean clustering) throws IOException
-    {
-        File destDir = Keyspace.open(keyspace()).getColumnFamilyStore(table).getDirectories().getCFDirectories().iterator().next();
-        File sourceDir = getTableDir(table, simple, clustering);
-        for (File file : sourceDir.listFiles())
-        {
-            copyFile(file, destDir);
-        }
-    }
-
-    private static File getTableDir(String table, boolean simple, boolean clustering)
+    private static File getTableDir(boolean simple, boolean clustering)
     {
         return new File(String.format(NEGATIVE_LOCAL_EXPIRATION_TEST_DIR, getTableName(simple, clustering)));
     }

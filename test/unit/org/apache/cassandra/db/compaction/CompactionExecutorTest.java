@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.db.compaction;
 
+import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
@@ -25,7 +26,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
-import org.apache.cassandra.config.DatabaseDescriptor;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -54,7 +54,6 @@ public class CompactionExecutorTest
     @Before
     public void setup()
     {
-        DatabaseDescriptor.daemonInitialization();
         executor = new TestTaskExecutor();
     }
 
@@ -69,9 +68,17 @@ public class CompactionExecutorTest
     public void testFailedRunnable() throws Exception
     {
         testTaskThrowable = null;
+
         Future<?> tt = executor.submitIfRunning(
-            () -> { assert false : "testFailedRunnable"; }
-            , "compactionExecutorTest");
+            new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    assert false : "testFailedRunnable";
+                }
+            }, "compactionExecutorTest"
+        );
 
         while (!tt.isDone())
             Thread.sleep(10);
@@ -84,7 +91,15 @@ public class CompactionExecutorTest
     {
         testTaskThrowable = null;
         Future<?> tt = executor.submitIfRunning(
-            () -> { assert false : "testFailedCallable"; return 1; }
+            new Callable<Integer>()
+            {
+                @Override
+                public Integer call() throws Exception
+                {
+                    assert false : "testFailedCallable";
+                    return 1;
+                }
+            }
             , "compactionExecutorTest");
 
         while (!tt.isDone())
@@ -98,7 +113,14 @@ public class CompactionExecutorTest
     {
         testTaskThrowable = null;
         Future<?> tt = executor.submitIfRunning(
-        () -> { throw new RuntimeException("testExceptionRunnable"); }
+        new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                throw new RuntimeException("testExceptionRunnable");
+            }
+        }
         , "compactionExecutorTest");
 
         while (!tt.isDone())

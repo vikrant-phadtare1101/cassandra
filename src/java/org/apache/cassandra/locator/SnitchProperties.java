@@ -30,7 +30,7 @@ public class SnitchProperties
     private static final Logger logger = LoggerFactory.getLogger(SnitchProperties.class);
     public static final String RACKDC_PROPERTY_FILENAME = "cassandra-rackdc.properties";
 
-    private final Properties properties;
+    private Properties properties;
 
     public SnitchProperties()
     {
@@ -42,9 +42,9 @@ public class SnitchProperties
             URL url;
             if (configURL == null)
                 url = SnitchProperties.class.getClassLoader().getResource(RACKDC_PROPERTY_FILENAME);
-            else
+            else 
             	url = new URL(configURL);
-
+            
             stream = url.openStream(); // catch block handles potential NPE
             properties.load(stream);
         }

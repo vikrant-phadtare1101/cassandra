@@ -18,6 +18,7 @@
 package org.apache.cassandra.db;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.*;
 
@@ -25,13 +26,10 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.dht.ByteOrderedPartitioner.BytesToken;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.schema.SchemaKeyspace;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.CassandraVersion;
@@ -44,9 +42,9 @@ public class SystemKeyspaceTest
     @BeforeClass
     public static void prepSnapshotTracker()
     {
-        DatabaseDescriptor.daemonInitialization();
+        DatabaseDescriptor.setDaemonInitialized();
 
-        if (FBUtilities.isWindows)
+        if (FBUtilities.isWindows())
             WindowsFailedSnapshotTracker.deleteOldSnapshots();
     }
 
@@ -54,7 +52,7 @@ public class SystemKeyspaceTest
     public void testLocalTokens()
     {
         // Remove all existing tokens
-        Collection<Token> current = SystemKeyspace.loadTokens().asMap().get(FBUtilities.getLocalAddressAndPort());
+        Collection<Token> current = SystemKeyspace.loadTokens().asMap().get(FBUtilities.getLocalAddress());
         if (current != null && !current.isEmpty())
             SystemKeyspace.updateTokens(current);
 
@@ -75,7 +73,7 @@ public class SystemKeyspaceTest
     public void testNonLocalToken() throws UnknownHostException
     {
         BytesToken token = new BytesToken(ByteBufferUtil.bytes("token3"));
-        InetAddressAndPort address = InetAddressAndPort.getByName("127.0.0.2");
+        InetAddress address = InetAddress.getByName("127.0.0.2");
         SystemKeyspace.updateTokens(address, Collections.<Token>singletonList(token));
         assert SystemKeyspace.loadTokens().get(address).contains(token);
         SystemKeyspace.removeEndpoint(address);
@@ -92,10 +90,10 @@ public class SystemKeyspaceTest
 
     private void assertDeletedOrDeferred(int expectedCount)
     {
-        if (FBUtilities.isWindows)
+        if (FBUtilities.isWindows())
             assertEquals(expectedCount, getDeferredDeletionCount());
         else
-            assertTrue(getSystemSnapshotFiles(SchemaConstants.SYSTEM_KEYSPACE_NAME).isEmpty());
+            assertTrue(getSystemSnapshotFiles().isEmpty());
     }
 
     private int getDeferredDeletionCount()
@@ -116,9 +114,9 @@ public class SystemKeyspaceTest
     public void snapshotSystemKeyspaceIfUpgrading() throws IOException
     {
         // First, check that in the absence of any previous installed version, we don't create snapshots
-        for (ColumnFamilyStore cfs : Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStores())
+        for (ColumnFamilyStore cfs : Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStores())
             cfs.clearUnsafe();
-        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
+        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
 
         int baseline = getDeferredDeletionCount();
 
@@ -127,20 +125,16 @@ public class SystemKeyspaceTest
 
         // now setup system.local as if we're upgrading from a previous version
         setupReleaseVersion(getOlderVersionString());
-        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
+        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
         assertDeletedOrDeferred(baseline);
 
         // Compare versions again & verify that snapshots were created for all tables in the system ks
         SystemKeyspace.snapshotOnVersionChange();
-
-        Set<String> snapshottedSystemTables = getSystemSnapshotFiles(SchemaConstants.SYSTEM_KEYSPACE_NAME);
-        SystemKeyspace.metadata().tables.forEach(t -> assertTrue(snapshottedSystemTables.contains(t.name)));
-        Set<String> snapshottedSchemaTables = getSystemSnapshotFiles(SchemaConstants.SCHEMA_KEYSPACE_NAME);
-        SchemaKeyspace.metadata().tables.forEach(t -> assertTrue(snapshottedSchemaTables.contains(t.name)));
+        assertEquals(SystemKeyspace.definition().cfMetaData().size(), getSystemSnapshotFiles().size());
 
         // clear out the snapshots & set the previous recorded version equal to the latest, we shouldn't
         // see any new snapshots created this time.
-        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
+        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
         setupReleaseVersion(FBUtilities.getReleaseVersionString());
 
         SystemKeyspace.snapshotOnVersionChange();
@@ -150,7 +144,7 @@ public class SystemKeyspaceTest
         // 10 files expected.
         assertDeletedOrDeferred(baseline + 10);
 
-        Keyspace.clearSnapshot(null, SchemaConstants.SYSTEM_KEYSPACE_NAME);
+        Keyspace.clearSnapshot(null, SystemKeyspace.NAME);
     }
 
     private String getOlderVersionString()
@@ -161,13 +155,13 @@ public class SystemKeyspaceTest
         return (String.format("%s.%s.%s", semver.major - 1, semver.minor, semver.patch));
     }
 
-    private Set<String> getSystemSnapshotFiles(String keyspace)
+    private Set<String> getSystemSnapshotFiles()
     {
         Set<String> snapshottedTableNames = new HashSet<>();
-        for (ColumnFamilyStore cfs : Keyspace.open(keyspace).getColumnFamilyStores())
+        for (ColumnFamilyStore cfs : Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStores())
         {
             if (!cfs.getSnapshotDetails().isEmpty())
-                snapshottedTableNames.add(cfs.getTableName());
+                snapshottedTableNames.add(cfs.getColumnFamilyName());
         }
         return snapshottedTableNames;
     }

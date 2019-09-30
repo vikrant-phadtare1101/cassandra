@@ -20,10 +20,9 @@ package org.apache.cassandra.distributed.impl;
 
 import com.google.common.base.Predicate;
 import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.io.util.Memory;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.SigarLibrary;
 
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -39,7 +38,9 @@ public class InstanceClassLoader extends URLClassLoader
                     Pair.class,
                     InetAddressAndPort.class,
                     ParameterizedClass.class,
-                    IInvokableInstance.class
+                    SigarLibrary.class,
+                    IInvokableInstance.class,
+                    NetworkTopology.class
             })
             .map(Class::getName)
             .collect(Collectors.toSet());

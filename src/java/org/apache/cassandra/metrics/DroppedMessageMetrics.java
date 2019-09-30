@@ -18,10 +18,7 @@
 package org.apache.cassandra.metrics;
 
 import com.codahale.metrics.Meter;
-import com.codahale.metrics.Timer;
-
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 
 import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
@@ -33,21 +30,9 @@ public class DroppedMessageMetrics
     /** Number of dropped messages */
     public final Meter dropped;
 
-    /** The dropped latency within node */
-    public final Timer internalDroppedLatency;
-
-    /** The cross node dropped latency */
-    public final Timer crossNodeDroppedLatency;
-
-    public DroppedMessageMetrics(Verb verb)
+    public DroppedMessageMetrics(MessagingService.Verb verb)
     {
-        this(new DefaultNameFactory("DroppedMessage", verb.toString()));
-    }
-
-    public DroppedMessageMetrics(MetricNameFactory factory)
-    {
+        MetricNameFactory factory = new DefaultNameFactory("DroppedMessage", verb.toString());
         dropped = Metrics.meter(factory.createMetricName("Dropped"));
-        internalDroppedLatency = Metrics.timer(factory.createMetricName("InternalDroppedLatency"));
-        crossNodeDroppedLatency = Metrics.timer(factory.createMetricName("CrossNodeDroppedLatency"));
     }
 }

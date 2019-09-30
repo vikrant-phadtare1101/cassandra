@@ -39,7 +39,13 @@ public class InfiniteLoopExecutor
     public InfiniteLoopExecutor(String name, InterruptibleRunnable runnable)
     {
         this.runnable = runnable;
-        this.thread = new Thread(this::loop, name);
+        this.thread = new Thread(new Runnable()
+        {
+            public void run()
+            {
+                loop();
+            }
+        }, name);
         this.thread.setDaemon(true);
     }
 

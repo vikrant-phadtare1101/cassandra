@@ -17,9 +17,8 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Command;
+import io.airlift.command.Command;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 import org.apache.cassandra.utils.JVMStabilityInspector;
@@ -32,12 +31,12 @@ public class StopDaemon extends NodeToolCmd
     {
         try
         {
-            DatabaseDescriptor.toolInitialization();
             probe.stopCassandraDaemon();
         } catch (Exception e)
         {
             JVMStabilityInspector.inspectThrowable(e);
             // ignored
         }
+        System.out.println("Cassandra has shutdown.");
     }
 }

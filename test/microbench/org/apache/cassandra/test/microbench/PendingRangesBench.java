@@ -21,22 +21,18 @@
 package org.apache.cassandra.test.microbench;
 
 import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.PendingRangeMaps;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.ReplicaUtils;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -54,7 +50,7 @@ public class PendingRangesBench
     PendingRangeMaps pendingRangeMaps;
     int maxToken = 256 * 100;
 
-    Multimap<Range<Token>, Replica> oldPendingRanges;
+    Multimap<Range<Token>, InetAddress> oldPendingRanges;
 
     private Range<Token> genRange(String left, String right)
     {
@@ -67,17 +63,15 @@ public class PendingRangesBench
         pendingRangeMaps = new PendingRangeMaps();
         oldPendingRanges = HashMultimap.create();
 
-        List<InetAddressAndPort> endpoints = Lists.newArrayList(InetAddressAndPort.getByName("127.0.0.1"),
-                                                                InetAddressAndPort.getByName("127.0.0.2"));
+        InetAddress[] addresses = {InetAddress.getByName("127.0.0.1"), InetAddress.getByName("127.0.0.2")};
 
         for (int i = 0; i < maxToken; i++)
         {
             for (int j = 0; j < ThreadLocalRandom.current().nextInt(2); j ++)
             {
                 Range<Token> range = genRange(Integer.toString(i * 10 + 5), Integer.toString(i * 10 + 15));
-                Replica replica = Replica.fullReplica(endpoints.get(j), range);
-                pendingRangeMaps.addPendingRange(range, replica);
-                oldPendingRanges.put(range, replica);
+                pendingRangeMaps.addPendingRange(range, addresses[j]);
+                oldPendingRanges.put(range, addresses[j]);
             }
         }
 
@@ -85,9 +79,8 @@ public class PendingRangesBench
         for (int j = 0; j < ThreadLocalRandom.current().nextInt(2); j ++)
         {
             Range<Token> range = genRange(Integer.toString(maxToken * 10 + 5), Integer.toString(5));
-            Replica replica = Replica.fullReplica(endpoints.get(j), range);
-            pendingRangeMaps.addPendingRange(range, replica);
-            oldPendingRanges.put(range, replica);
+            pendingRangeMaps.addPendingRange(range, addresses[j]);
+            oldPendingRanges.put(range, addresses[j]);
         }
     }
 
@@ -104,13 +97,13 @@ public class PendingRangesBench
     {
         int randomToken = ThreadLocalRandom.current().nextInt(maxToken * 10 + 5);
         Token searchToken = new RandomPartitioner.BigIntegerToken(Integer.toString(randomToken));
-        Set<Replica> replicas = new HashSet<>();
-        for (Map.Entry<Range<Token>, Collection<Replica>> entry : oldPendingRanges.asMap().entrySet())
+        Set<InetAddress> endpoints = new HashSet<>();
+        for (Map.Entry<Range<Token>, Collection<InetAddress>> entry : oldPendingRanges.asMap().entrySet())
         {
             if (entry.getKey().contains(searchToken))
-                replicas.addAll(entry.getValue());
+                endpoints.addAll(entry.getValue());
         }
-        bh.consume(replicas);
+        bh.consume(endpoints);
     }
 
 }

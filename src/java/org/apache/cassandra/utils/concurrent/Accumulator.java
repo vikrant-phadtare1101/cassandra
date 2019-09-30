@@ -18,8 +18,6 @@
 */
 package org.apache.cassandra.utils.concurrent;
 
-import java.util.AbstractCollection;
-import java.util.Collection;
 import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
@@ -29,7 +27,7 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
  *
  * @param <E>
  */
-public class Accumulator<E>
+public class Accumulator<E> implements Iterable<E>
 {
     private volatile int nextIndex;
     private volatile int presentCount;
@@ -102,12 +100,7 @@ public class Accumulator<E>
         return presentCount;
     }
 
-    public int capacity()
-    {
-        return values.length;
-    }
-
-    private Iterator<E> iterator(int count)
+    public Iterator<E> iterator()
     {
         return new Iterator<E>()
         {
@@ -115,7 +108,7 @@ public class Accumulator<E>
 
             public boolean hasNext()
             {
-                return p < count;
+                return p < presentCount;
             }
 
             public E next()
@@ -136,24 +129,5 @@ public class Accumulator<E>
         if (i >= presentCount)
             throw new IndexOutOfBoundsException();
         return (E) values[i];
-    }
-
-    public Collection<E> snapshot()
-    {
-        int count = presentCount;
-        return new AbstractCollection<E>()
-        {
-            @Override
-            public Iterator<E> iterator()
-            {
-                return Accumulator.this.iterator(count);
-            }
-
-            @Override
-            public int size()
-            {
-                return count;
-            }
-        };
     }
 }

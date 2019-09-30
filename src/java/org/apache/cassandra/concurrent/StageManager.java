@@ -17,9 +17,7 @@
  */
 package org.apache.cassandra.concurrent;
 
-import java.util.Collections;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.concurrent.*;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -27,12 +25,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.config.DatabaseDescriptor.*;
-import static org.apache.cassandra.utils.ExecutorUtils.*;
 
 
 /**
@@ -52,7 +48,6 @@ public class StageManager
     {
         stages.put(Stage.MUTATION, multiThreadedLowSignalStage(Stage.MUTATION, getConcurrentWriters()));
         stages.put(Stage.COUNTER_MUTATION, multiThreadedLowSignalStage(Stage.COUNTER_MUTATION, getConcurrentCounterWriters()));
-        stages.put(Stage.VIEW_MUTATION, multiThreadedLowSignalStage(Stage.VIEW_MUTATION, getConcurrentViewWriters()));
         stages.put(Stage.READ, multiThreadedLowSignalStage(Stage.READ, getConcurrentReaders()));
         stages.put(Stage.REQUEST_RESPONSE, multiThreadedLowSignalStage(Stage.REQUEST_RESPONSE, FBUtilities.getAvailableProcessors()));
         stages.put(Stage.INTERNAL_RESPONSE, multiThreadedStage(Stage.INTERNAL_RESPONSE, FBUtilities.getAvailableProcessors()));
@@ -61,20 +56,26 @@ public class StageManager
         stages.put(Stage.ANTI_ENTROPY, new JMXEnabledThreadPoolExecutor(Stage.ANTI_ENTROPY));
         stages.put(Stage.MIGRATION, new JMXEnabledThreadPoolExecutor(Stage.MIGRATION));
         stages.put(Stage.MISC, new JMXEnabledThreadPoolExecutor(Stage.MISC));
+        stages.put(Stage.READ_REPAIR, multiThreadedStage(Stage.READ_REPAIR, FBUtilities.getAvailableProcessors()));
         stages.put(Stage.TRACING, tracingExecutor());
-        stages.put(Stage.IMMEDIATE, ImmediateExecutor.INSTANCE);
     }
 
-    private static LocalAwareExecutorService tracingExecutor()
+    private static ExecuteOnlyExecutor tracingExecutor()
     {
-        RejectedExecutionHandler reh = (r, executor) -> MessagingService.instance().metrics.recordSelfDroppedMessage(Verb._TRACE);
-        return new TracingExecutor(1,
-                                   1,
-                                   KEEPALIVE,
-                                   TimeUnit.SECONDS,
-                                   new ArrayBlockingQueue<>(1000),
-                                   new NamedThreadFactory(Stage.TRACING.getJmxName()),
-                                   reh);
+        RejectedExecutionHandler reh = new RejectedExecutionHandler()
+        {
+            public void rejectedExecution(Runnable r, ThreadPoolExecutor executor)
+            {
+                MessagingService.instance().incrementDroppedMessages(MessagingService.Verb._TRACE);
+            }
+        };
+        return new ExecuteOnlyExecutor(1,
+                                       1,
+                                       KEEPALIVE,
+                                       TimeUnit.SECONDS,
+                                       new ArrayBlockingQueue<Runnable>(1000),
+                                       new NamedThreadFactory(Stage.TRACING.getJmxName()),
+                                       reh);
     }
 
     private static JMXEnabledThreadPoolExecutor multiThreadedStage(Stage stage, int numThreads)
@@ -112,6 +113,14 @@ public class StageManager
         }
     }
 
+    public final static Runnable NO_OP_TASK = new Runnable()
+    {
+        public void run()
+        {
+
+        }
+    };
+
     @VisibleForTesting
     public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {
@@ -119,11 +128,14 @@ public class StageManager
     }
 
     /**
-     * The executor used for tracing.
+     * A TPE that disallows submit so that we don't need to worry about unwrapping exceptions on the
+     * tracing stage.  See CASSANDRA-1123 for background. We allow submitting NO_OP tasks, to allow
+     * a final wait on pending trace events since typically the tracing executor is single-threaded, see
+     * CASSANDRA-11465.
      */
-    private static class TracingExecutor extends ThreadPoolExecutor implements LocalAwareExecutorService
+    private static class ExecuteOnlyExecutor extends ThreadPoolExecutor implements LocalAwareExecutorService
     {
-        public TracingExecutor(int corePoolSize, int maximumPoolSize, long keepAliveTime, TimeUnit unit, BlockingQueue<Runnable> workQueue, ThreadFactory threadFactory, RejectedExecutionHandler handler)
+        public ExecuteOnlyExecutor(int corePoolSize, int maximumPoolSize, long keepAliveTime, TimeUnit unit, BlockingQueue<Runnable> workQueue, ThreadFactory threadFactory, RejectedExecutionHandler handler)
         {
             super(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue, threadFactory, handler);
         }
@@ -140,16 +152,26 @@ public class StageManager
         }
 
         @Override
-        public int getActiveTaskCount()
+        public Future<?> submit(Runnable task)
         {
-            return getActiveCount();
+            if (task.equals(NO_OP_TASK))
+            {
+                assert getMaximumPoolSize() == 1 : "Cannot wait for pending tasks if running more than 1 thread";
+                return super.submit(task);
+            }
+            throw new UnsupportedOperationException();
         }
 
         @Override
-        public int getPendingTaskCount()
+        public <T> Future<T> submit(Runnable task, T result)
         {
-            return getQueue().size();
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> Future<T> submit(Callable<T> task)
+        {
+            throw new UnsupportedOperationException();
         }
     }
-
 }

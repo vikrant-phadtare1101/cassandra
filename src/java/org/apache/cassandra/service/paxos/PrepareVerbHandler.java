@@ -19,22 +19,19 @@ package org.apache.cassandra.service.paxos;
  * under the License.
  * 
  */
+
+
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 
 public class PrepareVerbHandler implements IVerbHandler<Commit>
 {
-    public static PrepareVerbHandler instance = new PrepareVerbHandler();
-
-    public static PrepareResponse doPrepare(Commit toPrepare)
+    public void doVerb(MessageIn<Commit> message, int id)
     {
-        return PaxosState.prepare(toPrepare);
-    }
-
-    public void doVerb(Message<Commit> message)
-    {
-        Message<PrepareResponse> reply = message.responseWith(doPrepare(message.payload));
-        MessagingService.instance().send(reply, message.from());
+        PrepareResponse response = PaxosState.prepare(message.payload);
+        MessageOut<PrepareResponse> reply = new MessageOut<PrepareResponse>(MessagingService.Verb.REQUEST_RESPONSE, response, PrepareResponse.serializer);
+        MessagingService.instance().sendReply(reply, id, message.from);
     }
 }

@@ -20,32 +20,23 @@ package org.apache.cassandra.cql3;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.restrictions.Restriction;
 import org.apache.cassandra.cql3.statements.Bound;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.exceptions.UnrecognizedEntityException;
 
 import static org.apache.cassandra.cql3.statements.RequestValidations.invalidRequest;
 
-public abstract class Relation
-{
+public abstract class Relation {
+
     protected Operator relationType;
 
     public Operator operator()
     {
         return relationType;
     }
-
-    /**
-     * Returns the raw value for this relation, or null if this is an IN relation.
-     */
-    public abstract Term.Raw getValue();
-
-    /**
-     * Returns the list of raw IN values for this relation, or null if this is not an IN relation.
-     */
-    public abstract List<? extends Term.Raw> getInValues();
 
     /**
      * Checks if this relation apply to multiple columns.
@@ -107,15 +98,6 @@ public abstract class Relation
         return relationType == Operator.EQ;
     }
 
-    public final boolean isLIKE()
-    {
-        return relationType == Operator.LIKE_PREFIX
-                || relationType == Operator.LIKE_SUFFIX
-                || relationType == Operator.LIKE_CONTAINS
-                || relationType == Operator.LIKE_MATCHES
-                || relationType == Operator.LIKE;
-    }
-
     /**
      * Checks if the operator of this relation is a <code>Slice</code> (GT, GTE, LTE, LT).
      *
@@ -132,30 +114,24 @@ public abstract class Relation
     /**
      * Converts this <code>Relation</code> into a <code>Restriction</code>.
      *
-     * @param table the Column Family meta data
+     * @param cfm the Column Family meta data
      * @param boundNames the variables specification where to collect the bind variables
      * @return the <code>Restriction</code> corresponding to this <code>Relation</code>
      * @throws InvalidRequestException if this <code>Relation</code> is not valid
      */
-    public final Restriction toRestriction(TableMetadata table, VariableSpecifications boundNames)
+    public final Restriction toRestriction(CFMetaData cfm,
+                                           VariableSpecifications boundNames) throws InvalidRequestException
     {
         switch (relationType)
         {
-            case EQ: return newEQRestriction(table, boundNames);
-            case LT: return newSliceRestriction(table, boundNames, Bound.END, false);
-            case LTE: return newSliceRestriction(table, boundNames, Bound.END, true);
-            case GTE: return newSliceRestriction(table, boundNames, Bound.START, true);
-            case GT: return newSliceRestriction(table, boundNames, Bound.START, false);
-            case IN: return newINRestriction(table, boundNames);
-            case CONTAINS: return newContainsRestriction(table, boundNames, false);
-            case CONTAINS_KEY: return newContainsRestriction(table, boundNames, true);
-            case IS_NOT: return newIsNotRestriction(table, boundNames);
-            case LIKE_PREFIX:
-            case LIKE_SUFFIX:
-            case LIKE_CONTAINS:
-            case LIKE_MATCHES:
-            case LIKE:
-                return newLikeRestriction(table, boundNames, relationType);
+            case EQ: return newEQRestriction(cfm, boundNames);
+            case LT: return newSliceRestriction(cfm, boundNames, Bound.END, false);
+            case LTE: return newSliceRestriction(cfm, boundNames, Bound.END, true);
+            case GTE: return newSliceRestriction(cfm, boundNames, Bound.START, true);
+            case GT: return newSliceRestriction(cfm, boundNames, Bound.START, false);
+            case IN: return newINRestriction(cfm, boundNames);
+            case CONTAINS: return newContainsRestriction(cfm, boundNames, false);
+            case CONTAINS_KEY: return newContainsRestriction(cfm, boundNames, true);
             default: throw invalidRequest("Unsupported \"!=\" relation: %s", this);
         }
     }
@@ -163,52 +139,52 @@ public abstract class Relation
     /**
      * Creates a new EQ restriction instance.
      *
-     * @param table the table meta data
+     * @param cfm the Column Family meta data
      * @param boundNames the variables specification where to collect the bind variables
      * @return a new EQ restriction instance.
      * @throws InvalidRequestException if the relation cannot be converted into an EQ restriction.
      */
-    protected abstract Restriction newEQRestriction(TableMetadata table, VariableSpecifications boundNames);
+    protected abstract Restriction newEQRestriction(CFMetaData cfm,
+                                                    VariableSpecifications boundNames) throws InvalidRequestException;
 
     /**
      * Creates a new IN restriction instance.
      *
-     * @param table the table meta data
+     * @param cfm the Column Family meta data
      * @param boundNames the variables specification where to collect the bind variables
      * @return a new IN restriction instance
      * @throws InvalidRequestException if the relation cannot be converted into an IN restriction.
      */
-    protected abstract Restriction newINRestriction(TableMetadata table, VariableSpecifications boundNames);
+    protected abstract Restriction newINRestriction(CFMetaData cfm,
+                                                    VariableSpecifications boundNames) throws InvalidRequestException;
 
     /**
      * Creates a new Slice restriction instance.
      *
-     * @param table the table meta data
+     * @param cfm the Column Family meta data
      * @param boundNames the variables specification where to collect the bind variables
      * @param bound the slice bound
      * @param inclusive <code>true</code> if the bound is included.
      * @return a new slice restriction instance
      * @throws InvalidRequestException if the <code>Relation</code> is not valid
      */
-    protected abstract Restriction newSliceRestriction(TableMetadata table,
+    protected abstract Restriction newSliceRestriction(CFMetaData cfm,
                                                        VariableSpecifications boundNames,
                                                        Bound bound,
-                                                       boolean inclusive);
+                                                       boolean inclusive) throws InvalidRequestException;
 
     /**
      * Creates a new Contains restriction instance.
      *
-     * @param table the table meta data
+     * @param cfm the Column Family meta data
      * @param boundNames the variables specification where to collect the bind variables
      * @param isKey <code>true</code> if the restriction to create is a CONTAINS KEY
      * @return a new Contains <code>Restriction</code> instance
      * @throws InvalidRequestException if the <code>Relation</code> is not valid
      */
-    protected abstract Restriction newContainsRestriction(TableMetadata table, VariableSpecifications boundNames, boolean isKey);
-
-    protected abstract Restriction newIsNotRestriction(TableMetadata table, VariableSpecifications boundNames);
-
-    protected abstract Restriction newLikeRestriction(TableMetadata table, VariableSpecifications boundNames, Operator operator);
+    protected abstract Restriction newContainsRestriction(CFMetaData cfm,
+                                                          VariableSpecifications boundNames,
+                                                          boolean isKey) throws InvalidRequestException;
 
     /**
      * Converts the specified <code>Raw</code> into a <code>Term</code>.
@@ -223,7 +199,8 @@ public abstract class Relation
     protected abstract Term toTerm(List<? extends ColumnSpecification> receivers,
                                    Term.Raw raw,
                                    String keyspace,
-                                   VariableSpecifications boundNames);
+                                   VariableSpecifications boundNames)
+                                   throws InvalidRequestException;
 
     /**
      * Converts the specified <code>Raw</code> terms into a <code>Term</code>s.
@@ -238,12 +215,12 @@ public abstract class Relation
     protected final List<Term> toTerms(List<? extends ColumnSpecification> receivers,
                                        List<? extends Term.Raw> raws,
                                        String keyspace,
-                                       VariableSpecifications boundNames)
+                                       VariableSpecifications boundNames) throws InvalidRequestException
     {
         if (raws == null)
             return null;
 
-        List<Term> terms = new ArrayList<>(raws.size());
+        List<Term> terms = new ArrayList<>();
         for (int i = 0, m = raws.size(); i < m; i++)
             terms.add(toTerm(receivers, raws.get(i), keyspace, boundNames));
 
@@ -251,11 +228,22 @@ public abstract class Relation
     }
 
     /**
-     * Renames an identifier in this Relation, if applicable.
-     * @param from the old identifier
-     * @param to the new identifier
-     * @return this object, if the old identifier is not in the set of entities that this relation covers; otherwise
-     *         a new Relation with "from" replaced by "to" is returned.
+     * Converts the specified entity into a column definition.
+     *
+     * @param cfm the column family meta data
+     * @param entity the entity to convert
+     * @return the column definition corresponding to the specified entity
+     * @throws InvalidRequestException if the entity cannot be recognized
      */
-    public abstract Relation renameIdentifier(ColumnMetadata.Raw from, ColumnMetadata.Raw to);
+    protected final ColumnDefinition toColumnDefinition(CFMetaData cfm,
+                                                        ColumnIdentifier.Raw entity) throws InvalidRequestException
+    {
+        ColumnIdentifier identifier = entity.prepare(cfm);
+        ColumnDefinition def = cfm.getColumnDefinition(identifier);
+
+        if (def == null)
+            throw new UnrecognizedEntityException(identifier, this);
+
+        return def;
+    }
 }

@@ -37,8 +37,7 @@ public class StreamEventJMXNotifier extends NotificationBroadcasterSupport imple
     public void handleStreamEvent(StreamEvent event)
     {
         Notification notif = null;
-        switch (event.eventType)
-        {
+        switch (event.eventType) {
             case STREAM_PREPARED:
                 notif = new Notification(StreamEvent.SessionPreparedEvent.class.getCanonicalName(),
                                                 StreamManagerMBean.OBJECT_NAME,
@@ -61,9 +60,7 @@ public class StreamEventJMXNotifier extends NotificationBroadcasterSupport imple
                                              seq.getAndIncrement());
                     notif.setUserData(ProgressInfoCompositeData.toCompositeData(event.planId, progress));
                     progressLastSent = System.currentTimeMillis();
-                }
-                else
-                {
+                } else {
                     return;
                 }
                 break;

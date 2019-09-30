@@ -17,9 +17,9 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
-import io.airlift.airline.Option;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
+import io.airlift.command.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,33 +49,31 @@ public class Scrub extends NodeToolCmd
                    description = "Do not validate columns using column validator")
     private boolean noValidation = false;
 
-    @Option(title = "reinsert_overflowed_ttl",
-    name = {"-r", "--reinsert-overflowed-ttl"},
-    description = StandaloneScrubber.REINSERT_OVERFLOWED_TTL_OPTION_DESCRIPTION)
-    private boolean reinsertOverflowedTTL = false;
-
     @Option(title = "jobs",
             name = {"-j", "--jobs"},
             description = "Number of sstables to scrub simultanously, set to 0 to use all available compaction threads")
     private int jobs = 2;
 
+    @Option(title = "reinsert_overflowed_ttl",
+    name = {"-r", "--reinsert-overflowed-ttl"},
+    description = StandaloneScrubber.REINSERT_OVERFLOWED_TTL_OPTION_DESCRIPTION)
+    private boolean reinsertOverflowedTTL = false;
+
     @Override
     public void execute(NodeProbe probe)
     {
         List<String> keyspaces = parseOptionalKeyspace(args, probe);
-        String[] tableNames = parseOptionalTables(args);
+        String[] cfnames = parseOptionalColumnFamilies(args);
 
         for (String keyspace : keyspaces)
         {
             try
             {
-                probe.scrub(System.out, disableSnapshot, skipCorrupted, !noValidation, reinsertOverflowedTTL, jobs, keyspace, tableNames);
-            }
-            catch (IllegalArgumentException e)
+                probe.scrub(System.out, disableSnapshot, skipCorrupted, !noValidation, reinsertOverflowedTTL, jobs, keyspace, cfnames);
+            } catch (IllegalArgumentException e)
             {
                 throw e;
-            }
-            catch (Exception e)
+            } catch (Exception e)
             {
                 throw new RuntimeException("Error occurred during scrubbing", e);
             }
