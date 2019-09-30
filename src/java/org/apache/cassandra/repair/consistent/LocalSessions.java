@@ -88,11 +88,7 @@ import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 
-import static org.apache.cassandra.net.Verb.FAILED_SESSION_MSG;
-import static org.apache.cassandra.net.Verb.FINALIZE_PROMISE_MSG;
-import static org.apache.cassandra.net.Verb.PREPARE_CONSISTENT_RSP;
-import static org.apache.cassandra.net.Verb.STATUS_REQ;
-import static org.apache.cassandra.net.Verb.STATUS_RSP;
+import static org.apache.cassandra.net.Verb.REPAIR_REQ;
 import static org.apache.cassandra.repair.consistent.ConsistentSession.State.*;
 
 /**
@@ -194,11 +190,10 @@ public class LocalSessions
                                     sessionID, session.coordinator);
 
         setStateAndSave(session, FAILED);
-        Message<FailSession> message = Message.out(FAILED_SESSION_MSG, new FailSession(sessionID));
         for (InetAddressAndPort participant : session.participants)
         {
             if (!participant.equals(getBroadcastAddressAndPort()))
-                sendMessage(participant, message);
+                sendMessage(participant, new FailSession(sessionID));
         }
     }
 
@@ -496,10 +491,11 @@ public class LocalSessions
         return ActiveRepairService.instance.getParentRepairSession(sessionID);
     }
 
-    protected void sendMessage(InetAddressAndPort destination, Message<? extends RepairMessage> message)
+    protected void sendMessage(InetAddressAndPort destination, RepairMessage message)
     {
-        logger.trace("sending {} to {}", message.payload, destination);
-        MessagingService.instance().send(message, destination);
+        logger.trace("sending {} to {}", message, destination);
+        Message<RepairMessage> messageOut = Message.out(REPAIR_REQ, message);
+        MessagingService.instance().send(messageOut, destination);
     }
 
     private void setStateAndSave(LocalSession session, ConsistentSession.State state)
@@ -542,7 +538,7 @@ public class LocalSessions
             }
             if (sendMessage)
             {
-                sendMessage(session.coordinator, Message.out(FAILED_SESSION_MSG, new FailSession(sessionID)));
+                sendMessage(session.coordinator, new FailSession(sessionID));
             }
         }
     }
@@ -613,7 +609,7 @@ public class LocalSessions
         catch (Throwable e)
         {
             logger.error("Error retrieving ParentRepairSession for session {}, responding with failure", sessionID);
-            sendMessage(coordinator, Message.out(PREPARE_CONSISTENT_RSP, new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), false)));
+            sendMessage(coordinator, new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), false));
             return;
         }
 
@@ -636,14 +632,15 @@ public class LocalSessions
                 {
                     logger.info("Prepare phase for incremental repair session {} completed", sessionID);
                     if (session.getState() != FAILED)
+                    {
                         setStateAndSave(session, PREPARED);
+                        sendMessage(coordinator, new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), true));
+                    }
                     else
+                    {
                         logger.info("Session {} failed before anticompaction completed", sessionID);
-
-                    Message<PrepareConsistentResponse> message =
-                        Message.out(PREPARE_CONSISTENT_RSP,
-                                    new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), session.getState() != FAILED));
-                    sendMessage(coordinator, message);
+                        sendMessage(coordinator, new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), false));
+                    }
                 }
                 finally
                 {
@@ -656,9 +653,7 @@ public class LocalSessions
                 try
                 {
                     logger.error("Prepare phase for incremental repair session {} failed", sessionID, t);
-                    sendMessage(coordinator,
-                                Message.out(PREPARE_CONSISTENT_RSP,
-                                            new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), false)));
+                    sendMessage(coordinator, new PrepareConsistentResponse(sessionID, getBroadcastAddressAndPort(), false));
                     failSession(sessionID, false);
                 }
                 finally
@@ -687,7 +682,7 @@ public class LocalSessions
         if (session == null)
         {
             logger.debug("Received FinalizePropose message for unknown repair session {}, responding with failure", sessionID);
-            sendMessage(from, Message.out(FAILED_SESSION_MSG, new FailSession(sessionID)));
+            sendMessage(from, new FailSession(sessionID));
             return;
         }
 
@@ -704,7 +699,7 @@ public class LocalSessions
              */
             syncTable();
 
-            sendMessage(from, Message.out(FINALIZE_PROMISE_MSG, new FinalizePromise(sessionID, getBroadcastAddressAndPort(), true)));
+            sendMessage(from, new FinalizePromise(sessionID, getBroadcastAddressAndPort(), true));
             logger.debug("Received FinalizePropose message for incremental repair session {}, responded with FinalizePromise", sessionID);
         }
         catch (IllegalArgumentException e)
@@ -758,8 +753,7 @@ public class LocalSessions
     public void sendStatusRequest(LocalSession session)
     {
         logger.debug("Attempting to learn the outcome of unfinished local incremental repair session {}", session.sessionID);
-        Message<StatusRequest> request = Message.out(STATUS_REQ, new StatusRequest(session.sessionID));
-
+        StatusRequest request = new StatusRequest(session.sessionID);
         for (InetAddressAndPort participant : session.participants)
         {
             if (!getBroadcastAddressAndPort().equals(participant) && isAlive(participant))
@@ -777,11 +771,11 @@ public class LocalSessions
         if (session == null)
         {
             logger.warn("Received status response message for unknown session {}", sessionID);
-            sendMessage(from, Message.out(STATUS_RSP, new StatusResponse(sessionID, FAILED)));
+            sendMessage(from, new StatusResponse(sessionID, FAILED));
         }
         else
         {
-            sendMessage(from, Message.out(STATUS_RSP, new StatusResponse(sessionID, session.getState())));
+            sendMessage(from, new StatusResponse(sessionID, session.getState()));
             logger.debug("Responding to status response message for incremental repair session {} with local state {}", sessionID, session.getState());
        }
     }
