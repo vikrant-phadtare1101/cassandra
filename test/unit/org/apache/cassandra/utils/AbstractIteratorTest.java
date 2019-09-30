@@ -16,8 +16,7 @@
 
 package org.apache.cassandra.utils;
 
-import org.junit.Assert;
-import org.junit.Test;
+import junit.framework.TestCase;
 
 import java.lang.ref.WeakReference;
 import java.util.Iterator;
@@ -30,9 +29,9 @@ import java.util.NoSuchElementException;
  */
 @SuppressWarnings("serial") // No serialization is used in this test
 // TODO(cpovirk): why is this slow (>1m/test) under GWT when fully optimized?
-public class AbstractIteratorTest
+public class AbstractIteratorTest extends TestCase
 {
-    @Test
+
     public void testDefaultBehaviorOfNextAndHasNext()
     {
 
@@ -54,37 +53,36 @@ public class AbstractIteratorTest
                     case 2:
                         return endOfData();
                     default:
-                        Assert.fail("Should not have been invoked again");
+                        fail("Should not have been invoked again");
                         return null;
                 }
             }
         };
 
-        Assert.assertTrue(iter.hasNext());
-        Assert.assertEquals(0, (int) iter.next());
+        assertTrue(iter.hasNext());
+        assertEquals(0, (int) iter.next());
 
         // verify idempotence of hasNext()
-        Assert.assertTrue(iter.hasNext());
-        Assert.assertTrue(iter.hasNext());
-        Assert.assertTrue(iter.hasNext());
-        Assert.assertEquals(1, (int) iter.next());
+        assertTrue(iter.hasNext());
+        assertTrue(iter.hasNext());
+        assertTrue(iter.hasNext());
+        assertEquals(1, (int) iter.next());
 
-        Assert.assertFalse(iter.hasNext());
+        assertFalse(iter.hasNext());
 
         // Make sure computeNext() doesn't get invoked again
-        Assert.assertFalse(iter.hasNext());
+        assertFalse(iter.hasNext());
 
         try
         {
             iter.next();
-            Assert.fail("no exception thrown");
+            fail("no exception thrown");
         }
         catch (NoSuchElementException expected)
         {
         }
     }
 
-    @Test
     public void testDefaultBehaviorOfPeek()
     {
     /*
@@ -107,25 +105,25 @@ public class AbstractIteratorTest
                     case 2:
                         return endOfData();
                     default:
-                        Assert.fail("Should not have been invoked again");
+                        fail("Should not have been invoked again");
                         return null;
                 }
             }
         };
 
-        Assert.assertEquals(0, (int) iter.peek());
-        Assert.assertEquals(0, (int) iter.peek());
-        Assert.assertTrue(iter.hasNext());
-        Assert.assertEquals(0, (int) iter.peek());
-        Assert.assertEquals(0, (int) iter.next());
+        assertEquals(0, (int) iter.peek());
+        assertEquals(0, (int) iter.peek());
+        assertTrue(iter.hasNext());
+        assertEquals(0, (int) iter.peek());
+        assertEquals(0, (int) iter.next());
 
-        Assert.assertEquals(1, (int) iter.peek());
-        Assert.assertEquals(1, (int) iter.next());
+        assertEquals(1, (int) iter.peek());
+        assertEquals(1, (int) iter.next());
 
         try
         {
             iter.peek();
-            Assert.fail("peek() should throw NoSuchElementException at end");
+            fail("peek() should throw NoSuchElementException at end");
         }
         catch (NoSuchElementException expected)
         {
@@ -134,7 +132,7 @@ public class AbstractIteratorTest
         try
         {
             iter.peek();
-            Assert.fail("peek() should continue to throw NoSuchElementException at end");
+            fail("peek() should continue to throw NoSuchElementException at end");
         }
         catch (NoSuchElementException expected)
         {
@@ -143,7 +141,7 @@ public class AbstractIteratorTest
         try
         {
             iter.next();
-            Assert.fail("next() should throw NoSuchElementException as usual");
+            fail("next() should throw NoSuchElementException as usual");
         }
         catch (NoSuchElementException expected)
         {
@@ -152,14 +150,13 @@ public class AbstractIteratorTest
         try
         {
             iter.peek();
-            Assert.fail("peek() should still throw NoSuchElementException after next()");
+            fail("peek() should still throw NoSuchElementException after next()");
         }
         catch (NoSuchElementException expected)
         {
         }
     }
 
-    @Test
     public void testFreesNextReference() throws InterruptedException
     {
         Iterator<Object> itr = new AbstractIterator<Object>()
@@ -178,7 +175,6 @@ public class AbstractIteratorTest
         }
     }
 
-    @Test
     public void testDefaultBehaviorOfPeekForEmptyIteration()
     {
 
@@ -191,7 +187,7 @@ public class AbstractIteratorTest
             {
                 if (alreadyCalledEndOfData)
                 {
-                    Assert.fail("Should not have been invoked again");
+                    fail("Should not have been invoked again");
                 }
                 alreadyCalledEndOfData = true;
                 return endOfData();
@@ -201,7 +197,7 @@ public class AbstractIteratorTest
         try
         {
             empty.peek();
-            Assert.fail("peek() should throw NoSuchElementException at end");
+            fail("peek() should throw NoSuchElementException at end");
         }
         catch (NoSuchElementException expected)
         {
@@ -210,14 +206,13 @@ public class AbstractIteratorTest
         try
         {
             empty.peek();
-            Assert.fail("peek() should continue to throw NoSuchElementException at end");
+            fail("peek() should continue to throw NoSuchElementException at end");
         }
         catch (NoSuchElementException expected)
         {
         }
     }
 
-    @Test
     public void testException()
     {
         final SomeUncheckedException exception = new SomeUncheckedException();
@@ -234,15 +229,14 @@ public class AbstractIteratorTest
         try
         {
             iter.hasNext();
-            Assert.fail("No exception thrown");
+            fail("No exception thrown");
         }
         catch (SomeUncheckedException e)
         {
-            Assert.assertSame(exception, e);
+            assertSame(exception, e);
         }
     }
 
-    @Test
     public void testExceptionAfterEndOfData()
     {
         Iterator<Integer> iter = new AbstractIterator<Integer>()
@@ -257,14 +251,13 @@ public class AbstractIteratorTest
         try
         {
             iter.hasNext();
-            Assert.fail("No exception thrown");
+            fail("No exception thrown");
         }
         catch (SomeUncheckedException expected)
         {
         }
     }
 
-    @Test
     public void testCantRemove()
     {
         Iterator<Integer> iter = new AbstractIterator<Integer>()
@@ -283,19 +276,18 @@ public class AbstractIteratorTest
             }
         };
 
-        Assert.assertEquals(0, (int) iter.next());
+        assertEquals(0, (int) iter.next());
 
         try
         {
             iter.remove();
-            Assert.fail("No exception thrown");
+            fail("No exception thrown");
         }
         catch (UnsupportedOperationException expected)
         {
         }
     }
 
-    @Test
     public void testSneakyThrow() throws Exception
     {
         Iterator<Integer> iter = new AbstractIterator<Integer>()
@@ -307,7 +299,7 @@ public class AbstractIteratorTest
             {
                 if (haveBeenCalled)
                 {
-                    Assert.fail("Should not have been called again");
+                    fail("Should not have been called again");
                 }
                 else
                 {
@@ -322,7 +314,7 @@ public class AbstractIteratorTest
         try
         {
             iter.hasNext();
-            Assert.fail("No exception thrown");
+            fail("No exception thrown");
         }
         catch (Exception e)
         {
@@ -336,14 +328,13 @@ public class AbstractIteratorTest
         try
         {
             iter.hasNext();
-            Assert.fail("No exception thrown");
+            fail("No exception thrown");
         }
         catch (IllegalStateException expected)
         {
         }
     }
 
-    @Test
     public void testReentrantHasNext()
     {
         Iterator<Integer> iter = new AbstractIterator<Integer>()
@@ -358,7 +349,7 @@ public class AbstractIteratorTest
         try
         {
             iter.hasNext();
-            Assert.fail();
+            fail();
         }
         catch (IllegalStateException expected)
         {

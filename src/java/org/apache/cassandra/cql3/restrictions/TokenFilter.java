@@ -25,8 +25,8 @@ import com.google.common.collect.ImmutableRangeSet;
 import com.google.common.collect.Range;
 import com.google.common.collect.RangeSet;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.statements.Bound;
@@ -34,7 +34,7 @@ import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.index.IndexRegistry;
+import org.apache.cassandra.index.SecondaryIndexManager;
 
 import static org.apache.cassandra.cql3.statements.Bound.END;
 import static org.apache.cassandra.cql3.statements.Bound.START;
@@ -78,7 +78,7 @@ final class TokenFilter implements PartitionKeyRestrictions
     }
 
     @Override
-    public Set<Restriction> getRestrictions(ColumnMetadata columnDef)
+    public Set<Restriction> getRestrictions(ColumnDefinition columnDef)
     {
         Set<Restriction> set = new HashSet<>();
         set.addAll(restrictions.getRestrictions(columnDef));
@@ -248,19 +248,19 @@ final class TokenFilter implements PartitionKeyRestrictions
     }
 
     @Override
-    public ColumnMetadata getFirstColumn()
+    public ColumnDefinition getFirstColumn()
     {
         return restrictions.getFirstColumn();
     }
 
     @Override
-    public ColumnMetadata getLastColumn()
+    public ColumnDefinition getLastColumn()
     {
         return restrictions.getLastColumn();
     }
 
     @Override
-    public List<ColumnMetadata> getColumnDefs()
+    public List<ColumnDefinition> getColumnDefs()
     {
         return restrictions.getColumnDefs();
     }
@@ -272,15 +272,15 @@ final class TokenFilter implements PartitionKeyRestrictions
     }
 
     @Override
-    public boolean hasSupportingIndex(IndexRegistry indexRegistry)
+    public boolean hasSupportingIndex(SecondaryIndexManager indexManager)
     {
-        return restrictions.hasSupportingIndex(indexRegistry);
+        return restrictions.hasSupportingIndex(indexManager);
     }
 
     @Override
-    public void addRowFilterTo(RowFilter filter, IndexRegistry indexRegistry, QueryOptions options)
+    public void addRowFilterTo(RowFilter filter, SecondaryIndexManager indexManager, QueryOptions options)
     {
-        restrictions.addRowFilterTo(filter, indexRegistry, options);
+        restrictions.addRowFilterTo(filter, indexManager, options);
     }
 
     @Override
@@ -296,15 +296,15 @@ final class TokenFilter implements PartitionKeyRestrictions
     }
 
     @Override
-    public boolean needFiltering(TableMetadata table)
+    public boolean needFiltering(CFMetaData cfm)
     {
-        return restrictions.needFiltering(table);
+        return restrictions.needFiltering(cfm);
     }
 
     @Override
-    public boolean hasUnrestrictedPartitionKeyComponents(TableMetadata table)
+    public boolean hasUnrestrictedPartitionKeyComponents(CFMetaData cfm)
     {
-        return restrictions.hasUnrestrictedPartitionKeyComponents(table);
+        return restrictions.hasUnrestrictedPartitionKeyComponents(cfm);
     }
 
     @Override

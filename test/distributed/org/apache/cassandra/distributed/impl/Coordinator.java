@@ -21,8 +21,11 @@ package org.apache.cassandra.distributed.impl;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.Future;
 
 import org.apache.cassandra.cql3.CQLStatement;
 import org.apache.cassandra.cql3.QueryOptions;
@@ -35,6 +38,7 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -50,36 +54,54 @@ public class Coordinator implements ICoordinator
     @Override
     public Object[][] execute(String query, Enum<?> consistencyLevelOrigin, Object... boundValues)
     {
-        return instance.sync(() -> {
-            ClientState clientState = makeFakeClientState();
-            CQLStatement prepared = QueryProcessor.getStatement(query, clientState);
-            List<ByteBuffer> boundBBValues = new ArrayList<>();
-            ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(consistencyLevelOrigin.name());
-            for (Object boundValue : boundValues)
-            {
-                boundBBValues.add(ByteBufferUtil.objectToBytes(boundValue));
-            }
+        return instance.sync(() -> executeInternal(query, consistencyLevelOrigin, boundValues)).call();
+    }
 
-            ResultMessage res = prepared.execute(QueryState.forInternalCalls(),
-                                                 QueryOptions.create(consistencyLevel,
-                                                                     boundBBValues,
-                                                                     false,
-                                                                     Integer.MAX_VALUE,
-                                                                     null,
-                                                                     null,
-                                                                     ProtocolVersion.V4,
-                                                                     null),
-                                                 System.nanoTime());
-
-            if (res != null && res.kind == ResultMessage.Kind.ROWS)
+    public Future<Object[][]> asyncExecuteWithTracing(UUID sessionId, String query, Enum<?> consistencyLevelOrigin, Object... boundValues)
+    {
+        return instance.async(() -> {
+            try
             {
-                return RowUtil.toObjects((ResultMessage.Rows) res);
+                Tracing.instance.newSession(sessionId, Collections.emptyMap());
+                return executeInternal(query, consistencyLevelOrigin, boundValues);
             }
-            else
+            finally
             {
-                return new Object[][]{};
+                Tracing.instance.stopSession();
             }
         }).call();
+    }
+
+    private Object[][] executeInternal(String query, Enum<?> consistencyLevelOrigin, Object[] boundValues)
+    {
+        ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(consistencyLevelOrigin.name());
+        ClientState clientState = makeFakeClientState();
+        CQLStatement prepared = QueryProcessor.getStatement(query, clientState).statement;
+        List<ByteBuffer> boundBBValues = new ArrayList<>();
+        for (Object boundValue : boundValues)
+        {
+            boundBBValues.add(ByteBufferUtil.objectToBytes(boundValue));
+        }
+
+        ResultMessage res = prepared.execute(QueryState.forInternalCalls(),
+                                             QueryOptions.create(consistencyLevel,
+                                                                 boundBBValues,
+                                                                 false,
+                                                                 Integer.MAX_VALUE,
+                                                                 null,
+                                                                 null,
+                                                                 ProtocolVersion.CURRENT),
+                                             System.nanoTime());
+
+        if (res != null && res.kind == ResultMessage.Kind.ROWS)
+            return RowUtil.toObjects((ResultMessage.Rows) res);
+        else
+            return new Object[][]{};
+    }
+
+    public Object[][] executeWithTracing(UUID sessionId, String query, Enum<?> consistencyLevelOrigin, Object... boundValues)
+    {
+        return IsolatedExecutor.waitOn(asyncExecuteWithTracing(sessionId, query, consistencyLevelOrigin, boundValues));
     }
 
     @Override
@@ -89,16 +111,16 @@ public class Coordinator implements ICoordinator
             throw new IllegalArgumentException("Page size should be strictly positive but was " + pageSize);
 
         return instance.sync(() -> {
-            ClientState clientState = makeFakeClientState();
             ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(consistencyLevelOrigin.name());
-            CQLStatement prepared = QueryProcessor.getStatement(query, clientState);
+            ClientState clientState = makeFakeClientState();
+            CQLStatement prepared = QueryProcessor.getStatement(query, clientState).statement;
             List<ByteBuffer> boundBBValues = new ArrayList<>();
             for (Object boundValue : boundValues)
             {
                 boundBBValues.add(ByteBufferUtil.objectToBytes(boundValue));
             }
 
-            prepared.validate(clientState);
+            prepared.validate(QueryState.forInternalCalls().getClientState());
             assert prepared instanceof SelectStatement : "Only SELECT statements can be executed with paging";
 
             SelectStatement selectStatement = (SelectStatement) prepared;
@@ -109,8 +131,7 @@ public class Coordinator implements ICoordinator
                                                                             pageSize,
                                                                             null,
                                                                             null,
-                                                                            ProtocolVersion.CURRENT,
-                                                                            selectStatement.keyspace()),
+                                                                            ProtocolVersion.CURRENT),
                                                         FBUtilities.nowInSeconds())
                                               .getPager(null, ProtocolVersion.CURRENT);
 
@@ -135,6 +156,6 @@ public class Coordinator implements ICoordinator
 
     private static final ClientState makeFakeClientState()
     {
-        return ClientState.forExternalCalls(new InetSocketAddress(FBUtilities.getJustLocalAddress(), 9042));
+        return ClientState.forExternalCalls(new InetSocketAddress(FBUtilities.getLocalAddress(), 9042));
     }
 }

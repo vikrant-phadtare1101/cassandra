@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
 import com.google.common.base.Objects;
 import com.google.common.collect.*;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnSpecification;
 
 /**
@@ -37,8 +37,8 @@ import org.apache.cassandra.cql3.ColumnSpecification;
  */
 public class SelectionColumnMapping implements SelectionColumns
 {
-    private final List<ColumnSpecification> columnSpecifications;
-    private final Multimap<ColumnSpecification, ColumnMetadata> columnMappings;
+    private final ArrayList<ColumnSpecification> columnSpecifications;
+    private final HashMultimap<ColumnSpecification, ColumnDefinition> columnMappings;
 
     private SelectionColumnMapping()
     {
@@ -51,15 +51,15 @@ public class SelectionColumnMapping implements SelectionColumns
         return new SelectionColumnMapping();
     }
 
-    protected static SelectionColumnMapping simpleMapping(Iterable<ColumnMetadata> columnDefinitions)
+    protected static SelectionColumnMapping simpleMapping(Iterable<ColumnDefinition> columnDefinitions)
     {
         SelectionColumnMapping mapping = new SelectionColumnMapping();
-        for (ColumnMetadata def: columnDefinitions)
+        for (ColumnDefinition def: columnDefinitions)
             mapping.addMapping(def, def);
         return mapping;
     }
 
-    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, ColumnMetadata column)
+    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, ColumnDefinition column)
     {
         columnSpecifications.add(colSpec);
         // functions without arguments do not map to any column, so don't
@@ -69,7 +69,7 @@ public class SelectionColumnMapping implements SelectionColumns
         return this;
     }
 
-    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, Iterable<ColumnMetadata> columns)
+    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, Iterable<ColumnDefinition> columns)
     {
         columnSpecifications.add(colSpec);
         columnMappings.putAll(colSpec, columns);
@@ -83,7 +83,7 @@ public class SelectionColumnMapping implements SelectionColumns
         return Lists.newArrayList(columnSpecifications);
     }
 
-    public Multimap<ColumnSpecification, ColumnMetadata> getMappings()
+    public Multimap<ColumnSpecification, ColumnDefinition> getMappings()
     {
         return Multimaps.unmodifiableMultimap(columnMappings);
     }

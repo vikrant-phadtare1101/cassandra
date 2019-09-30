@@ -18,8 +18,8 @@
 package org.apache.cassandra.tools.nodetool;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -42,20 +42,10 @@ public class GetEndpoints extends NodeToolCmd
         String table = args.get(1);
         String key = args.get(2);
 
-        if (printPort)
+        List<InetAddress> endpoints = probe.getEndpoints(ks, table, key);
+        for (InetAddress endpoint : endpoints)
         {
-            for (String endpoint : probe.getEndpointsWithPort(ks, table, key))
-            {
-                System.out.println(endpoint);
-            }
-        }
-        else
-        {
-            List<InetAddress> endpoints = probe.getEndpoints(ks, table, key);
-            for (InetAddress endpoint : endpoints)
-            {
-                System.out.println(endpoint.getHostAddress());
-            }
+            System.out.println(endpoint.getHostAddress());
         }
     }
 }

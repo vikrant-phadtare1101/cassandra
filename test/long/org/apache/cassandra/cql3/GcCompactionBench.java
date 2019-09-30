@@ -33,7 +33,7 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.config.Config.CommitLogSync;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -339,7 +339,7 @@ public class GcCompactionBench extends CQLTester
 
     int countRows(ColumnFamilyStore cfs)
     {
-        boolean enforceStrictLiveness = cfs.metadata().enforceStrictLiveness();
+        boolean enforceStrictLiveness = cfs.metadata.enforceStrictLiveness();
         int nowInSec = FBUtilities.nowInSeconds();
         return count(cfs, x -> x.isRow() && ((Row) x).hasLiveData(nowInSec, enforceStrictLiveness));
     }

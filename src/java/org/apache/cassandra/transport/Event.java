@@ -23,11 +23,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import com.google.common.base.Objects;
-
 import io.netty.buffer.ByteBuf;
-import org.apache.cassandra.cql3.functions.UDAggregate;
-import org.apache.cassandra.cql3.functions.UDFunction;
-import org.apache.cassandra.locator.InetAddressAndPort;
 
 public abstract class Event
 {
@@ -114,19 +110,19 @@ public abstract class Event
             this.change = change;
         }
 
-        public static TopologyChange newNode(InetAddressAndPort address)
+        public static TopologyChange newNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.NEW_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.NEW_NODE, new InetSocketAddress(host, port));
         }
 
-        public static TopologyChange removedNode(InetAddressAndPort address)
+        public static TopologyChange removedNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.REMOVED_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.REMOVED_NODE, new InetSocketAddress(host, port));
         }
 
-        public static TopologyChange movedNode(InetAddressAndPort address)
+        public static TopologyChange movedNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.MOVED_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.MOVED_NODE, new InetSocketAddress(host, port));
         }
 
         // Assumes the type has already been deserialized
@@ -185,14 +181,14 @@ public abstract class Event
             this.status = status;
         }
 
-        public static StatusChange nodeUp(InetAddressAndPort address)
+        public static StatusChange nodeUp(InetAddress host, int port)
         {
-            return new StatusChange(Status.UP, new InetSocketAddress(address.address, address.port));
+            return new StatusChange(Status.UP, new InetSocketAddress(host, port));
         }
 
-        public static StatusChange nodeDown(InetAddressAndPort address)
+        public static StatusChange nodeDown(InetAddress host, int port)
         {
-            return new StatusChange(Status.DOWN, new InetSocketAddress(address.address, address.port));
+            return new StatusChange(Status.DOWN, new InetSocketAddress(host, port));
         }
 
         // Assumes the type has already been deserialized
@@ -269,16 +265,6 @@ public abstract class Event
         public SchemaChange(Change change, String keyspace)
         {
             this(change, Target.KEYSPACE, keyspace, null);
-        }
-
-        public static SchemaChange forFunction(Change change, UDFunction function)
-        {
-            return new SchemaChange(change, Target.FUNCTION, function.name().keyspace, function.name().name, function.argumentsList());
-        }
-
-        public static SchemaChange forAggregate(Change change, UDAggregate aggregate)
-        {
-            return new SchemaChange(change, Target.AGGREGATE, aggregate.name().keyspace, aggregate.name().name, aggregate.argumentsList());
         }
 
         // Assumes the type has already been deserialized
