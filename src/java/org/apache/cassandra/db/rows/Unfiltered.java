@@ -17,9 +17,11 @@
  */
 package org.apache.cassandra.db.rows;
 
-import com.google.common.hash.Hasher;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.util.Set;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Clusterable;
 
 /**
@@ -39,11 +41,21 @@ public interface Unfiltered extends Clusterable
     public Kind kind();
 
     /**
-     * Digest the atom using the provided {@link Hasher}.
+     * Digest the atom using the provided {@code MessageDigest}.
      *
-     * @param hasher the {@see Hasher} to use.
+     * @param digest the {@code MessageDigest} to use.
      */
-    public void digest(Hasher hasher);
+    public void digest(MessageDigest digest);
+
+    /**
+     * Digest the atom using the provided {@code MessageDigest}.
+     * This method only exists in 3.11.
+     * Same like {@link #digest(MessageDigest)}, but excludes the given columns from digest calculation.
+     */
+    public default void digest(MessageDigest digest, Set<ByteBuffer> columnsToExclude)
+    {
+        throw new UnsupportedOperationException("no no no - don't use this one - use digest(MessageDigest) instead");
+    }
 
     /**
      * Validate the data of this atom.
@@ -53,19 +65,13 @@ public interface Unfiltered extends Clusterable
      * invalid (some value is invalid for its column type, or some field
      * is nonsensical).
      */
-    public void validateData(TableMetadata metadata);
+    public void validateData(CFMetaData metadata);
 
-    /**
-     * Do a quick validation of the deletions of the unfiltered (if any)
-     *
-     * @return true if any deletion is invalid
-     */
-    public boolean hasInvalidDeletions();
     public boolean isEmpty();
 
-    public String toString(TableMetadata metadata);
-    public String toString(TableMetadata metadata, boolean fullDetails);
-    public String toString(TableMetadata metadata, boolean includeClusterKeys, boolean fullDetails);
+    public String toString(CFMetaData metadata);
+    public String toString(CFMetaData metadata, boolean fullDetails);
+    public String toString(CFMetaData metadata, boolean includeClusterKeys, boolean fullDetails);
 
     default boolean isRow()
     {

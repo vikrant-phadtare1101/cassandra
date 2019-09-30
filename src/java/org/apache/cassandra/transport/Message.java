@@ -48,12 +48,9 @@ import org.apache.cassandra.exceptions.OverloadedException;
 import org.apache.cassandra.metrics.ClientMetrics;
 import org.apache.cassandra.net.ResourceLimits;
 import org.apache.cassandra.service.ClientWarn;
-import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.messages.*;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.UUIDGen;
 
 import static org.apache.cassandra.concurrent.SharedExecutorPool.SHARED;
 
@@ -98,7 +95,7 @@ public abstract class Message
         STARTUP        (1,  Direction.REQUEST,  StartupMessage.codec),
         READY          (2,  Direction.RESPONSE, ReadyMessage.codec),
         AUTHENTICATE   (3,  Direction.RESPONSE, AuthenticateMessage.codec),
-        CREDENTIALS    (4,  Direction.REQUEST,  UnsupportedMessageCodec.instance),
+        CREDENTIALS    (4,  Direction.REQUEST,  CredentialsMessage.codec),
         OPTIONS        (5,  Direction.REQUEST,  OptionsMessage.codec),
         SUPPORTED      (6,  Direction.RESPONSE, SupportedMessage.codec),
         QUERY          (7,  Direction.REQUEST,  QueryMessage.codec),
@@ -210,7 +207,7 @@ public abstract class Message
 
     public static abstract class Request extends Message
     {
-        private boolean tracingRequested;
+        protected boolean tracingRequested;
 
         protected Request(Type type)
         {
@@ -220,56 +217,14 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        protected boolean isTraceable()
+        public abstract Response execute(QueryState queryState, long queryStartNanoTime);
+
+        public void setTracingRequested()
         {
-            return false;
+            this.tracingRequested = true;
         }
 
-        protected abstract Response execute(QueryState queryState, long queryStartNanoTime, boolean traceRequest);
-
-        final Response execute(QueryState queryState, long queryStartNanoTime)
-        {
-            boolean shouldTrace = false;
-            UUID tracingSessionId = null;
-
-            if (isTraceable())
-            {
-                if (isTracingRequested())
-                {
-                    shouldTrace = true;
-                    tracingSessionId = UUIDGen.getTimeUUID();
-                    Tracing.instance.newSession(tracingSessionId, getCustomPayload());
-                }
-                else if (StorageService.instance.shouldTraceProbablistically())
-                {
-                    shouldTrace = true;
-                    Tracing.instance.newSession(getCustomPayload());
-                }
-            }
-
-            Response response;
-            try
-            {
-                response = execute(queryState, queryStartNanoTime, shouldTrace);
-            }
-            finally
-            {
-                if (shouldTrace)
-                    Tracing.instance.stopSession();
-            }
-
-            if (isTraceable() && isTracingRequested())
-                response.setTracingId(tracingSessionId);
-
-            return response;
-        }
-
-        void setTracingRequested()
-        {
-            tracingRequested = true;
-        }
-
-        boolean isTracingRequested()
+        public boolean isTracingRequested()
         {
             return tracingRequested;
         }
@@ -288,18 +243,18 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        Message setTracingId(UUID tracingId)
+        public Message setTracingId(UUID tracingId)
         {
             this.tracingId = tracingId;
             return this;
         }
 
-        UUID getTracingId()
+        public UUID getTracingId()
         {
             return tracingId;
         }
 
-        Message setWarnings(List<String> warnings)
+        public Message setWarnings(List<String> warnings)
         {
             this.warnings = warnings;
             return this;
@@ -717,10 +672,9 @@ public abstract class Message
                 if (connection.getVersion().isGreaterOrEqualTo(ProtocolVersion.V4))
                     ClientWarn.instance.captureWarnings();
 
-                QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion());
+                QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion(), request.getStreamId());
 
                 logger.trace("Received: {}, v={}", request, connection.getVersion());
-                connection.requests.inc();
                 response = request.execute(qstate, queryStartNanoTime);
                 response.setStreamId(request.getStreamId());
                 response.setWarnings(ClientWarn.instance.getWarnings());
@@ -838,9 +792,7 @@ public abstract class Message
                 message = "Unexpected exception during request; channel = <unprintable>";
             }
 
-            // netty wraps SSL errors in a CodecExcpetion
-            boolean isIOException = exception instanceof IOException || (exception.getCause() instanceof IOException);
-            if (!alwaysLogAtError && isIOException)
+            if (!alwaysLogAtError && exception instanceof IOException)
             {
                 String errorMessage = exception.getMessage();
                 boolean logAtTrace = false;

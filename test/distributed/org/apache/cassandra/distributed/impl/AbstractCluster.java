@@ -55,7 +55,7 @@ import org.apache.cassandra.distributed.api.IMessageFilters;
 import org.apache.cassandra.distributed.api.ICluster;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Verb;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
@@ -129,7 +129,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
         {
             ClassLoader classLoader = new InstanceClassLoader(generation, version.classpath, sharedClassLoader);
             return Instance.transferAdhoc((SerializableBiFunction<IInstanceConfig, ClassLoader, Instance>)Instance::new, classLoader)
-                                        .apply(config.forVersion(version.major), classLoader);
+                           .apply(config, classLoader);
         }
 
         public IInstanceConfig config()
@@ -244,7 +244,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
 
 
     public IMessageFilters filters() { return filters; }
-    public MessageFilters.Builder verbs(Verb... verbs) { return filters.verbs(verbs); }
+    public MessageFilters.Builder verbs(MessagingService.Verb ... verbs) { return filters.verbs(verbs); }
 
     public void disableAutoCompaction(String keyspace)
     {
@@ -341,9 +341,9 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
         get(instance).schemaChangeInternal(statement);
     }
 
-    void startup()
+    public void startup()
     {
-        parallelForEach(I::startup, 0, null);
+        forEach(I::startup);
     }
 
     protected interface Factory<I extends IInstance, C extends AbstractCluster<I>>

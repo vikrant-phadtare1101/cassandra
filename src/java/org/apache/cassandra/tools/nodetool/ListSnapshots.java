@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import javax.management.openmbean.TabularData;
 
-import io.airlift.airline.Command;
+import io.airlift.command.Command;
 
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.tools.NodeProbe;

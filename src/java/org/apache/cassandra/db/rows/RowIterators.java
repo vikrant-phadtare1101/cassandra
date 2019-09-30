@@ -17,14 +17,17 @@
  */
 package org.apache.cassandra.db.rows;
 
-import com.google.common.hash.Hasher;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.util.Set;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.transform.Transformation;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Static methods to work with row iterators.
@@ -35,20 +38,35 @@ public abstract class RowIterators
 
     private RowIterators() {}
 
-    public static void digest(RowIterator iterator, Hasher hasher)
+    public static void digest(RowIterator iterator, MessageDigest digest, MessageDigest altDigest, Set<ByteBuffer> columnsToExclude)
     {
         // TODO: we're not computing digest the same way that old nodes. This is
         // currently ok as this is only used for schema digest and the is no exchange
         // of schema digest between different versions. If this changes however,
         // we'll need to agree on a version.
-        HashingUtils.updateBytes(hasher, iterator.partitionKey().getKey().duplicate());
-        iterator.columns().regulars.digest(hasher);
-        iterator.columns().statics.digest(hasher);
-        HashingUtils.updateWithBoolean(hasher, iterator.isReverseOrder());
-        iterator.staticRow().digest(hasher);
+        digest.update(iterator.partitionKey().getKey().duplicate());
+        iterator.columns().regulars.digest(digest);
+        iterator.columns().statics.digest(digest);
+        FBUtilities.updateWithBoolean(digest, iterator.isReverseOrder());
+        iterator.staticRow().digest(digest);
+
+        if (altDigest != null)
+        {
+            // Compute the "alternative digest" here.
+            altDigest.update(iterator.partitionKey().getKey().duplicate());
+            iterator.columns().regulars.digest(altDigest, columnsToExclude);
+            iterator.columns().statics.digest(altDigest, columnsToExclude);
+            FBUtilities.updateWithBoolean(altDigest, iterator.isReverseOrder());
+            iterator.staticRow().digest(altDigest, columnsToExclude);
+        }
 
         while (iterator.hasNext())
-            iterator.next().digest(hasher);
+        {
+            Row row = iterator.next();
+            row.digest(digest);
+            if (altDigest != null)
+                row.digest(altDigest, columnsToExclude);
+        }
     }
 
     /**
@@ -75,12 +93,12 @@ public abstract class RowIterators
      */
     public static RowIterator loggingIterator(RowIterator iterator, final String id)
     {
-        TableMetadata metadata = iterator.metadata();
+        CFMetaData metadata = iterator.metadata();
         logger.info("[{}] Logging iterator on {}.{}, partition key={}, reversed={}",
                     id,
-                    metadata.keyspace,
-                    metadata.name,
-                    metadata.partitionKeyType.getString(iterator.partitionKey().getKey()),
+                    metadata.ksName,
+                    metadata.cfName,
+                    metadata.getKeyValidator().getString(iterator.partitionKey().getKey()),
                     iterator.isReverseOrder());
 
         class Log extends Transformation

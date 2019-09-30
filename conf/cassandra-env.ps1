@@ -47,7 +47,7 @@ Function BuildClassPath
     }
 
     # Add build/classes/main so it works in development
-    $cp = $cp + ";" + """$env:CASSANDRA_HOME\build\classes\main"""
+    $cp = $cp + ";" + """$env:CASSANDRA_HOME\build\classes\main"";""$env:CASSANDRA_HOME\build\classes\thrift"""
     $env:CLASSPATH=$cp
 }
 
@@ -380,7 +380,11 @@ Function SetCassandraEnvironment
     $env:JVM_OPTS = "$env:JVM_OPTS -XX:CompileCommandFile=""$env:CASSANDRA_CONF\hotspot_compiler"""
 
     # add the jamm javaagent
-    $env:JVM_OPTS = "$env:JVM_OPTS -javaagent:""$env:CASSANDRA_HOME\lib\jamm-0.3.2.jar"""
+    if (($env:JVM_VENDOR -ne "OpenJDK") -or ($env:JVM_VERSION.CompareTo("1.6.0") -eq 1) -or
+        (($env:JVM_VERSION -eq "1.6.0") -and ($env:JVM_PATCH_VERSION.CompareTo("22") -eq 1)))
+    {
+        $env:JVM_OPTS = "$env:JVM_OPTS -javaagent:""$env:CASSANDRA_HOME\lib\jamm-0.3.0.jar"""
+    }
 
     # set jvm HeapDumpPath with CASSANDRA_HEAPDUMP_DIR
     if ($env:CASSANDRA_HEAPDUMP_DIR)
@@ -399,10 +403,9 @@ Function SetCassandraEnvironment
     # print an heap histogram on OutOfMemoryError
     # $env:JVM_OPTS="$env:JVM_OPTS -Dcassandra.printHeapHistogramOnOutOfMemoryError=true"
 
-    $env:JAVA_VERSION=11
-    if ($env:JVM_VERSION.CompareTo("1.8.0") -eq -1 -or [convert]::ToInt32($env:JVM_PATCH_VERSION) -lt 151)
+    if ($env:JVM_VERSION.CompareTo("1.8.0") -eq -1 -or [convert]::ToInt32($env:JVM_PATCH_VERSION) -lt 40)
     {
-        echo "Cassandra 4.0 requires either Java 8 (update 151 or newer) or Java 11 (or newer). Java $env:JVM_VERSION is not supported."
+        echo "Cassandra 3.0 and later require Java 8u40 or later."
         exit
     }
 

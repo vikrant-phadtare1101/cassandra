@@ -20,8 +20,6 @@ package org.apache.cassandra.distributed.impl;
 
 import com.google.common.base.Predicate;
 import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.io.util.Memory;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.utils.Pair;
 
@@ -50,7 +48,7 @@ public class InstanceClassLoader extends URLClassLoader
             || name.startsWith("oracle.")
             || name.startsWith("com.intellij.")
             || name.startsWith("com.sun.")
-            || name.startsWith("com.oracle.")
+            || name.startsWith("com.sun.")
             || name.startsWith("java.")
             || name.startsWith("javax.")
             || name.startsWith("jdk.")

@@ -37,6 +37,7 @@ import org.apache.cassandra.io.compress.CompressedSequentialWriter;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.utils.ChecksumType;
 
 import static junit.framework.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
@@ -67,7 +68,7 @@ public class MmappedRegionsTest
 
     private static File writeFile(String fileName, ByteBuffer buffer) throws IOException
     {
-        File ret = FileUtils.createTempFile(fileName, "1");
+        File ret = File.createTempFile(fileName, "1");
         ret.deleteOnExit();
 
         try (SequentialWriter writer = new SequentialWriter(ret))
@@ -298,10 +299,10 @@ public class MmappedRegionsTest
         MmappedRegions.MAX_SEGMENT_SIZE = 1024;
 
         ByteBuffer buffer = allocateBuffer(128 * 1024);
-        File f = FileUtils.createTempFile("testMapForCompressionMetadata", "1");
+        File f = File.createTempFile("testMapForCompressionMetadata", "1");
         f.deleteOnExit();
 
-        File cf = FileUtils.createTempFile(f.getName() + ".metadata", "1");
+        File cf = File.createTempFile(f.getName() + ".metadata", "1");
         cf.deleteOnExit();
 
         MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
@@ -313,7 +314,7 @@ public class MmappedRegionsTest
             writer.finish();
         }
 
-        CompressionMetadata metadata = new CompressionMetadata(cf.getAbsolutePath(), f.length(), true);
+        CompressionMetadata metadata = new CompressionMetadata(cf.getAbsolutePath(), f.length(), ChecksumType.CRC32);
         try(ChannelProxy channel = new ChannelProxy(f);
             MmappedRegions regions = MmappedRegions.map(channel, metadata))
         {

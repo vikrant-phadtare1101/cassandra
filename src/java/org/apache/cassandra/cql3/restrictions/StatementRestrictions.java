@@ -21,7 +21,11 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.Iterators;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.ColumnDefinition.Kind;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.statements.Bound;
@@ -32,12 +36,9 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.index.Index;
-import org.apache.cassandra.index.IndexRegistry;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.index.SecondaryIndexManager;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.btree.BTreeSet;
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
 
 import static org.apache.cassandra.cql3.statements.RequestValidations.checkFalse;
 import static org.apache.cassandra.cql3.statements.RequestValidations.checkNotNull;
@@ -61,7 +62,7 @@ public final class StatementRestrictions
     /**
      * The Column Family meta data
      */
-    public final TableMetadata table;
+    public final CFMetaData cfm;
 
     /**
      * Restrictions on partitioning columns
@@ -78,7 +79,7 @@ public final class StatementRestrictions
      */
     private RestrictionSet nonPrimaryKeyRestrictions;
 
-    private Set<ColumnMetadata> notNullColumns;
+    private Set<ColumnDefinition> notNullColumns;
 
     /**
      * The restrictions used to build the row filter
@@ -105,53 +106,43 @@ public final class StatementRestrictions
      * Creates a new empty <code>StatementRestrictions</code>.
      *
      * @param type the type of statement
-     * @param table the column family meta data
+     * @param cfm the column family meta data
      * @return a new empty <code>StatementRestrictions</code>.
      */
-    public static StatementRestrictions empty(StatementType type, TableMetadata table)
+    public static StatementRestrictions empty(StatementType type, CFMetaData cfm)
     {
-        return new StatementRestrictions(type, table, false);
+        return new StatementRestrictions(type, cfm, false);
     }
 
-    private StatementRestrictions(StatementType type, TableMetadata table, boolean allowFiltering)
+    private StatementRestrictions(StatementType type, CFMetaData cfm, boolean allowFiltering)
     {
         this.type = type;
-        this.table = table;
-        this.partitionKeyRestrictions = new PartitionKeySingleRestrictionSet(table.partitionKeyAsClusteringComparator());
-        this.clusteringColumnsRestrictions = new ClusteringColumnRestrictions(table, allowFiltering);
+        this.cfm = cfm;
+        this.partitionKeyRestrictions = new PartitionKeySingleRestrictionSet(cfm.getKeyValidatorAsClusteringComparator());
+        this.clusteringColumnsRestrictions = new ClusteringColumnRestrictions(cfm, allowFiltering);
         this.nonPrimaryKeyRestrictions = new RestrictionSet();
         this.notNullColumns = new HashSet<>();
     }
 
     public StatementRestrictions(StatementType type,
-                                 TableMetadata table,
+                                 CFMetaData cfm,
                                  WhereClause whereClause,
                                  VariableSpecifications boundNames,
                                  boolean selectsOnlyStaticColumns,
+                                 boolean selectsComplexColumn,
                                  boolean allowFiltering,
                                  boolean forView)
     {
-        this(type, table, whereClause, boundNames, selectsOnlyStaticColumns, type.allowUseOfSecondaryIndices(), allowFiltering, forView);
-    }
+        this(type, cfm, allowFiltering);
 
-    /*
-     * We want to override allowUseOfSecondaryIndices flag from the StatementType for MV statements
-     * to avoid initing the Keyspace and SecondaryIndexManager.
-     */
-    public StatementRestrictions(StatementType type,
-                                 TableMetadata table,
-                                 WhereClause whereClause,
-                                 VariableSpecifications boundNames,
-                                 boolean selectsOnlyStaticColumns,
-                                 boolean allowUseOfSecondaryIndices,
-                                 boolean allowFiltering,
-                                 boolean forView)
-    {
-        this(type, table, allowFiltering);
+        ColumnFamilyStore cfs;
+        SecondaryIndexManager secondaryIndexManager = null;
 
-        IndexRegistry indexRegistry = null;
         if (type.allowUseOfSecondaryIndices())
-            indexRegistry = IndexRegistry.obtain(table);
+        {
+            cfs = Keyspace.open(cfm.ksName).getColumnFamilyStore(cfm.cfName);
+            secondaryIndexManager = cfs.indexManager;
+        }
 
         /*
          * WHERE clause. For a given entity, rules are:
@@ -169,13 +160,14 @@ public final class StatementRestrictions
                 if (!forView)
                     throw new InvalidRequestException("Unsupported restriction: " + relation);
 
-                this.notNullColumns.addAll(relation.toRestriction(table, boundNames).getColumnDefs());
+                for (ColumnDefinition def : relation.toRestriction(cfm, boundNames).getColumnDefs())
+                    this.notNullColumns.add(def);
             }
             else if (relation.isLIKE())
             {
-                Restriction restriction = relation.toRestriction(table, boundNames);
+                Restriction restriction = relation.toRestriction(cfm, boundNames);
 
-                if (!type.allowUseOfSecondaryIndices() || !restriction.hasSupportingIndex(indexRegistry))
+                if (!type.allowUseOfSecondaryIndices() || !restriction.hasSupportingIndex(secondaryIndexManager))
                     throw new InvalidRequestException(String.format("LIKE restriction is only supported on properly " +
                                                                     "indexed columns. %s is not valid.",
                                                                     relation.toString()));
@@ -184,25 +176,28 @@ public final class StatementRestrictions
             }
             else
             {
-                addRestriction(relation.toRestriction(table, boundNames));
+                if (cfm.isSuper() && cfm.isDense() && !relation.onToken())
+                    addRestriction(relation.toSuperColumnAdapter().toRestriction(cfm, boundNames));
+                else
+                    addRestriction(relation.toRestriction(cfm, boundNames));
             }
         }
 
-        hasRegularColumnsRestrictions = nonPrimaryKeyRestrictions.hasRestrictionFor(ColumnMetadata.Kind.REGULAR);
+        hasRegularColumnsRestrictions = nonPrimaryKeyRestrictions.hasRestrictionFor(Kind.REGULAR);
 
         boolean hasQueriableClusteringColumnIndex = false;
         boolean hasQueriableIndex = false;
 
-        if (allowUseOfSecondaryIndices)
+        if (type.allowUseOfSecondaryIndices())
         {
             if (whereClause.containsCustomExpressions())
-                processCustomIndexExpressions(whereClause.expressions, boundNames, indexRegistry);
+                processCustomIndexExpressions(whereClause.expressions, boundNames, secondaryIndexManager);
 
-            hasQueriableClusteringColumnIndex = clusteringColumnsRestrictions.hasSupportingIndex(indexRegistry);
+            hasQueriableClusteringColumnIndex = clusteringColumnsRestrictions.hasSupportingIndex(secondaryIndexManager);
             hasQueriableIndex = !filterRestrictions.getCustomIndexExpressions().isEmpty()
                     || hasQueriableClusteringColumnIndex
-                    || partitionKeyRestrictions.hasSupportingIndex(indexRegistry)
-                    || nonPrimaryKeyRestrictions.hasSupportingIndex(indexRegistry);
+                    || partitionKeyRestrictions.hasSupportingIndex(secondaryIndexManager)
+                    || nonPrimaryKeyRestrictions.hasSupportingIndex(secondaryIndexManager);
         }
 
         // At this point, the select statement if fully constructed, but we still have a few things to validate
@@ -210,7 +205,7 @@ public final class StatementRestrictions
 
         // Some but not all of the partition key columns have been specified;
         // hence we need turn these restrictions into a row filter.
-        if (usesSecondaryIndexing || partitionKeyRestrictions.needFiltering(table))
+        if (usesSecondaryIndexing || partitionKeyRestrictions.needFiltering(cfm))
             filterRestrictions.add(partitionKeyRestrictions);
 
         if (selectsOnlyStaticColumns && hasClusteringColumnsRestrictions())
@@ -234,6 +229,7 @@ public final class StatementRestrictions
 
         processClusteringColumnsRestrictions(hasQueriableIndex,
                                              selectsOnlyStaticColumns,
+                                             selectsComplexColumn,
                                              forView,
                                              allowFiltering);
 
@@ -251,15 +247,22 @@ public final class StatementRestrictions
             if (!type.allowNonPrimaryKeyInWhereClause())
             {
                 Collection<ColumnIdentifier> nonPrimaryKeyColumns =
-                        ColumnMetadata.toIdentifiers(nonPrimaryKeyRestrictions.getColumnDefs());
+                        ColumnDefinition.toIdentifiers(nonPrimaryKeyRestrictions.getColumnDefs());
 
                 throw invalidRequest("Non PRIMARY KEY columns found in where clause: %s ",
                                      Joiner.on(", ").join(nonPrimaryKeyColumns));
             }
             if (hasQueriableIndex)
+            {
                 usesSecondaryIndexing = true;
-            else if (!allowFiltering)
+            }
+            else if (!allowFiltering && !cfm.isSuper())
+            {
                 throw invalidRequest(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE);
+            }
+
+            checkFalse(clusteringColumnsRestrictions.isEmpty() && cfm.isSuper(),
+                       "Filtering is not supported on SuperColumn tables");
 
             filterRestrictions.add(nonPrimaryKeyRestrictions);
         }
@@ -270,7 +273,7 @@ public final class StatementRestrictions
 
     private void addRestriction(Restriction restriction)
     {
-        ColumnMetadata def = restriction.getFirstColumn();
+        ColumnDefinition def = restriction.getFirstColumn();
         if (def.isPartitionKey())
             partitionKeyRestrictions = partitionKeyRestrictions.mergeWith(restriction);
         else if (def.isClusteringColumn())
@@ -297,19 +300,19 @@ public final class StatementRestrictions
      * by an IS NOT NULL restriction will be included, otherwise they will not be included (unless another restriction
      * applies to them).
      */
-    public Set<ColumnMetadata> nonPKRestrictedColumns(boolean includeNotNullRestrictions)
+    public Set<ColumnDefinition> nonPKRestrictedColumns(boolean includeNotNullRestrictions)
     {
-        Set<ColumnMetadata> columns = new HashSet<>();
+        Set<ColumnDefinition> columns = new HashSet<>();
         for (Restrictions r : filterRestrictions.getRestrictions())
         {
-            for (ColumnMetadata def : r.getColumnDefs())
+            for (ColumnDefinition def : r.getColumnDefs())
                 if (!def.isPrimaryKeyColumn())
                     columns.add(def);
         }
 
         if (includeNotNullRestrictions)
         {
-            for (ColumnMetadata def : notNullColumns)
+            for (ColumnDefinition def : notNullColumns)
             {
                 if (!def.isPrimaryKeyColumn())
                     columns.add(def);
@@ -322,7 +325,7 @@ public final class StatementRestrictions
     /**
      * @return the set of columns that have an IS NOT NULL restriction on them
      */
-    public Set<ColumnMetadata> notNullColumns()
+    public Set<ColumnDefinition> notNullColumns()
     {
         return notNullColumns;
     }
@@ -330,7 +333,7 @@ public final class StatementRestrictions
     /**
      * @return true if column is restricted by some restriction, false otherwise
      */
-    public boolean isRestricted(ColumnMetadata column)
+    public boolean isRestricted(ColumnDefinition column)
     {
         if (notNullColumns.contains(column))
             return true;
@@ -366,7 +369,7 @@ public final class StatementRestrictions
      * @return <code>true</code> if the specified column is restricted by an EQ restiction, <code>false</code>
      * otherwise.
      */
-    public boolean isColumnRestrictedByEq(ColumnMetadata columnDef)
+    public boolean isColumnRestrictedByEq(ColumnDefinition columnDef)
     {
         Set<Restriction> restrictions = getRestrictions(columnDef.kind).getRestrictions(columnDef);
         return restrictions.stream()
@@ -380,7 +383,7 @@ public final class StatementRestrictions
      * @param kind the column type
      * @return the <code>Restrictions</code> for the specified type of columns
      */
-    private Restrictions getRestrictions(ColumnMetadata.Kind kind)
+    private Restrictions getRestrictions(ColumnDefinition.Kind kind)
     {
         switch (kind)
         {
@@ -407,7 +410,7 @@ public final class StatementRestrictions
             checkFalse(partitionKeyRestrictions.isOnToken(),
                        "The token function cannot be used in WHERE clauses for %s statements", type);
 
-            if (partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(table))
+            if (partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(cfm))
                 throw invalidRequest("Some partition key parts are missing: %s",
                                      Joiner.on(", ").join(getPartitionKeyUnrestrictedComponents()));
 
@@ -422,7 +425,7 @@ public final class StatementRestrictions
             if (partitionKeyRestrictions.isOnToken())
                 isKeyRange = true;
 
-            if (partitionKeyRestrictions.isEmpty() && partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(table))
+            if (partitionKeyRestrictions.isEmpty() && partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(cfm))
             {
                 isKeyRange = true;
                 usesSecondaryIndexing = hasQueriableIndex;
@@ -434,7 +437,7 @@ public final class StatementRestrictions
             // - Is it queriable without 2ndary index, which is always more efficient
             // If a component of the partition key is restricted by a relation, all preceding
             // components must have a EQ. Only the last partition key component can be in IN relation.
-            if (partitionKeyRestrictions.needFiltering(table))
+            if (partitionKeyRestrictions.needFiltering(cfm))
             {
                 if (!allowFiltering && !forView && !hasQueriableIndex)
                     throw new InvalidRequestException(REQUIRES_ALLOW_FILTERING_MESSAGE);
@@ -468,9 +471,9 @@ public final class StatementRestrictions
      */
     private Collection<ColumnIdentifier> getPartitionKeyUnrestrictedComponents()
     {
-        List<ColumnMetadata> list = new ArrayList<>(table.partitionKeyColumns());
+        List<ColumnDefinition> list = new ArrayList<>(cfm.partitionKeyColumns());
         list.removeAll(partitionKeyRestrictions.getColumnDefs());
-        return ColumnMetadata.toIdentifiers(list);
+        return ColumnDefinition.toIdentifiers(list);
     }
 
     /**
@@ -501,9 +504,11 @@ public final class StatementRestrictions
      * @param hasQueriableIndex <code>true</code> if some of the queried data are indexed, <code>false</code> otherwise
      * @param selectsOnlyStaticColumns <code>true</code> if the selected or modified columns are all statics,
      * <code>false</code> otherwise.
+     * @param selectsComplexColumn <code>true</code> if the query should return a collection column
      */
     private void processClusteringColumnsRestrictions(boolean hasQueriableIndex,
                                                       boolean selectsOnlyStaticColumns,
+                                                      boolean selectsComplexColumn,
                                                       boolean forView,
                                                       boolean allowFiltering)
     {
@@ -511,7 +516,7 @@ public final class StatementRestrictions
                    "Slice restrictions are not supported on the clustering columns in %s statements", type);
 
         if (!type.allowClusteringColumnSlices()
-               && (!table.isCompactTable() || (table.isCompactTable() && !hasClusteringColumnsRestrictions())))
+               && (!cfm.isCompactTable() || (cfm.isCompactTable() && !hasClusteringColumnsRestrictions())))
         {
             if (!selectsOnlyStaticColumns && hasUnrestrictedClusteringColumns())
                 throw invalidRequest("Some clustering keys are missing: %s",
@@ -519,6 +524,8 @@ public final class StatementRestrictions
         }
         else
         {
+            checkFalse(clusteringColumnsRestrictions.hasIN() && selectsComplexColumn,
+                       "Cannot restrict clustering columns by IN relations when a collection is selected by the query");
             checkFalse(clusteringColumnsRestrictions.hasContains() && !hasQueriableIndex && !allowFiltering,
                        "Clustering columns can only be restricted with CONTAINS with a secondary index or filtering");
 
@@ -530,13 +537,13 @@ public final class StatementRestrictions
                 }
                 else if (!allowFiltering)
                 {
-                    List<ColumnMetadata> clusteringColumns = table.clusteringColumns();
-                    List<ColumnMetadata> restrictedColumns = new LinkedList<>(clusteringColumnsRestrictions.getColumnDefs());
+                    List<ColumnDefinition> clusteringColumns = cfm.clusteringColumns();
+                    List<ColumnDefinition> restrictedColumns = new LinkedList<>(clusteringColumnsRestrictions.getColumnDefs());
 
                     for (int i = 0, m = restrictedColumns.size(); i < m; i++)
                     {
-                        ColumnMetadata clusteringColumn = clusteringColumns.get(i);
-                        ColumnMetadata restrictedColumn = restrictedColumns.get(i);
+                        ColumnDefinition clusteringColumn = clusteringColumns.get(i);
+                        ColumnDefinition restrictedColumn = restrictedColumns.get(i);
 
                         if (!clusteringColumn.equals(restrictedColumn))
                         {
@@ -558,9 +565,9 @@ public final class StatementRestrictions
      */
     private Collection<ColumnIdentifier> getUnrestrictedClusteringColumns()
     {
-        List<ColumnMetadata> missingClusteringColumns = new ArrayList<>(table.clusteringColumns());
+        List<ColumnDefinition> missingClusteringColumns = new ArrayList<>(cfm.clusteringColumns());
         missingClusteringColumns.removeAll(new LinkedList<>(clusteringColumnsRestrictions.getColumnDefs()));
-        return ColumnMetadata.toIdentifiers(missingClusteringColumns);
+        return ColumnDefinition.toIdentifiers(missingClusteringColumns);
     }
 
     /**
@@ -569,27 +576,34 @@ public final class StatementRestrictions
      */
     private boolean hasUnrestrictedClusteringColumns()
     {
-        return table.clusteringColumns().size() != clusteringColumnsRestrictions.size();
+        return cfm.clusteringColumns().size() != clusteringColumnsRestrictions.size();
     }
 
     private void processCustomIndexExpressions(List<CustomIndexExpression> expressions,
                                                VariableSpecifications boundNames,
-                                               IndexRegistry indexRegistry)
+                                               SecondaryIndexManager indexManager)
     {
+        if (!MessagingService.instance().areAllNodesAtLeast30())
+            throw new InvalidRequestException("Please upgrade all nodes to at least 3.0 before using custom index expressions");
+
         if (expressions.size() > 1)
             throw new InvalidRequestException(IndexRestrictions.MULTIPLE_EXPRESSIONS);
 
         CustomIndexExpression expression = expressions.get(0);
 
-        QualifiedName name = expression.targetIndex;
+        CFName cfName = expression.targetIndex.getCfName();
+        if (cfName.hasKeyspace()
+            && !expression.targetIndex.getKeyspace().equals(cfm.ksName))
+            throw IndexRestrictions.invalidIndex(expression.targetIndex, cfm);
 
-        if (name.hasKeyspace() && !name.getKeyspace().equals(table.keyspace))
-            throw IndexRestrictions.invalidIndex(expression.targetIndex, table);
+        if (cfName.getColumnFamily() != null && !cfName.getColumnFamily().equals(cfm.cfName))
+            throw IndexRestrictions.invalidIndex(expression.targetIndex, cfm);
 
-        if (!table.indexes.has(expression.targetIndex.getName()))
-            throw IndexRestrictions.indexNotFound(expression.targetIndex, table);
+        if (!cfm.getIndexes().has(expression.targetIndex.getIdx()))
+            throw IndexRestrictions.indexNotFound(expression.targetIndex, cfm);
 
-        Index index = indexRegistry.getIndex(table.indexes.get(expression.targetIndex.getName()).get());
+        Index index = indexManager.getIndex(cfm.getIndexes().get(expression.targetIndex.getIdx()).get());
+
         if (!index.getIndexMetadata().isCustom())
             throw IndexRestrictions.nonCustomIndexInExpression(expression.targetIndex);
 
@@ -597,22 +611,22 @@ public final class StatementRestrictions
         if (expressionType == null)
             throw IndexRestrictions.customExpressionNotSupported(expression.targetIndex);
 
-        expression.prepareValue(table, expressionType, boundNames);
+        expression.prepareValue(cfm, expressionType, boundNames);
 
         filterRestrictions.add(expression);
     }
 
-    public RowFilter getRowFilter(IndexRegistry indexRegistry, QueryOptions options)
+    public RowFilter getRowFilter(SecondaryIndexManager indexManager, QueryOptions options)
     {
         if (filterRestrictions.isEmpty())
             return RowFilter.NONE;
 
         RowFilter filter = RowFilter.create();
         for (Restrictions restrictions : filterRestrictions.getRestrictions())
-            restrictions.addRowFilterTo(filter, indexRegistry, options);
+            restrictions.addRowFilterTo(filter, indexManager, options);
 
         for (CustomIndexExpression expression : filterRestrictions.getCustomIndexExpressions())
-            expression.addToRowFilter(filter, table, options);
+            expression.addToRowFilter(filter, cfm, options);
 
         return filter;
     }
@@ -649,7 +663,7 @@ public final class StatementRestrictions
      */
     public AbstractBounds<PartitionPosition> getPartitionKeyBounds(QueryOptions options)
     {
-        IPartitioner p = table.partitioner;
+        IPartitioner p = cfm.partitioner;
 
         if (partitionKeyRestrictions.isOnToken())
         {
@@ -664,7 +678,7 @@ public final class StatementRestrictions
     {
         // Deal with unrestricted partition key components (special-casing is required to deal with 2i queries on the
         // first component of a composite partition key) queries that filter on the partition key.
-        if (partitionKeyRestrictions.needFiltering(table))
+        if (partitionKeyRestrictions.needFiltering(cfm))
             return new Range<>(p.getMinimumToken().minKeyBound(), p.getMinimumToken().maxKeyBound());
 
         ByteBuffer startKeyBytes = getPartitionKeyBound(Bound.START, options);
@@ -750,8 +764,8 @@ public final class StatementRestrictions
         // If this is a names command and the table is a static compact one, then as far as CQL is concerned we have
         // only a single row which internally correspond to the static parts. In which case we want to return an empty
         // set (since that's what ClusteringIndexNamesFilter expects).
-        if (table.isStaticCompactTable())
-            return BTreeSet.empty(table.comparator);
+        if (cfm.isStaticCompactTable())
+            return BTreeSet.empty(cfm.comparator);
 
         return clusteringColumnsRestrictions.valuesAsClustering(options);
     }
@@ -778,7 +792,7 @@ public final class StatementRestrictions
         // For static compact tables we want to ignore the fake clustering column (note that if we weren't special casing,
         // this would mean a 'SELECT *' on a static compact table would query whole partitions, even though we'll only return
         // the static part as far as CQL is concerned. This is thus mostly an optimization to use the query-by-name path).
-        int numberOfClusteringColumns = table.isStaticCompactTable() ? 0 : table.clusteringColumns().size();
+        int numberOfClusteringColumns = cfm.isStaticCompactTable() ? 0 : cfm.clusteringColumns().size();
         // it is a range query if it has at least one the column alias for which no relation is defined or is not EQ or IN.
         return clusteringColumnsRestrictions.size() < numberOfClusteringColumns
             || !clusteringColumnsRestrictions.hasOnlyEqualityRestrictions();
@@ -820,7 +834,7 @@ public final class StatementRestrictions
     public boolean hasAllPKColumnsRestrictedByEqualities()
     {
         return !isPartitionKeyRestrictionsOnToken()
-                && !partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(table)
+                && !partitionKeyRestrictions.hasUnrestrictedPartitionKeyComponents(cfm)
                 && (partitionKeyRestrictions.hasOnlyEqualityRestrictions())
                 && !hasUnrestrictedClusteringColumns()
                 && (clusteringColumnsRestrictions.hasOnlyEqualityRestrictions());
@@ -834,10 +848,15 @@ public final class StatementRestrictions
     {
         return hasRegularColumnsRestrictions;
     }
-    
-    @Override
-    public String toString()
+
+    private SuperColumnCompatibility.SuperColumnRestrictions cached;
+    public SuperColumnCompatibility.SuperColumnRestrictions getSuperColumnRestrictions()
     {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
+        assert cfm.isSuper() && cfm.isDense();
+
+        if (cached == null)
+            cached = new SuperColumnCompatibility.SuperColumnRestrictions(Iterators.concat(clusteringColumnsRestrictions.iterator(),
+                                                                                           nonPrimaryKeyRestrictions.iterator()));
+        return cached;
     }
 }

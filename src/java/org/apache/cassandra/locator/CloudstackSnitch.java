@@ -24,6 +24,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.File;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -55,7 +56,7 @@ public class CloudstackSnitch extends AbstractNetworkTopologySnitch
     protected static final Logger logger = LoggerFactory.getLogger(CloudstackSnitch.class);
     protected static final String ZONE_NAME_QUERY_URI = "/latest/meta-data/availability-zone";
 
-    private Map<InetAddressAndPort, Map<String, String>> savedEndpoints;
+    private Map<InetAddress, Map<String, String>> savedEndpoints;
 
     private static final String DEFAULT_DC = "UNKNOWN-DC";
     private static final String DEFAULT_RACK = "UNKNOWN-RACK";
@@ -82,9 +83,9 @@ public class CloudstackSnitch extends AbstractNetworkTopologySnitch
         csZoneRack = zone_parts[2];
     }
 
-    public String getRack(InetAddressAndPort endpoint)
+    public String getRack(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return csZoneRack;
         EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
         if (state == null || state.getApplicationState(ApplicationState.RACK) == null)
@@ -98,9 +99,9 @@ public class CloudstackSnitch extends AbstractNetworkTopologySnitch
         return state.getApplicationState(ApplicationState.RACK).value;
     }
 
-    public String getDatacenter(InetAddressAndPort endpoint)
+    public String getDatacenter(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return csZoneDc;
         EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
         if (state == null || state.getApplicationState(ApplicationState.DC) == null)

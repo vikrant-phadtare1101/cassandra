@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.locator;
 
+import java.net.InetAddress;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.Map;
 
@@ -44,7 +45,7 @@ public class GossipingPropertyFileSnitch extends AbstractNetworkTopologySnitch//
     private final boolean preferLocal;
     private final AtomicReference<ReconnectableSnitchHelper> snitchHelperReference;
 
-    private Map<InetAddressAndPort, Map<String, String>> savedEndpoints;
+    private Map<InetAddress, Map<String, String>> savedEndpoints;
     private static final String DEFAULT_DC = "UNKNOWN_DC";
     private static final String DEFAULT_RACK = "UNKNOWN_RACK";
 
@@ -83,9 +84,9 @@ public class GossipingPropertyFileSnitch extends AbstractNetworkTopologySnitch//
      * @param endpoint the endpoint to process
      * @return string of data center
      */
-    public String getDatacenter(InetAddressAndPort endpoint)
+    public String getDatacenter(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return myDC;
 
         EndpointState epState = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
@@ -111,9 +112,9 @@ public class GossipingPropertyFileSnitch extends AbstractNetworkTopologySnitch//
      * @param endpoint the endpoint to process
      * @return string of rack
      */
-    public String getRack(InetAddressAndPort endpoint)
+    public String getRack(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return myRack;
 
         EndpointState epState = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
@@ -137,10 +138,8 @@ public class GossipingPropertyFileSnitch extends AbstractNetworkTopologySnitch//
     {
         super.gossiperStarting();
 
-        Gossiper.instance.addLocalApplicationState(ApplicationState.INTERNAL_ADDRESS_AND_PORT,
-                                                   StorageService.instance.valueFactory.internalAddressAndPort(FBUtilities.getLocalAddressAndPort()));
         Gossiper.instance.addLocalApplicationState(ApplicationState.INTERNAL_IP,
-                StorageService.instance.valueFactory.internalIP(FBUtilities.getJustLocalAddress().getHostAddress()));
+                StorageService.instance.valueFactory.internalIP(FBUtilities.getLocalAddress().getHostAddress()));
 
         loadGossiperState();
     }

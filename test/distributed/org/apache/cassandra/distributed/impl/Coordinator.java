@@ -51,10 +51,10 @@ public class Coordinator implements ICoordinator
     public Object[][] execute(String query, Enum<?> consistencyLevelOrigin, Object... boundValues)
     {
         return instance.sync(() -> {
-            ClientState clientState = makeFakeClientState();
-            CQLStatement prepared = QueryProcessor.getStatement(query, clientState);
-            List<ByteBuffer> boundBBValues = new ArrayList<>();
             ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(consistencyLevelOrigin.name());
+            ClientState clientState = makeFakeClientState();
+            CQLStatement prepared = QueryProcessor.getStatement(query, clientState).statement;
+            List<ByteBuffer> boundBBValues = new ArrayList<>();
             for (Object boundValue : boundValues)
             {
                 boundBBValues.add(ByteBufferUtil.objectToBytes(boundValue));
@@ -67,9 +67,8 @@ public class Coordinator implements ICoordinator
                                                                      Integer.MAX_VALUE,
                                                                      null,
                                                                      null,
-                                                                     ProtocolVersion.V4,
-                                                                     null),
-                                                 System.nanoTime());
+                                                                     ProtocolVersion.CURRENT),
+                                                  System.nanoTime());
 
             if (res != null && res.kind == ResultMessage.Kind.ROWS)
             {
@@ -89,16 +88,16 @@ public class Coordinator implements ICoordinator
             throw new IllegalArgumentException("Page size should be strictly positive but was " + pageSize);
 
         return instance.sync(() -> {
-            ClientState clientState = makeFakeClientState();
             ConsistencyLevel consistencyLevel = ConsistencyLevel.valueOf(consistencyLevelOrigin.name());
-            CQLStatement prepared = QueryProcessor.getStatement(query, clientState);
+            ClientState clientState = makeFakeClientState();
+            CQLStatement prepared = QueryProcessor.getStatement(query, clientState).statement;
             List<ByteBuffer> boundBBValues = new ArrayList<>();
             for (Object boundValue : boundValues)
             {
                 boundBBValues.add(ByteBufferUtil.objectToBytes(boundValue));
             }
 
-            prepared.validate(clientState);
+            prepared.validate(QueryState.forInternalCalls().getClientState());
             assert prepared instanceof SelectStatement : "Only SELECT statements can be executed with paging";
 
             SelectStatement selectStatement = (SelectStatement) prepared;
@@ -109,8 +108,7 @@ public class Coordinator implements ICoordinator
                                                                             pageSize,
                                                                             null,
                                                                             null,
-                                                                            ProtocolVersion.CURRENT,
-                                                                            selectStatement.keyspace()),
+                                                                            ProtocolVersion.CURRENT),
                                                         FBUtilities.nowInSeconds())
                                               .getPager(null, ProtocolVersion.CURRENT);
 
@@ -135,6 +133,6 @@ public class Coordinator implements ICoordinator
 
     private static final ClientState makeFakeClientState()
     {
-        return ClientState.forExternalCalls(new InetSocketAddress(FBUtilities.getJustLocalAddress(), 9042));
+        return ClientState.forExternalCalls(new InetSocketAddress(FBUtilities.getLocalAddress(), 9042));
     }
 }
