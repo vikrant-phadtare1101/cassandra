@@ -68,10 +68,16 @@ public class MemtableCleanerThread<P extends MemtablePool> extends InfiniteLoopE
     }
 
     private final Runnable trigger;
-    private MemtableCleanerThread(Clean<P> clean)
+    private MemtableCleanerThread(final Clean<P> clean)
     {
         super(clean.pool.getClass().getSimpleName() + "Cleaner", clean);
-        this.trigger = clean.wait::signal;
+        this.trigger = new Runnable()
+        {
+            public void run()
+            {
+                clean.wait.signal();
+            }
+        };
     }
 
     MemtableCleanerThread(P pool, Runnable cleaner)

@@ -25,28 +25,21 @@ import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.FloatSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 
-public class FloatType extends NumberType<Float>
+public class FloatType extends AbstractType<Float>
 {
     public static final FloatType instance = new FloatType();
 
-    FloatType() {super(ComparisonType.CUSTOM);} // singleton
+    FloatType() {} // singleton
 
     public boolean isEmptyValueMeaningless()
     {
         return true;
     }
 
-    @Override
-    public boolean isFloatingPoint()
-    {
-        return true;
-    }
-
-    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
+    public int compare(ByteBuffer o1, ByteBuffer o2)
     {
         if (!o1.hasRemaining() || !o2.hasRemaining())
             return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
@@ -62,7 +55,8 @@ public class FloatType extends NumberType<Float>
 
       try
       {
-          return decompose(Float.parseFloat(source));
+          float f = Float.parseFloat(source);
+          return ByteBufferUtil.bytes(f);
       }
       catch (NumberFormatException e1)
       {
@@ -88,7 +82,7 @@ public class FloatType extends NumberType<Float>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         Float value = getSerializer().deserialize(buffer);
         // JSON does not support NaN, Infinity and -Infinity values. Most of the parser convert them into null.
@@ -105,59 +99,5 @@ public class FloatType extends NumberType<Float>
     public TypeSerializer<Float> getSerializer()
     {
         return FloatSerializer.instance;
-    }
-
-    @Override
-    public int valueLengthIfFixed()
-    {
-        return 4;
-    }
-
-    @Override
-    protected int toInt(ByteBuffer value)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    protected float toFloat(ByteBuffer value)
-    {
-        return ByteBufferUtil.toFloat(value);
-    }
-
-    @Override
-    protected double toDouble(ByteBuffer value)
-    {
-        return toFloat(value);
-    }
-
-    public ByteBuffer add(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes(leftType.toFloat(left) + rightType.toFloat(right));
-    }
-
-    public ByteBuffer substract(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes(leftType.toFloat(left) - rightType.toFloat(right));
-    }
-
-    public ByteBuffer multiply(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes(leftType.toFloat(left) * rightType.toFloat(right));
-    }
-
-    public ByteBuffer divide(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes(leftType.toFloat(left) / rightType.toFloat(right));
-    }
-
-    public ByteBuffer mod(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes(leftType.toFloat(left) % rightType.toFloat(right));
-    }
-
-    public ByteBuffer negate(ByteBuffer input)
-    {
-        return ByteBufferUtil.bytes(-toFloat(input));
     }
 }

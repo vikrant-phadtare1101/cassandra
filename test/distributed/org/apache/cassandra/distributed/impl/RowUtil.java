@@ -49,11 +49,6 @@ public class RowUtil
         return result;
     }
 
-    public static Iterator<Object[]> toObjects(UntypedResultSet rs)
-    {
-        return toObjects(rs.metadata(), rs.iterator());
-    }
-
     public static Iterator<Object[]> toObjects(List<ColumnSpecification> columnSpecs, Iterator<UntypedResultSet.Row> rs)
     {
         return Iterators.transform(rs,
@@ -63,10 +58,8 @@ public class RowUtil
                                        {
                                            ColumnSpecification columnSpec = columnSpecs.get(i);
                                            ByteBuffer bb = row.getBytes(columnSpec.name.toString());
-
                                            if (bb != null)
                                                objectRow[i] = columnSpec.type.getSerializer().deserialize(bb);
-
                                        }
                                        return objectRow;
                                    });

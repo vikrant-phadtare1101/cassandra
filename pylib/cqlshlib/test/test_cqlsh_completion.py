@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # to configure behavior, define $CQL_TEST_HOST to the destination address
-# and $CQL_TEST_PORT to the associated port.
+# for Thrift connections, and $CQL_TEST_PORT to the associated port.
 
 from __future__ import with_statement
 
@@ -42,7 +42,7 @@ completion_separation_re = re.compile(r'\s+')
 class CqlshCompletionCase(BaseTestCase):
 
     def setUp(self):
-        self.cqlsh_runner = testrun_cqlsh(cqlver=None, env={'COLUMNS': '100000'})
+        self.cqlsh_runner = testrun_cqlsh(cqlver=cqlsh.DEFAULT_CQLVER, env={'COLUMNS': '100000'})
         self.cqlsh = self.cqlsh_runner.__enter__()
 
     def tearDown(self):
@@ -367,12 +367,12 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=['EXISTS', '<quotedName>', '<identifier>'])
 
         self.trycompletions("UPDATE empty_table SET lonelycol = 'eggs' WHERE TOKEN(lonelykey) <= TOKEN(13) IF EXISTS ",
-                            choices=['>=', '!=', '<=', 'IN', '[', ';', '=', '<', '>', '.'])
+                            choices=['>=', '!=', '<=', 'IN', '[', ';', '=', '<', '>'])
 
     def test_complete_in_delete(self):
         self.trycompletions('DELETE F', choices=['FROM', '<identifier>', '<quotedName>'])
 
-        self.trycompletions('DELETE a ', choices=['FROM', '[', '.', ','])
+        self.trycompletions('DELETE a ', choices=['FROM', '[', ','])
         self.trycompletions('DELETE a [',
                             choices=['<wholenumber>', 'false', '-', '<uuid>',
                                      '<pgStringLiteral>', '<float>', 'TOKEN',
@@ -406,7 +406,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                                      'utf8_with_special_chars',
                                      'system_traces.', 'songs',
                                      'system_auth.', 'system_distributed.',
-                                     'system_schema.', 'system_traces.',
+                                     'system_traces.',
                                      '"' + self.cqlsh.keyspace + '".'],
                             other_choices_ok=True)
         self.trycompletions('DELETE FROM twenty_rows_composite_table ',
@@ -449,7 +449,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             choices=['EXISTS', '<identifier>', '<quotedName>'])
         self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
                              'TOKEN(a) >= TOKEN(0) IF b '),
-                            choices=['>=', '!=', '<=', 'IN', '=', '<', '>'])
+                            choices=['>=', '!=', '<=', 'IN', '[', '=', '<', '>'])
         self.trycompletions(('DELETE FROM twenty_rows_composite_table USING TIMESTAMP 0 WHERE '
                              'TOKEN(a) >= TOKEN(0) IF b < 0 '),
                             choices=['AND', ';'])
@@ -523,7 +523,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions('DROP ',
                             choices=['AGGREGATE', 'COLUMNFAMILY', 'FUNCTION',
                                      'INDEX', 'KEYSPACE', 'ROLE', 'TABLE',
-                                     'TRIGGER', 'TYPE', 'USER', 'MATERIALIZED'])
+                                     'TRIGGER', 'TYPE', 'USER'])
 
     def test_complete_in_drop_keyspace(self):
         self.trycompletions('DROP K', immediate='EYSPACE ')
@@ -589,21 +589,23 @@ class TestCqlshCompletion(CqlshCompletionCase):
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH ',
                             choices=['bloom_filter_fp_chance', 'compaction',
                                      'compression',
+                                     'dclocal_read_repair_chance',
                                      'default_time_to_live', 'gc_grace_seconds',
                                      'max_index_interval',
                                      'memtable_flush_period_in_ms',
-                                     'CLUSTERING',
+                                     'read_repair_chance', 'CLUSTERING',
                                      'COMPACT', 'caching', 'comment',
-                                     'min_index_interval', 'speculative_retry', 'additional_write_policy', 'cdc'])
+                                     'min_index_interval', 'speculative_retry'])
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH ',
                             choices=['bloom_filter_fp_chance', 'compaction',
                                      'compression',
+                                     'dclocal_read_repair_chance',
                                      'default_time_to_live', 'gc_grace_seconds',
                                      'max_index_interval',
                                      'memtable_flush_period_in_ms',
-                                     'CLUSTERING',
+                                     'read_repair_chance', 'CLUSTERING',
                                      'COMPACT', 'caching', 'comment',
-                                     'min_index_interval', 'speculative_retry', 'additional_write_policy', 'cdc'])
+                                     'min_index_interval', 'speculative_retry'])
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH bloom_filter_fp_chance ',
                             immediate='= ')
         self.trycompletions(prefix + ' new_table (col_a int PRIMARY KEY) WITH bloom_filter_fp_chance = ',
@@ -615,8 +617,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             + "{'class': '",
                             choices=['SizeTieredCompactionStrategy',
                                      'LeveledCompactionStrategy',
-                                     'DateTieredCompactionStrategy',
-                                     'TimeWindowCompactionStrategy'])
+                                     'DateTieredCompactionStrategy'])
         self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
                             + "{'class': 'S",
                             immediate="izeTieredCompactionStrategy'")
@@ -636,8 +637,7 @@ class TestCqlshCompletion(CqlshCompletionCase):
                                      'min_sstable_size', 'min_threshold',
                                      'tombstone_compaction_interval',
                                      'tombstone_threshold',
-                                     'unchecked_tombstone_compaction',
-                                     'only_purge_repaired_tombstones'])
+                                     'unchecked_tombstone_compaction'])
         self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
                             + "{'class': 'SizeTieredCompactionStrategy'}",
                             choices=[';', 'AND'])
@@ -645,26 +645,20 @@ class TestCqlshCompletion(CqlshCompletionCase):
                             + "{'class': 'SizeTieredCompactionStrategy'} AND ",
                             choices=['bloom_filter_fp_chance', 'compaction',
                                      'compression',
+                                     'dclocal_read_repair_chance',
                                      'default_time_to_live', 'gc_grace_seconds',
                                      'max_index_interval',
                                      'memtable_flush_period_in_ms',
-                                     'CLUSTERING',
+                                     'read_repair_chance', 'CLUSTERING',
                                      'COMPACT', 'caching', 'comment',
-                                     'min_index_interval', 'speculative_retry', 'additional_write_policy', 'cdc'])
+                                     'min_index_interval', 'speculative_retry'])
         self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
                             + "{'class': 'DateTieredCompactionStrategy', '",
                             choices=['base_time_seconds', 'max_sstable_age_days',
                                      'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
                                      'tombstone_compaction_interval', 'tombstone_threshold',
                                      'enabled', 'unchecked_tombstone_compaction',
-                                     'max_window_size_seconds', 'only_purge_repaired_tombstones'])
-        self.trycompletions(prefix + " new_table (col_a int PRIMARY KEY) WITH compaction = "
-                            + "{'class': 'TimeWindowCompactionStrategy', '",
-                            choices=['compaction_window_unit', 'compaction_window_size',
-                                     'timestamp_resolution', 'min_threshold', 'class', 'max_threshold',
-                                     'tombstone_compaction_interval', 'tombstone_threshold',
-                                     'enabled', 'unchecked_tombstone_compaction',
-                                     'only_purge_repaired_tombstones'])
+                                     'max_window_size_seconds'])
 
     def test_complete_in_create_columnfamily(self):
         self.trycompletions('CREATE C', choices=['COLUMNFAMILY', 'CUSTOM'])

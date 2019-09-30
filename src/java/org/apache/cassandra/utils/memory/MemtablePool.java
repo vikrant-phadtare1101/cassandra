@@ -24,11 +24,8 @@ import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
 import com.google.common.annotations.VisibleForTesting;
 
-import com.codahale.metrics.Timer;
-import org.apache.cassandra.metrics.CassandraMetricsRegistry;
-import org.apache.cassandra.metrics.DefaultNameFactory;
-import org.apache.cassandra.utils.concurrent.WaitQueue;
 import org.apache.cassandra.utils.ExecutorUtils;
+import org.apache.cassandra.utils.concurrent.WaitQueue;
 
 
 /**
@@ -43,8 +40,6 @@ public abstract class MemtablePool
     public final SubPool onHeap;
     public final SubPool offHeap;
 
-    public final Timer blockedOnAllocating;
-
     final WaitQueue hasRoom = new WaitQueue();
 
     MemtablePool(long maxOnHeapMemory, long maxOffHeapMemory, float cleanThreshold, Runnable cleaner)
@@ -52,8 +47,6 @@ public abstract class MemtablePool
         this.onHeap = getSubPool(maxOnHeapMemory, cleanThreshold);
         this.offHeap = getSubPool(maxOffHeapMemory, cleanThreshold);
         this.cleaner = getCleaner(cleaner);
-        blockedOnAllocating = CassandraMetricsRegistry.Metrics.timer(new DefaultNameFactory("MemtablePool")
-                                                                         .createMetricName("BlockedOnAllocation"));
         if (this.cleaner != null)
             this.cleaner.start();
     }
@@ -68,11 +61,14 @@ public abstract class MemtablePool
         return cleaner == null ? null : new MemtableCleanerThread<>(this, cleaner);
     }
 
+    public abstract boolean needToCopyOnHeap();
+
     @VisibleForTesting
     public void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {
         ExecutorUtils.shutdownNowAndWait(timeout, unit, cleaner);
     }
+
 
     public abstract MemtableAllocator newAllocator();
 
@@ -225,11 +221,6 @@ public abstract class MemtablePool
         public WaitQueue hasRoom()
         {
             return hasRoom;
-        }
-
-        public Timer.Context blockedTimerContext()
-        {
-            return blockedOnAllocating.time();
         }
     }
 

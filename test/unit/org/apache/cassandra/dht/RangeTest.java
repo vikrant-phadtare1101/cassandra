@@ -1,20 +1,21 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+* Licensed to the Apache Software Foundation (ASF) under one
+* or more contributor license agreements.  See the NOTICE file
+* distributed with this work for additional information
+* regarding copyright ownership.  The ASF licenses this file
+* to you under the Apache License, Version 2.0 (the
+* "License"); you may not use this file except in compliance
+* with the License.  You may obtain a copy of the License at
+*
+*    http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing,
+* software distributed under the License is distributed on an
+* "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+* KIND, either express or implied.  See the License for the
+* specific language governing permissions and limitations
+* under the License.
+*/
 package org.apache.cassandra.dht;
 
 import java.nio.ByteBuffer;
@@ -27,30 +28,22 @@ import java.util.Random;
 import java.util.Set;
 
 import com.google.common.base.Joiner;
-import org.apache.commons.lang3.StringUtils;
-import org.junit.BeforeClass;
-import org.junit.Test;
-
-import org.apache.commons.collections.CollectionUtils;
-
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.PartitionPosition;
-import org.apache.cassandra.dht.ByteOrderedPartitioner.BytesToken;
-import org.apache.cassandra.dht.RandomPartitioner.BigIntegerToken;
 
 import static java.util.Arrays.asList;
+
+import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.junit.Test;
+import org.apache.cassandra.db.RowPosition;
+import org.apache.cassandra.dht.RandomPartitioner.BigIntegerToken;
+import org.apache.cassandra.dht.ByteOrderedPartitioner.BytesToken;
+
 import static org.apache.cassandra.Util.range;
 import static org.junit.Assert.*;
 
 
 public class RangeTest
 {
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     @Test
     public void testContains()
     {
@@ -198,7 +191,7 @@ public class RangeTest
     }
 
     @SafeVarargs
-    static <T extends RingPosition<T>> void assertIntersection(Range<T> one, Range<T> two, Range<T>... ranges)
+    static <T extends RingPosition<T>> void assertIntersection(Range<T> one, Range<T> two, Range<T> ... ranges)
     {
         Set<Range<T>> correct = Range.rangeSet(ranges);
         Set<Range<T>> result1 = one.intersectionWith(two);
@@ -340,7 +333,7 @@ public class RangeTest
 
     private Range<Token> makeRange(long token1, long token2)
     {
-        return new Range<>(new Murmur3Partitioner.LongToken(token1), new Murmur3Partitioner.LongToken(token2));
+        return new Range<Token>(new Murmur3Partitioner.LongToken(token1), new Murmur3Partitioner.LongToken(token2));
     }
 
     private void assertRanges(Set<Range<Token>> result, Long ... tokens)
@@ -371,8 +364,6 @@ public class RangeTest
         assertRanges(range.subtractAll(collection), 10L, 54L, 60L, 90L);
         collection.add(makeRange(80L, 95L));
         assertRanges(range.subtractAll(collection), 10L, 54L, 60L, 80L);
-
-        assertEquals(Collections.emptySet(), range.subtractAll(Collections.singleton(range)));
     }
 
     @Test
@@ -391,44 +382,6 @@ public class RangeTest
         assertRanges(range.subtractAll(collection), 100L, 200L, 500L, 0L);
         collection.add(makeRange(1000L, 0));
         assertRanges(range.subtractAll(collection), 100L, 200L, 500L, 1000L);
-
-        assertEquals(Collections.emptySet(), range.subtractAll(Collections.singleton(range)));
-    }
-
-    @Test
-    public void testSubtractAllFromFullRingRange()
-    {
-        Range<Token> ring1 = makeRange(50L, 50L);
-        Range<Token> ring2 = makeRange(0L, 0L);
-
-        Set<Range<Token>> contained1 = Collections.singleton(makeRange(10L, 100L));
-        Set<Range<Token>> contained2 = Collections.singleton(makeRange(100L, 10L));
-
-        assertEquals(contained2, ring1.subtractAll(contained1));
-        assertEquals(contained2, ring2.subtractAll(contained1));
-        assertEquals(contained1, ring1.subtractAll(contained2));
-        assertEquals(contained1, ring2.subtractAll(contained2));
-        assertEquals(Collections.emptySet(), ring1.subtractAll(Collections.singleton(ring1)));
-        assertEquals(Collections.emptySet(), ring2.subtractAll(Collections.singleton(ring2)));
-        assertEquals(Collections.emptySet(), ring1.subtractAll(Collections.singleton(ring2)));
-    }
-
-    @Test
-    public void testSubtractFromFullRingRange()
-    {
-        Range<Token> ring1 = makeRange(50L, 50L);
-        Range<Token> ring2 = makeRange(0L, 0L);
-
-        Range<Token> contained1 = makeRange(10L, 100L);
-        Range<Token> contained2 = makeRange(100L, 10L);
-
-        assertEquals(Collections.singleton(contained2), ring1.subtract(contained1));
-        assertEquals(Collections.singleton(contained2), ring2.subtract(contained1));
-        assertEquals(Collections.singleton(contained1), ring1.subtract(contained2));
-        assertEquals(Collections.singleton(contained1), ring2.subtract(contained2));
-        assertEquals(Collections.emptySet(), ring1.subtract(ring1));
-        assertEquals(Collections.emptySet(), ring2.subtract(ring2));
-        assertEquals(Collections.emptySet(), ring1.subtract(ring2));
     }
     
     private Range<Token> makeRange(String token1, String token2)
@@ -587,7 +540,7 @@ public class RangeTest
     @Test
     public void testNormalizeNoop()
     {
-        List<Range<PartitionPosition>> l;
+        List<Range<RowPosition>> l;
 
         l = asList(range("1", "3"), range("4", "5"));
         assertNormalize(l, l);
@@ -596,7 +549,7 @@ public class RangeTest
     @Test
     public void testNormalizeSimpleOverlap()
     {
-        List<Range<PartitionPosition>> input, expected;
+        List<Range<RowPosition>> input, expected;
 
         input = asList(range("1", "4"), range("3", "5"));
         expected = asList(range("1", "5"));
@@ -610,7 +563,7 @@ public class RangeTest
     @Test
     public void testNormalizeSort()
     {
-        List<Range<PartitionPosition>> input, expected;
+        List<Range<RowPosition>> input, expected;
 
         input = asList(range("4", "5"), range("1", "3"));
         expected = asList(range("1", "3"), range("4", "5"));
@@ -620,7 +573,7 @@ public class RangeTest
     @Test
     public void testNormalizeUnwrap()
     {
-        List<Range<PartitionPosition>> input, expected;
+        List<Range<RowPosition>> input, expected;
 
         input = asList(range("9", "2"));
         expected = asList(range("", "2"), range("9", ""));
@@ -630,7 +583,7 @@ public class RangeTest
     @Test
     public void testNormalizeComplex()
     {
-        List<Range<PartitionPosition>> input, expected;
+        List<Range<RowPosition>> input, expected;
 
         input = asList(range("8", "2"), range("7", "9"), range("4", "5"));
         expected = asList(range("", "2"), range("4", "5"), range("7", ""));
@@ -682,7 +635,7 @@ public class RangeTest
             Range.OrderedRangeContainmentChecker checker = new Range.OrderedRangeContainmentChecker(ranges);
             for (Token t : tokensToTest)
             {
-                if (checker.test(t) != Range.isInRanges(t, ranges)) // avoid running Joiner.on(..) every iteration
+                if (checker.contains(t) != Range.isInRanges(t, ranges)) // avoid running Joiner.on(..) every iteration
                     fail(String.format("This should never flap! If it does, it is a bug (ranges = %s, token = %s)", Joiner.on(",").join(ranges), t));
             }
         }
@@ -693,11 +646,11 @@ public class RangeTest
     {
         List<Range<Token>> ranges = asList(r(Long.MIN_VALUE, Long.MIN_VALUE + 1), r(Long.MAX_VALUE - 1, Long.MAX_VALUE));
         Range.OrderedRangeContainmentChecker checker = new Range.OrderedRangeContainmentChecker(ranges);
-        assertFalse(checker.test(t(Long.MIN_VALUE)));
-        assertTrue(checker.test(t(Long.MIN_VALUE + 1)));
-        assertFalse(checker.test(t(0)));
-        assertFalse(checker.test(t(Long.MAX_VALUE - 1)));
-        assertTrue(checker.test(t(Long.MAX_VALUE)));
+        assertFalse(checker.contains(t(Long.MIN_VALUE)));
+        assertTrue(checker.contains(t(Long.MIN_VALUE + 1)));
+        assertFalse(checker.contains(t(0)));
+        assertFalse(checker.contains(t(Long.MAX_VALUE - 1)));
+        assertTrue(checker.contains(t(Long.MAX_VALUE)));
     }
 
     private static Range<Token> r(long left, long right)

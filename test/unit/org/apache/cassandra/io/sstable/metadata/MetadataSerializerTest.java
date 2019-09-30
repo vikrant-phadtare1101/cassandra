@@ -18,44 +18,35 @@
 package org.apache.cassandra.io.sstable.metadata;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.Set;
 
-import org.junit.BeforeClass;
+import com.google.common.collect.Sets;
+
 import org.junit.Test;
 
-import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.commitlog.CommitLogPosition;
-import org.apache.cassandra.db.commitlog.IntervalSet;
+import org.apache.cassandra.db.commitlog.ReplayPosition;
+import org.apache.cassandra.db.composites.SimpleDenseCellNameType;
+import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
-import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
+import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
 import org.apache.cassandra.io.util.RandomAccessReader;
+import org.apache.cassandra.utils.EstimatedHistogram;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 public class MetadataSerializerTest
 {
-    @BeforeClass
-    public static void initDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     @Test
     public void testSerialization() throws IOException
     {
@@ -64,7 +55,7 @@ public class MetadataSerializerTest
         MetadataSerializer serializer = new MetadataSerializer();
         File statsFile = serialize(originalMetadata, serializer, BigFormat.latestVersion);
 
-        Descriptor desc = new Descriptor(statsFile.getParentFile(), "", "", 0, SSTableFormat.Type.BIG);
+        Descriptor desc = new Descriptor( statsFile.getParentFile(), "", "", 0, Descriptor.Type.FINAL);
         try (RandomAccessReader in = RandomAccessReader.open(statsFile))
         {
             Map<MetadataType, MetadataComponent> deserialized = serializer.deserialize(desc, in, EnumSet.allOf(MetadataType.class));
@@ -77,84 +68,58 @@ public class MetadataSerializerTest
     }
 
     public File serialize(Map<MetadataType, MetadataComponent> metadata, MetadataSerializer serializer, Version version)
-            throws IOException
+            throws IOException, FileNotFoundException
     {
         // Serialize to tmp file
-        File statsFile = FileUtils.createTempFile(Component.STATS.name, null);
+        File statsFile = File.createTempFile(Component.STATS.name, null);
         try (DataOutputStreamPlus out = new BufferedDataOutputStreamPlus(new FileOutputStream(statsFile)))
         {
-            serializer.serialize(metadata, out, version);
+            serializer.serialize(metadata, version, out);
         }
         return statsFile;
     }
 
     public Map<MetadataType, MetadataComponent> constructMetadata()
     {
-        CommitLogPosition club = new CommitLogPosition(11L, 12);
-        CommitLogPosition cllb = new CommitLogPosition(9L, 12);
+        EstimatedHistogram rowSizes = new EstimatedHistogram(new long[] { 1L, 2L },
+                                                             new long[] { 3L, 4L, 5L });
+        EstimatedHistogram columnCounts = new EstimatedHistogram(new long[] { 6L, 7L },
+                                                                 new long[] { 8L, 9L, 10L });
+        ReplayPosition start = new ReplayPosition(11L, 12);
+        ReplayPosition end = new ReplayPosition(15L, 9);
+        long minTimestamp = 2162517136L;
+        long maxTimestamp = 4162517136L;
 
-        TableMetadata cfm = SchemaLoader.standardCFMD("ks1", "cf1").build();
-        MetadataCollector collector = new MetadataCollector(cfm.comparator)
-                                          .commitLogIntervals(new IntervalSet<>(cllb, club));
+        MetadataCollector collector = new MetadataCollector(new SimpleDenseCellNameType(BytesType.instance))
+                                                      .estimatedRowSize(rowSizes)
+                                                      .estimatedColumnCount(columnCounts)
+                                                      .commitLogLowerBound(start)
+                                                      .commitLogUpperBound(end);
+        collector.updateMinTimestamp(minTimestamp);
+        collector.updateMaxTimestamp(maxTimestamp);
+
+        Set<Integer> ancestors = Sets.newHashSet(1, 2, 3, 4);
+        for (int i : ancestors)
+            collector.addAncestor(i);
 
         String partitioner = RandomPartitioner.class.getCanonicalName();
         double bfFpChance = 0.1;
-        return collector.finalizeMetadata(partitioner, bfFpChance, 0, null, false, SerializationHeader.make(cfm, Collections.emptyList()));
+        Map<MetadataType, MetadataComponent> originalMetadata = collector.finalizeMetadata(partitioner, bfFpChance, 0);
+        return originalMetadata;
     }
 
     @Test
-    public void testMaReadMa() throws IOException
-    {
-        testOldReadsNew("ma", "ma");
-    }
-
-    @Test
-    public void testMaReadMb() throws IOException
-    {
-        testOldReadsNew("ma", "mb");
-    }
-
-    @Test
-    public void testMaReadMc() throws IOException
-    {
-        testOldReadsNew("ma", "mc");
-    }
-
-    @Test
-    public void testMbReadMb() throws IOException
-    {
-        testOldReadsNew("mb", "mb");
-    }
-
-    @Test
-    public void testMbReadMc() throws IOException
-    {
-        testOldReadsNew("mb", "mc");
-    }
-
-    @Test
-    public void testMcReadMc() throws IOException
-    {
-        testOldReadsNew("mc", "mc");
-    }
-
-    @Test
-    public void testNaReadNa() throws IOException
-    {
-        testOldReadsNew("na", "na");
-    }
-
-    public void testOldReadsNew(String oldV, String newV) throws IOException
+    public void testLaReadsLb() throws IOException
     {
         Map<MetadataType, MetadataComponent> originalMetadata = constructMetadata();
 
         MetadataSerializer serializer = new MetadataSerializer();
         // Write metadata in two minor formats.
-        File statsFileLb = serialize(originalMetadata, serializer, BigFormat.instance.getVersion(newV));
-        File statsFileLa = serialize(originalMetadata, serializer, BigFormat.instance.getVersion(oldV));
+        File statsFileLb = serialize(originalMetadata, serializer, BigFormat.instance.getVersion("lb"));
+        File statsFileLa = serialize(originalMetadata, serializer, BigFormat.instance.getVersion("la"));
+
         // Reading both as earlier version should yield identical results.
-        SSTableFormat.Type stype = SSTableFormat.Type.current();
-        Descriptor desc = new Descriptor(stype.info.getVersion(oldV), statsFileLb.getParentFile(), "", "", 0, stype);
+        Descriptor desc = new Descriptor("la", statsFileLb.getParentFile(), "", "", 0, Descriptor.Type.FINAL, DatabaseDescriptor.getSSTableFormat());
         try (RandomAccessReader inLb = RandomAccessReader.open(statsFileLb);
              RandomAccessReader inLa = RandomAccessReader.open(statsFileLa))
         {
@@ -164,19 +129,12 @@ public class MetadataSerializerTest
             for (MetadataType type : MetadataType.values())
             {
                 assertEquals(deserializedLa.get(type), deserializedLb.get(type));
-
-                if (MetadataType.STATS != type)
-                    assertEquals(originalMetadata.get(type), deserializedLb.get(type));
+                if (!originalMetadata.get(type).equals(deserializedLb.get(type)))
+                {
+                    // Currently only STATS can be different. Change if no longer the case
+                    assertEquals(MetadataType.STATS, type);
+                }
             }
         }
-    }
-
-    @Test
-    public void pendingRepairCompatibility()
-    {
-        Version mc = BigFormat.instance.getVersion("mc");
-        assertFalse(mc.hasPendingRepair());
-        Version na = BigFormat.instance.getVersion("na");
-        assertTrue(na.hasPendingRepair());
     }
 }

@@ -28,14 +28,20 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.messages.ResultMessage;
 
-public abstract class AuthenticationStatement extends CQLStatement.Raw implements CQLStatement
+public abstract class AuthenticationStatement extends ParsedStatement implements CQLStatement
 {
-    public AuthenticationStatement prepare(ClientState state)
+    @Override
+    public Prepared prepare()
     {
-        return this;
+        return new Prepared(this);
     }
 
-    public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime)
+    public int getBoundTerms()
+    {
+        return 0;
+    }
+
+    public ResultMessage execute(QueryState state, QueryOptions options)
     throws RequestExecutionException, RequestValidationException
     {
         return execute(state.getClientState());
@@ -43,9 +49,9 @@ public abstract class AuthenticationStatement extends CQLStatement.Raw implement
 
     public abstract ResultMessage execute(ClientState state) throws RequestExecutionException, RequestValidationException;
 
-    public ResultMessage executeLocally(QueryState state, QueryOptions options)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
-        // executeLocally is for local query only, thus altering users doesn't make sense and is not supported
+        // executeInternal is for local query only, thus altering users doesn't make sense and is not supported
         throw new UnsupportedOperationException();
     }
 
@@ -53,7 +59,7 @@ public abstract class AuthenticationStatement extends CQLStatement.Raw implement
     {
         try
         {
-            state.ensurePermission(required, resource);
+            state.ensureHasPermission(required, resource);
         }
         catch (UnauthorizedException e)
         {

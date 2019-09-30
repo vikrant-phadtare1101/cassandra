@@ -24,9 +24,6 @@ import java.io.File;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.MBeanWrapper;
@@ -39,8 +36,6 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
 
     private final Set<File> unreadableDirectories = new CopyOnWriteArraySet<File>();
     private final Set<File> unwritableDirectories = new CopyOnWriteArraySet<File>();
-
-    private static final AtomicInteger directoriesVersion = new AtomicInteger();
 
     private BlacklistedDirectories()
     {
@@ -58,16 +53,6 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
         return Collections.unmodifiableSet(unwritableDirectories);
     }
 
-    public void markUnreadable(String path)
-    {
-        maybeMarkUnreadable(new File(path));
-    }
-
-    public void markUnwritable(String path)
-    {
-        maybeMarkUnwritable(new File(path));
-    }
-
     /**
      * Adds parent directory of the file (or the file itself, if it is a directory)
      * to the set of unreadable directories.
@@ -79,7 +64,6 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
         File directory = getDirectory(path);
         if (instance.unreadableDirectories.add(directory))
         {
-            directoriesVersion.incrementAndGet();
             logger.warn("Blacklisting {} for reads", directory);
             return directory;
         }
@@ -97,28 +81,11 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
         File directory = getDirectory(path);
         if (instance.unwritableDirectories.add(directory))
         {
-            directoriesVersion.incrementAndGet();
             logger.warn("Blacklisting {} for writes", directory);
             return directory;
         }
         return null;
     }
-
-    public static int getDirectoriesVersion()
-    {
-        return directoriesVersion.get();
-    }
-
-    /**
-     * Testing only!
-     * Clear the set of unwritable directories.
-     */
-    @VisibleForTesting
-    public static void clearUnwritableUnsafe()
-    {
-        instance.unwritableDirectories.clear();
-    }
-
 
     /**
      * Tells whether or not the directory is blacklisted for reads.

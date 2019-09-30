@@ -18,18 +18,18 @@
 package org.apache.cassandra.gms;
 
 import java.io.*;
-import java.util.*;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-
-import javax.annotation.Nullable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.utils.CassandraVersion;
 
 /**
  * This abstraction represents both the HeartBeatState and the ApplicationState in an EndpointState
@@ -50,7 +50,7 @@ public class EndpointState
     private volatile long updateTimestamp;
     private volatile boolean isAlive;
 
-    public EndpointState(HeartBeatState initialHbState)
+    EndpointState(HeartBeatState initialHbState)
     {
         this(initialHbState, new EnumMap<ApplicationState, VersionedValue>(ApplicationState.class));
     }
@@ -144,44 +144,15 @@ public class EndpointState
         return rpcState != null && Boolean.parseBoolean(rpcState.value);
     }
 
-    public boolean isNormalState()
-    {
-        return getStatus().equals(VersionedValue.STATUS_NORMAL);
-    }
-
     public String getStatus()
     {
-        VersionedValue status = getApplicationState(ApplicationState.STATUS_WITH_PORT);
+        VersionedValue status = getApplicationState(ApplicationState.STATUS);
         if (status == null)
-        {
-            status = getApplicationState(ApplicationState.STATUS);
-        }
-        if (status == null)
-        {
             return "";
-        }
 
         String[] pieces = status.value.split(VersionedValue.DELIMITER_STR, -1);
         assert (pieces.length > 0);
         return pieces[0];
-    }
-
-    @Nullable
-    public UUID getSchemaVersion()
-    {
-        VersionedValue applicationState = getApplicationState(ApplicationState.SCHEMA);
-        return applicationState != null
-               ? UUID.fromString(applicationState.value)
-               : null;
-    }
-
-    @Nullable
-    public CassandraVersion getReleaseVersion()
-    {
-        VersionedValue applicationState = getApplicationState(ApplicationState.RELEASE_VERSION);
-        return applicationState != null
-               ? new CassandraVersion(applicationState.value)
-               : null;
     }
 
     public String toString()
@@ -209,7 +180,7 @@ class EndpointStateSerializer implements IVersionedSerializer<EndpointState>
         }
     }
 
-    public EndpointState deserialize(DataInputPlus in, int version) throws IOException
+    public EndpointState deserialize(DataInput in, int version) throws IOException
     {
         HeartBeatState hbState = HeartBeatState.serializer.deserialize(in, version);
 
@@ -229,11 +200,11 @@ class EndpointStateSerializer implements IVersionedSerializer<EndpointState>
     {
         long size = HeartBeatState.serializer.serializedSize(epState.getHeartBeatState(), version);
         Set<Map.Entry<ApplicationState, VersionedValue>> states = epState.states();
-        size += TypeSizes.sizeof(states.size());
+        size += TypeSizes.NATIVE.sizeof(states.size());
         for (Map.Entry<ApplicationState, VersionedValue> state : states)
         {
             VersionedValue value = state.getValue();
-            size += TypeSizes.sizeof(state.getKey().ordinal());
+            size += TypeSizes.NATIVE.sizeof(state.getKey().ordinal());
             size += VersionedValue.serializer.serializedSize(value, version);
         }
         return size;

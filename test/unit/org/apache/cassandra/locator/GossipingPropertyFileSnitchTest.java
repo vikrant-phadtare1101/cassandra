@@ -15,15 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.cassandra.locator;
 
-import java.net.UnknownHostException;
+import java.net.InetAddress;
 
-import org.junit.BeforeClass;
+import com.google.common.net.InetAddresses;
 import org.junit.Test;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.junit.Assert.*;
@@ -33,26 +31,11 @@ import static org.junit.Assert.*;
  */
 public class GossipingPropertyFileSnitchTest
 {
-
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     public static void checkEndpoint(final AbstractNetworkTopologySnitch snitch,
                                      final String endpointString, final String expectedDatacenter,
                                      final String expectedRack)
     {
-        final InetAddressAndPort endpoint;
-        try
-        {
-            endpoint = InetAddressAndPort.getByName(endpointString);
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException(e);
-        }
+        final InetAddress endpoint = InetAddresses.forString(endpointString);
         assertEquals(expectedDatacenter, snitch.getDatacenter(endpoint));
         assertEquals(expectedRack, snitch.getRack(endpoint));
     }
@@ -61,6 +44,6 @@ public class GossipingPropertyFileSnitchTest
     public void testLoadConfig() throws Exception
     {
         final GossipingPropertyFileSnitch snitch = new GossipingPropertyFileSnitch();
-        checkEndpoint(snitch, FBUtilities.getBroadcastAddressAndPort().toString(), "DC1", "RAC1");
+        checkEndpoint(snitch, FBUtilities.getBroadcastAddress().getHostAddress(), "DC1", "RAC1");
     }
 }

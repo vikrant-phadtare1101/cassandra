@@ -44,6 +44,9 @@ public class DistributedTestBase
 
     public static void nativeLibraryWorkaround()
     {
+        // Disable the C library for in-JVM dtests otherwise it holds a gcroot against the InstanceClassLoader
+        System.setProperty("cassandra.disable_clibrary", "true");
+
         // Disable the Netty tcnative library otherwise the io.netty.internal.tcnative.CertificateCallbackTask,
         // CertificateVerifierTask, SSLPrivateKeyMethodDecryptTask, SSLPrivateKeyMethodSignTask,
         // SSLPrivateKeyMethodTask, and SSLTask hold a gcroot against the InstanceClassLoader.
@@ -80,14 +83,14 @@ public class DistributedTestBase
 
     public static void assertRows(Object[][] actual, Object[]... expected)
     {
-        Assert.assertEquals(rowsNotEqualErrorMessage(expected, actual),
+        Assert.assertEquals(rowsNotEqualErrorMessage(actual, expected),
                             expected.length, actual.length);
 
         for (int i = 0; i < expected.length; i++)
         {
             Object[] expectedRow = expected[i];
             Object[] actualRow = actual[i];
-            Assert.assertTrue(rowsNotEqualErrorMessage(expected, actual),
+            Assert.assertTrue(rowsNotEqualErrorMessage(actual, expected),
                               Arrays.equals(expectedRow, actualRow));
         }
     }

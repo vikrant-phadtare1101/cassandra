@@ -20,121 +20,78 @@ package org.apache.cassandra.cql3.statements;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.collect.*;
-
-import org.apache.cassandra.index.IndexRegistry;
-import org.apache.cassandra.schema.TableMetadata;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.cql3.conditions.ColumnCondition;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.db.partitions.FilteredPartition;
-import org.apache.cassandra.db.partitions.Partition;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.service.CASRequest;
 import org.apache.cassandra.utils.Pair;
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
 
 /**
  * Processed CAS conditions and update on potentially multiple rows of the same partition.
  */
 public class CQL3CasRequest implements CASRequest
 {
-    public final TableMetadata metadata;
-    public final DecoratedKey key;
-    private final RegularAndStaticColumns conditionColumns;
-    private final boolean updatesRegularRows;
-    private final boolean updatesStaticRow;
-    private boolean hasExists; // whether we have an exist or if not exist condition
+    final CFMetaData cfm;
+    final ByteBuffer key;
+    final long now;
+    final boolean isBatch;
 
-    // Conditions on the static row. We keep it separate from 'conditions' as most things related to the static row are
-    // special cases anyway.
-    private RowCondition staticConditions;
-    // We index RowCondition by the clustering of the row they applied to for 2 reasons:
-    //   1) this allows to keep things sorted to build the read command below
+    // We index RowCondition by the prefix of the row they applied to for 2 reasons:
+    //   1) this allows to keep things sorted to build the ColumnSlice array below
     //   2) this allows to detect when contradictory conditions are set (not exists with some other conditions on the same row)
-    private final TreeMap<Clustering, RowCondition> conditions;
+    private final SortedMap<Composite, RowCondition> conditions;
 
     private final List<RowUpdate> updates = new ArrayList<>();
-    private final List<RangeDeletion> rangeDeletions = new ArrayList<>();
 
-    public CQL3CasRequest(TableMetadata metadata,
-                          DecoratedKey key,
-                          RegularAndStaticColumns conditionColumns,
-                          boolean updatesRegularRows,
-                          boolean updatesStaticRow)
+    public CQL3CasRequest(CFMetaData cfm, ByteBuffer key, boolean isBatch)
     {
-        this.metadata = metadata;
+        this.cfm = cfm;
+        // When checking if conditions apply, we want to use a fixed reference time for a whole request to check
+        // for expired cells. Note that this is unrelated to the cell timestamp.
+        this.now = System.currentTimeMillis();
         this.key = key;
-        this.conditions = new TreeMap<>(metadata.comparator);
-        this.conditionColumns = conditionColumns;
-        this.updatesRegularRows = updatesRegularRows;
-        this.updatesStaticRow = updatesStaticRow;
+        this.conditions = new TreeMap<>(cfm.comparator);
+        this.isBatch = isBatch;
     }
 
-    void addRowUpdate(Clustering clustering, ModificationStatement stmt, QueryOptions options, long timestamp, int nowInSeconds)
+    public void addRowUpdate(Composite prefix, ModificationStatement stmt, QueryOptions options, long timestamp)
     {
-        updates.add(new RowUpdate(clustering, stmt, options, timestamp, nowInSeconds));
+        updates.add(new RowUpdate(prefix, stmt, options, timestamp));
     }
 
-    void addRangeDeletion(Slice slice, ModificationStatement stmt, QueryOptions options, long timestamp, int nowInSeconds)
+    public void addNotExist(Composite prefix) throws InvalidRequestException
     {
-        rangeDeletions.add(new RangeDeletion(slice, stmt, options, timestamp, nowInSeconds));
-    }
-
-    public void addNotExist(Clustering clustering) throws InvalidRequestException
-    {
-        addExistsCondition(clustering, new NotExistCondition(clustering), true);
-    }
-
-    public void addExist(Clustering clustering) throws InvalidRequestException
-    {
-        addExistsCondition(clustering, new ExistCondition(clustering), false);
-    }
-
-    private void addExistsCondition(Clustering clustering, RowCondition condition, boolean isNotExist)
-    {
-        assert condition instanceof ExistCondition || condition instanceof NotExistCondition;
-        RowCondition previous = getConditionsForRow(clustering);
-        if (previous != null)
+        RowCondition previous = conditions.put(prefix, new NotExistCondition(prefix, now));
+        if (previous != null && !(previous instanceof NotExistCondition))
         {
-            if (previous.getClass().equals(condition.getClass()))
-            {
-                // We can get here if a BATCH has 2 different statements on the same row with the same "exist" condition.
-                // For instance (assuming 'k' is the full PK):
-                //   BEGIN BATCH
-                //      INSERT INTO t(k, v1) VALUES (0, 'foo') IF NOT EXISTS;
-                //      INSERT INTO t(k, v2) VALUES (0, 'bar') IF NOT EXISTS;
-                //   APPLY BATCH;
-                // Of course, those can be trivially rewritten by the user as a single INSERT statement, but we still don't
-                // want this to be a problem (see #12867 in particular), so we simply return (the condition itself has
-                // already be set).
-                assert hasExists; // We shouldn't have a previous condition unless hasExists has been set already.
-                return;
-            }
+            // these should be prevented by the parser, but it doesn't hurt to check
+            if (previous instanceof ExistCondition)
+                throw new InvalidRequestException("Cannot mix IF EXISTS and IF NOT EXISTS conditions for the same row");
             else
-            {
-                // these should be prevented by the parser, but it doesn't hurt to check
-                throw (previous instanceof NotExistCondition || previous instanceof ExistCondition)
-                    ? new InvalidRequestException("Cannot mix IF EXISTS and IF NOT EXISTS conditions for the same row")
-                    : new InvalidRequestException("Cannot mix IF conditions and IF " + (isNotExist ? "NOT " : "") + "EXISTS for the same row");
-            }
+                throw new InvalidRequestException("Cannot mix IF conditions and IF NOT EXISTS for the same row");
         }
-
-        setConditionsForRow(clustering, condition);
-        hasExists = true;
     }
 
-    public void addConditions(Clustering clustering, Collection<ColumnCondition> conds, QueryOptions options) throws InvalidRequestException
+    public void addExist(Composite prefix) throws InvalidRequestException
     {
-        RowCondition condition = getConditionsForRow(clustering);
+        RowCondition previous = conditions.put(prefix, new ExistCondition(prefix, now));
+        // this should be prevented by the parser, but it doesn't hurt to check
+        if (previous instanceof NotExistCondition)
+            throw new InvalidRequestException("Cannot mix IF EXISTS and IF NOT EXISTS conditions for the same row");
+    }
+
+    public void addConditions(Composite prefix, Collection<ColumnCondition> conds, QueryOptions options) throws InvalidRequestException
+    {
+        RowCondition condition = conditions.get(prefix);
         if (condition == null)
         {
-            condition = new ColumnsConditions(clustering);
-            setConditionsForRow(clustering, condition);
+            condition = new ColumnsConditions(prefix, now);
+            conditions.put(prefix, condition);
         }
         else if (!(condition instanceof ColumnsConditions))
         {
@@ -143,80 +100,25 @@ public class CQL3CasRequest implements CASRequest
         ((ColumnsConditions)condition).addConditions(conds, options);
     }
 
-    private RowCondition getConditionsForRow(Clustering clustering)
+    public IDiskAtomFilter readFilter()
     {
-        return clustering == Clustering.STATIC_CLUSTERING ? staticConditions : conditions.get(clustering);
+        assert !conditions.isEmpty();
+        ColumnSlice[] slices = new ColumnSlice[conditions.size()];
+        int i = 0;
+        // We always read CQL rows entirely as on CAS failure we want to be able to distinguish between "row exists
+        // but all values for which there were conditions are null" and "row doesn't exists", and we can't rely on the
+        // row marker for that (see #6623)
+        for (Composite prefix : conditions.keySet())
+            slices[i++] = prefix.slice();
+
+        int toGroup = cfm.comparator.isDense() ? -1 : cfm.clusteringColumns().size();
+        slices = ColumnSlice.deoverlapSlices(slices, cfm.comparator);
+        assert ColumnSlice.validateSlices(slices, cfm.comparator, false);
+        return new SliceQueryFilter(slices, false, slices.length, toGroup);
     }
 
-    private void setConditionsForRow(Clustering clustering, RowCondition condition)
+    public boolean appliesTo(ColumnFamily current) throws InvalidRequestException
     {
-        if (clustering == Clustering.STATIC_CLUSTERING)
-        {
-            assert staticConditions == null;
-            staticConditions = condition;
-        }
-        else
-        {
-            RowCondition previous = conditions.put(clustering, condition);
-            assert previous == null;
-        }
-    }
-
-    private RegularAndStaticColumns columnsToRead()
-    {
-        // If all our conditions are columns conditions (IF x = ?), then it's enough to query
-        // the columns from the conditions. If we have a IF EXISTS or IF NOT EXISTS however,
-        // we need to query all columns for the row since if the condition fails, we want to
-        // return everything to the user. Static columns make this a bit more complex, in that
-        // if an insert only static columns, then the existence condition applies only to the
-        // static columns themselves, and so we don't want to include regular columns in that
-        // case.
-        if (hasExists)
-        {
-            RegularAndStaticColumns allColumns = metadata.regularAndStaticColumns();
-            Columns statics = updatesStaticRow ? allColumns.statics : Columns.NONE;
-            Columns regulars = updatesRegularRows ? allColumns.regulars : Columns.NONE;
-            return new RegularAndStaticColumns(statics, regulars);
-        }
-        return conditionColumns;
-    }
-
-    public SinglePartitionReadQuery readCommand(int nowInSec)
-    {
-        assert staticConditions != null || !conditions.isEmpty();
-
-        // Fetch all columns, but query only the selected ones
-        ColumnFilter columnFilter = ColumnFilter.selection(metadata, columnsToRead());
-
-        // With only a static condition, we still want to make the distinction between a non-existing partition and one
-        // that exists (has some live data) but has not static content. So we query the first live row of the partition.
-        if (conditions.isEmpty())
-            return SinglePartitionReadQuery.create(metadata,
-                                                   nowInSec,
-                                                   columnFilter,
-                                                   RowFilter.NONE,
-                                                   DataLimits.cqlLimits(1),
-                                                   key,
-                                                   new ClusteringIndexSliceFilter(Slices.ALL, false));
-
-        ClusteringIndexNamesFilter filter = new ClusteringIndexNamesFilter(conditions.navigableKeySet(), false);
-        return SinglePartitionReadQuery.create(metadata, nowInSec, key, columnFilter, filter);
-    }
-
-    /**
-     * Checks whether the conditions represented by this object applies provided the current state of the partition on
-     * which those conditions are.
-     *
-     * @param current the partition with current data corresponding to these conditions. More precisely, this must be
-     * the result of executing the command returned by {@link #readCommand}. This can be empty but it should not be
-     * {@code null}.
-     * @return whether the conditions represented by this object applies or not.
-     */
-    public boolean appliesTo(FilteredPartition current) throws InvalidRequestException
-    {
-        if (staticConditions != null && !staticConditions.appliesTo(current))
-            return false;
-
         for (RowCondition condition : conditions.values())
         {
             if (!condition.appliesTo(current))
@@ -225,26 +127,16 @@ public class CQL3CasRequest implements CASRequest
         return true;
     }
 
-    private RegularAndStaticColumns updatedColumns()
+    public ColumnFamily makeUpdates(ColumnFamily current) throws InvalidRequestException
     {
-        RegularAndStaticColumns.Builder builder = RegularAndStaticColumns.builder();
+        ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfm);
         for (RowUpdate upd : updates)
-            builder.addAll(upd.stmt.updatedColumns());
-        return builder.build();
-    }
+            upd.applyUpdates(current, cf);
 
-    public PartitionUpdate makeUpdates(FilteredPartition current) throws InvalidRequestException
-    {
-        PartitionUpdate.Builder updateBuilder = new PartitionUpdate.Builder(metadata, key, updatedColumns(), conditions.size());
-        for (RowUpdate upd : updates)
-            upd.applyUpdates(current, updateBuilder);
-        for (RangeDeletion upd : rangeDeletions)
-            upd.applyUpdates(current, updateBuilder);
+        if (isBatch)
+            BatchStatement.verifyBatchSize(Collections.singleton(cf));
 
-        PartitionUpdate partitionUpdate = updateBuilder.build();
-        IndexRegistry.obtain(metadata).validate(partitionUpdate);
-
-        return partitionUpdate;
+        return cf;
     }
 
     /**
@@ -255,104 +147,89 @@ public class CQL3CasRequest implements CASRequest
      */
     private class RowUpdate
     {
-        private final Clustering clustering;
+        private final Composite rowPrefix;
         private final ModificationStatement stmt;
         private final QueryOptions options;
         private final long timestamp;
-        private final int nowInSeconds;
 
-        private RowUpdate(Clustering clustering, ModificationStatement stmt, QueryOptions options, long timestamp, int nowInSeconds)
+        private RowUpdate(Composite rowPrefix, ModificationStatement stmt, QueryOptions options, long timestamp)
         {
-            this.clustering = clustering;
+            this.rowPrefix = rowPrefix;
             this.stmt = stmt;
             this.options = options;
             this.timestamp = timestamp;
-            this.nowInSeconds = nowInSeconds;
         }
 
-        void applyUpdates(FilteredPartition current, PartitionUpdate.Builder updateBuilder)
+        public void applyUpdates(ColumnFamily current, ColumnFamily updates) throws InvalidRequestException
         {
-            Map<DecoratedKey, Partition> map = stmt.requiresRead() ? Collections.singletonMap(key, current) : null;
-            UpdateParameters params =
-                new UpdateParameters(metadata,
-                                     updateBuilder.columns(),
-                                     options,
-                                     timestamp,
-                                     nowInSeconds,
-                                     stmt.getTimeToLive(options),
-                                     map);
-            stmt.addUpdateForKey(updateBuilder, clustering, params);
-        }
-    }
+            Map<ByteBuffer, CQL3Row> map = null;
+            if (stmt.requiresRead())
+            {
+                // Uses the "current" values read by Paxos for lists operation that requires a read
+                Iterator<CQL3Row> iter = cfm.comparator.CQL3RowBuilder(cfm, now).group(current.iterator(new ColumnSlice[]{ rowPrefix.slice() }));
+                if (iter.hasNext())
+                {
+                    map = Collections.singletonMap(key, iter.next());
+                    assert !iter.hasNext() : "We shoudn't be updating more than one CQL row per-ModificationStatement";
+                }
+            }
 
-    private class RangeDeletion
-    {
-        private final Slice slice;
-        private final ModificationStatement stmt;
-        private final QueryOptions options;
-        private final long timestamp;
-        private final int nowInSeconds;
-
-        private RangeDeletion(Slice slice, ModificationStatement stmt, QueryOptions options, long timestamp, int nowInSeconds)
-        {
-            this.slice = slice;
-            this.stmt = stmt;
-            this.options = options;
-            this.timestamp = timestamp;
-            this.nowInSeconds = nowInSeconds;
-        }
-
-        void applyUpdates(FilteredPartition current, PartitionUpdate.Builder updateBuilder)
-        {
-            // No slice statements currently require a read, but this maintains consistency with RowUpdate, and future proofs us
-            Map<DecoratedKey, Partition> map = stmt.requiresRead() ? Collections.singletonMap(key, current) : null;
-            UpdateParameters params =
-                new UpdateParameters(metadata,
-                                     updateBuilder.columns(),
-                                     options,
-                                     timestamp,
-                                     nowInSeconds,
-                                     stmt.getTimeToLive(options),
-                                     map);
-            stmt.addUpdateForKey(updateBuilder, slice, params);
+            UpdateParameters params = new UpdateParameters(cfm, options, timestamp, stmt.getTimeToLive(options), map);
+            stmt.addUpdateForKey(updates, key, rowPrefix, params);
         }
     }
 
     private static abstract class RowCondition
     {
-        public final Clustering clustering;
+        public final Composite rowPrefix;
+        protected final long now;
 
-        protected RowCondition(Clustering clustering)
+        protected RowCondition(Composite rowPrefix, long now)
         {
-            this.clustering = clustering;
+            this.rowPrefix = rowPrefix;
+            this.now = now;
         }
 
-        public abstract boolean appliesTo(FilteredPartition current) throws InvalidRequestException;
+        public abstract boolean appliesTo(ColumnFamily current) throws InvalidRequestException;
     }
 
     private static class NotExistCondition extends RowCondition
     {
-        private NotExistCondition(Clustering clustering)
+        private NotExistCondition(Composite rowPrefix, long now)
         {
-            super(clustering);
+            super(rowPrefix, now);
         }
 
-        public boolean appliesTo(FilteredPartition current)
+        public boolean appliesTo(ColumnFamily current)
         {
-            return current.getRow(clustering) == null;
+            if (current == null)
+                return true;
+
+            Iterator<Cell> iter = current.iterator(new ColumnSlice[]{ rowPrefix.slice() });
+            while (iter.hasNext())
+                if (iter.next().isLive(now))
+                    return false;
+            return true;
         }
     }
 
     private static class ExistCondition extends RowCondition
     {
-        private ExistCondition(Clustering clustering)
+        private ExistCondition(Composite rowPrefix, long now)
         {
-            super(clustering);
+            super (rowPrefix, now);
         }
 
-        public boolean appliesTo(FilteredPartition current)
+        public boolean appliesTo(ColumnFamily current)
         {
-            return current.getRow(clustering) != null;
+            if (current == null)
+                return false;
+
+            Iterator<Cell> iter = current.iterator(new ColumnSlice[]{ rowPrefix.slice() });
+            while (iter.hasNext())
+                if (iter.next().isLive(now))
+                    return true;
+            return false;
         }
     }
 
@@ -360,9 +237,9 @@ public class CQL3CasRequest implements CASRequest
     {
         private final Multimap<Pair<ColumnIdentifier, ByteBuffer>, ColumnCondition.Bound> conditions = HashMultimap.create();
 
-        private ColumnsConditions(Clustering clustering)
+        private ColumnsConditions(Composite rowPrefix, long now)
         {
-            super(clustering);
+            super(rowPrefix, now);
         }
 
         public void addConditions(Collection<ColumnCondition> conds, QueryOptions options) throws InvalidRequestException
@@ -374,21 +251,15 @@ public class CQL3CasRequest implements CASRequest
             }
         }
 
-        public boolean appliesTo(FilteredPartition current) throws InvalidRequestException
+        public boolean appliesTo(ColumnFamily current) throws InvalidRequestException
         {
-            Row row = current.getRow(clustering);
+            if (current == null)
+                return conditions.isEmpty();
+
             for (ColumnCondition.Bound condition : conditions.values())
-            {
-                if (!condition.appliesTo(row))
+                if (!condition.appliesTo(rowPrefix, current, now))
                     return false;
-            }
             return true;
         }
-    }
-    
-    @Override
-    public String toString()
-    {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
     }
 }

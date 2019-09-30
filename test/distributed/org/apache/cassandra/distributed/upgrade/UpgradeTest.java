@@ -32,7 +32,6 @@ public class UpgradeTest extends UpgradeTestBase
     {
         new TestCase()
             .upgrade(Versions.Major.v22, Versions.Major.v30, Versions.Major.v3X)
-            .upgrade(Versions.Major.v30, Versions.Major.v3X, Versions.Major.v4)
             .setup((cluster) -> {
                 cluster.schemaChange("CREATE TABLE " + DistributedTestBase.KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 

@@ -24,12 +24,12 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.WritableByteChannel;
 
+import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 
-import net.nicoulaj.compilecommand.annotations.DontInline;
 import org.apache.cassandra.config.Config;
-import org.apache.cassandra.utils.FastByteOperations;
 import org.apache.cassandra.utils.memory.MemoryUtil;
+
 
 /**
  * An implementation of the DataOutputStreamPlus interface using a ByteBuffer to stage writes
@@ -41,7 +41,7 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
 {
     private static final int DEFAULT_BUFFER_SIZE = Integer.getInteger(Config.PROPERTY_PREFIX + "nio_data_output_stream_plus_buffer_size", 1024 * 32);
 
-    protected ByteBuffer buffer;
+    ByteBuffer buffer;
 
     public BufferedDataOutputStreamPlus(RandomAccessFile ras)
     {
@@ -123,6 +123,9 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
         }
     }
 
+    // ByteBuffer to use for defensive copies
+    private final ByteBuffer hollowBuffer = MemoryUtil.getHollowDirectByteBuffer();
+
     /*
      * Makes a defensive copy of the incoming ByteBuffer and don't modify the position or limit
      * even temporarily so it is thread-safe WRT to the incoming buffer
@@ -130,35 +133,50 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
      * @see org.apache.cassandra.io.util.DataOutputPlus#write(java.nio.ByteBuffer)
      */
     @Override
-    public void write(ByteBuffer src) throws IOException
+    public void write(ByteBuffer toWrite) throws IOException
     {
-        int srcPos = src.position();
-        int srcCount;
-        int trgAvailable;
-        while ((srcCount = src.limit() - srcPos) > (trgAvailable = buffer.remaining()))
+        if (toWrite.hasArray())
         {
-            FastByteOperations.copy(src, srcPos, buffer, buffer.position(), trgAvailable);
-            buffer.position(buffer.position() + trgAvailable);
-            srcPos += trgAvailable;
-            doFlush(src.limit() - srcPos);
+            write(toWrite.array(), toWrite.arrayOffset() + toWrite.position(), toWrite.remaining());
         }
-        FastByteOperations.copy(src, srcPos, buffer, buffer.position(), srcCount);
-        buffer.position(buffer.position() + srcCount);
+        else
+        {
+            assert toWrite.isDirect();
+            int toWriteRemaining = toWrite.remaining();
+            if (toWriteRemaining > buffer.remaining())
+            {
+                doFlush(toWriteRemaining);
+                MemoryUtil.duplicateDirectByteBuffer(toWrite, hollowBuffer);
+                if (toWriteRemaining > buffer.remaining())
+                {
+                    while (hollowBuffer.hasRemaining())
+                        channel.write(hollowBuffer);
+                }
+                else
+                {
+                    buffer.put(hollowBuffer);
+                }
+            }
+            else
+            {
+                MemoryUtil.duplicateDirectByteBuffer(toWrite, hollowBuffer);
+                buffer.put(hollowBuffer);
+            }
+        }
     }
+
 
     @Override
     public void write(int b) throws IOException
     {
-        if (!buffer.hasRemaining())
-            doFlush(1);
+        ensureRemaining(1);
         buffer.put((byte) (b & 0xFF));
     }
 
     @Override
     public void writeBoolean(boolean v) throws IOException
     {
-        if (!buffer.hasRemaining())
-            doFlush(1);
+        ensureRemaining(1);
         buffer.put(v ? (byte)1 : (byte)0);
     }
 
@@ -171,56 +189,43 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
     @Override
     public void writeShort(int v) throws IOException
     {
-        writeChar(v);
+        ensureRemaining(2);
+        buffer.putShort((short) v);
     }
 
     @Override
     public void writeChar(int v) throws IOException
     {
-        if (buffer.remaining() < 2)
-            writeSlow(v, 2);
-        else
-            buffer.putChar((char) v);
+        ensureRemaining(2);
+        buffer.putChar((char) v);
     }
 
     @Override
     public void writeInt(int v) throws IOException
     {
-        if (buffer.remaining() < 4)
-            writeSlow(v, 4);
-        else
-            buffer.putInt(v);
+        ensureRemaining(4);
+        buffer.putInt(v);
     }
 
     @Override
     public void writeLong(long v) throws IOException
     {
-        if (buffer.remaining() < 8)
-            writeSlow(v, 8);
-        else
-            buffer.putLong(v);
+        ensureRemaining(8);
+        buffer.putLong(v);
     }
 
     @Override
     public void writeFloat(float v) throws IOException
     {
-        writeInt(Float.floatToRawIntBits(v));
+        ensureRemaining(4);
+        buffer.putFloat(v);
     }
 
     @Override
     public void writeDouble(double v) throws IOException
     {
-        writeLong(Double.doubleToRawLongBits(v));
-    }
-
-    @DontInline
-    private void writeSlow(long bytes, int count) throws IOException
-    {
-        int origCount = count;
-        if (ByteOrder.BIG_ENDIAN == buffer.order())
-            while (count > 0) writeByte((int) (bytes >>> (8 * --count)));
-        else
-            while (count > 0) writeByte((int) (bytes >>> (8 * (origCount - count--))));
+        ensureRemaining(8);
+        buffer.putDouble(v);
     }
 
     @Override
@@ -243,10 +248,16 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
         UnbufferedDataOutputStreamPlus.writeUTF(s, this);
     }
 
+    @Override
+    public void write(Memory memory, long offset, long length) throws IOException
+    {
+        for (ByteBuffer buffer : memory.asByteBuffers(offset, length))
+            write(buffer);
+    }
+
     /*
      * Count is the number of bytes remaining to write ignoring already remaining capacity
      */
-    @DontInline
     protected void doFlush(int count) throws IOException
     {
         buffer.flip();
@@ -270,6 +281,20 @@ public class BufferedDataOutputStreamPlus extends DataOutputStreamPlus
         channel.close();
         FileUtils.clean(buffer);
         buffer = null;
+    }
+
+    protected void ensureRemaining(int minimum) throws IOException
+    {
+        if (buffer.remaining() < minimum)
+            doFlush(minimum);
+    }
+
+    @Override
+    public <R> R applyToChannel(Function<WritableByteChannel, R> f) throws IOException
+    {
+        //Don't allow writes to the underlying channel while data is buffered
+        flush();
+        return f.apply(channel);
     }
 
     public BufferedDataOutputStreamPlus order(ByteOrder order)

@@ -22,7 +22,6 @@ import java.util.Iterator;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.locks.LockSupport;
-import java.util.function.BooleanSupplier;
 
 import com.codahale.metrics.Timer;
 
@@ -263,15 +262,6 @@ public final class WaitQueue
          * @throws InterruptedException
          */
         public boolean awaitUntil(long nanos) throws InterruptedException;
-
-        /**
-         * Wait until signalled, or the provided time is reached, or the thread is interrupted. If signalled,
-         * isSignalled() will be true on exit, and the method will return true; if timedout, the method will return
-         * false and isCancelled() will be true
-         * @param nanos System.nanoTime() to wait until
-         * @return true if signalled, false if timed out
-         */
-        public boolean awaitUntilUninterruptibly(long nanos);
     }
 
     /**
@@ -309,17 +299,6 @@ public final class WaitQueue
             while (until > (now = System.nanoTime()) && !isSignalled())
             {
                 checkInterrupted();
-                long delta = until - now;
-                LockSupport.parkNanos(delta);
-            }
-            return checkAndClear();
-        }
-
-        public boolean awaitUntilUninterruptibly(long until)
-        {
-            long now;
-            while (until > (now = System.nanoTime()) && !isSignalled())
-            {
                 long delta = until - now;
                 LockSupport.parkNanos(delta);
             }
@@ -538,24 +517,5 @@ public final class WaitQueue
     public static Signal all(Signal ... signals)
     {
         return new AllSignal(signals);
-    }
-
-    /**
-     * Loops waiting on the supplied condition and WaitQueue and will not return until the condition is true
-     */
-    public static void waitOnCondition(BooleanSupplier condition, WaitQueue queue)
-    {
-        while (!condition.getAsBoolean())
-        {
-            Signal s = queue.register();
-            if (!condition.getAsBoolean())
-            {
-                s.awaitUninterruptibly();
-            }
-            else
-            {
-                s.cancel();
-            }
-        }
     }
 }

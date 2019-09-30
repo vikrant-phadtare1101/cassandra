@@ -84,7 +84,7 @@ public class SafeMemory extends Memory implements SharedCloseable
             this.size = size;
         }
 
-        public void tidy()
+        public void tidy() throws Exception
         {
             /** see {@link Memory#Memory(long)} re: null pointers*/
             if (peer != 0)
@@ -102,10 +102,5 @@ public class SafeMemory extends Memory implements SharedCloseable
     {
         assert peer != 0 || size == 0 : ref.printDebugInfo();
         super.checkBounds(start, end);
-    }
-
-    public void addTo(Ref.IdentityCollection identities)
-    {
-        identities.add(ref);
     }
 }

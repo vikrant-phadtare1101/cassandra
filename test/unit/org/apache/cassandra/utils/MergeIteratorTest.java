@@ -21,9 +21,10 @@ package org.apache.cassandra.utils;
 import java.util.Arrays;
 import java.util.Iterator;
 
-import org.apache.cassandra.utils.AbstractIterator;
+import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Ordering;
+
 import org.junit.Before;
 import org.junit.Test;
 
@@ -50,10 +51,9 @@ public class MergeIteratorTest
         {
             String concatted = "";
 
-            @Override
-            public void reduce(int idx, String current)
+            public void reduce(String value)
             {
-                concatted += current;
+                concatted += value;
             }
 
             public String getReduced()
@@ -64,8 +64,8 @@ public class MergeIteratorTest
             }
         };
         IMergeIterator<String,String> smi = MergeIterator.get(Arrays.asList(a, b, c, d),
-                Ordering.<String>natural(),
-                reducer);
+                                                             Ordering.<String>natural(),
+                                                             reducer);
         assert Iterators.elementsEqual(cat, smi);
         smi.close();
         assert a.closed && b.closed && c.closed && d.closed;
