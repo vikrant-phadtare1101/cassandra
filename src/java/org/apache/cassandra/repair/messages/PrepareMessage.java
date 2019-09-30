@@ -24,13 +24,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
-import com.google.common.base.Preconditions;
-
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
@@ -41,6 +38,7 @@ import org.apache.cassandra.utils.UUIDSerializer;
 
 public class PrepareMessage extends RepairMessage
 {
+    public final static MessageSerializer serializer = new PrepareMessageSerializer();
     public final List<TableId> tableIds;
     public final Collection<Range<Token>> ranges;
 
@@ -52,7 +50,7 @@ public class PrepareMessage extends RepairMessage
 
     public PrepareMessage(UUID parentRepairSession, List<TableId> tableIds, Collection<Range<Token>> ranges, boolean isIncremental, long timestamp, boolean isGlobal, PreviewKind previewKind)
     {
-        super(null);
+        super(Type.PREPARE_MESSAGE, null);
         this.parentRepairSession = parentRepairSession;
         this.tableIds = tableIds;
         this.ranges = ranges;
@@ -68,7 +66,8 @@ public class PrepareMessage extends RepairMessage
         if (!(o instanceof PrepareMessage))
             return false;
         PrepareMessage other = (PrepareMessage) o;
-        return parentRepairSession.equals(other.parentRepairSession) &&
+        return messageType == other.messageType &&
+               parentRepairSession.equals(other.parentRepairSession) &&
                isIncremental == other.isIncremental &&
                isGlobal == other.isGlobal &&
                previewKind == other.previewKind &&
@@ -80,18 +79,13 @@ public class PrepareMessage extends RepairMessage
     @Override
     public int hashCode()
     {
-        return Objects.hash(parentRepairSession, isGlobal, previewKind, isIncremental, timestamp, tableIds, ranges);
+        return Objects.hash(messageType, parentRepairSession, isGlobal, previewKind, isIncremental, timestamp, tableIds, ranges);
     }
 
-    private static final String MIXED_MODE_ERROR = "Some nodes involved in repair are on an incompatible major version. " +
-                                                   "Repair is not supported in mixed major version clusters.";
-
-    public static final IVersionedSerializer<PrepareMessage> serializer = new IVersionedSerializer<PrepareMessage>()
+    public static class PrepareMessageSerializer implements MessageSerializer<PrepareMessage>
     {
         public void serialize(PrepareMessage message, DataOutputPlus out, int version) throws IOException
         {
-            Preconditions.checkArgument(version == MessagingService.current_version, MIXED_MODE_ERROR);
-
             out.writeInt(message.tableIds.size());
             for (TableId tableId : message.tableIds)
                 tableId.serialize(out);
@@ -110,8 +104,6 @@ public class PrepareMessage extends RepairMessage
 
         public PrepareMessage deserialize(DataInputPlus in, int version) throws IOException
         {
-            Preconditions.checkArgument(version == MessagingService.current_version, MIXED_MODE_ERROR);
-
             int tableIdCount = in.readInt();
             List<TableId> tableIds = new ArrayList<>(tableIdCount);
             for (int i = 0; i < tableIdCount; i++)
@@ -130,8 +122,6 @@ public class PrepareMessage extends RepairMessage
 
         public long serializedSize(PrepareMessage message, int version)
         {
-            Preconditions.checkArgument(version == MessagingService.current_version, MIXED_MODE_ERROR);
-
             long size;
             size = TypeSizes.sizeof(message.tableIds.size());
             for (TableId tableId : message.tableIds)
@@ -146,7 +136,7 @@ public class PrepareMessage extends RepairMessage
             size += TypeSizes.sizeof(message.previewKind.getSerializationVal());
             return size;
         }
-    };
+    }
 
     @Override
     public String toString()
