@@ -17,11 +17,10 @@
  */
 package org.apache.cassandra.db.rows;
 
+import java.security.MessageDigest;
 import java.util.Comparator;
 
-import com.google.common.hash.Hasher;
-
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.DeletionPurger;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.serializers.MarshalException;
@@ -36,8 +35,8 @@ public abstract class ColumnData
 {
     public static final Comparator<ColumnData> comparator = (cd1, cd2) -> cd1.column().compareTo(cd2.column());
 
-    protected final ColumnMetadata column;
-    protected ColumnData(ColumnMetadata column)
+    protected final ColumnDefinition column;
+    protected ColumnData(ColumnDefinition column)
     {
         this.column = column;
     }
@@ -47,7 +46,7 @@ public abstract class ColumnData
      *
      * @return the column this is a data for.
      */
-    public final ColumnMetadata column() { return column; }
+    public final ColumnDefinition column() { return column; }
 
     /**
      * The size of the data hold by this {@code ColumnData}.
@@ -66,18 +65,11 @@ public abstract class ColumnData
     public abstract void validate();
 
     /**
-     * Validates the deletions (ttl and local deletion time) if any.
-     *
-     * @return true if it has any invalid deletions, false otherwise
-     */
-    public abstract boolean hasInvalidDeletions();
-
-    /**
      * Adds the data to the provided digest.
      *
-     * @param hasher the {@link Hasher} to add the data to.
+     * @param digest the {@code MessageDigest} to add the data to.
      */
-    public abstract void digest(Hasher hasher);
+    public abstract void digest(MessageDigest digest);
 
     /**
      * Returns a copy of the data where all timestamps for live data have replaced by {@code newTimestamp} and

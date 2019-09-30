@@ -22,57 +22,35 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
-import com.google.common.reflect.TypeToken;
 import org.junit.Assert;
 import org.junit.Test;
 
-import com.datastax.driver.core.*;
 import com.datastax.driver.core.exceptions.InvalidQueryException;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
-import org.apache.cassandra.cql3.functions.JavaBasedUDFunction;
 import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.schema.KeyspaceMetadata;
-import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.transport.*;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.transport.Event;
+import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class UFTest extends CQLTester
 {
     @Test
-    public void testJavaSourceName()
-    {
-        Assert.assertEquals("String", JavaBasedUDFunction.javaSourceName(TypeToken.of(String.class)));
-        Assert.assertEquals("java.util.Map<Integer, String>", JavaBasedUDFunction.javaSourceName(TypeTokens.mapOf(Integer.class, String.class)));
-        Assert.assertEquals("com.datastax.driver.core.UDTValue", JavaBasedUDFunction.javaSourceName(TypeToken.of(UDTValue.class)));
-        Assert.assertEquals("java.util.Set<com.datastax.driver.core.UDTValue>", JavaBasedUDFunction.javaSourceName(TypeTokens.setOf(UDTValue.class)));
-    }
-
-    @Test
     public void testNonExistingOnes() throws Throwable
     {
-        assertInvalidThrowMessage(String.format("Function '%s.func_does_not_exist' doesn't exist", KEYSPACE),
-                                  InvalidRequestException.class,
-                                  "DROP FUNCTION " + KEYSPACE + ".func_does_not_exist");
-
-        assertInvalidThrowMessage(String.format("Function '%s.func_does_not_exist(int, text)' doesn't exist", KEYSPACE),
-                                  InvalidRequestException.class,
-                                  "DROP FUNCTION " + KEYSPACE + ".func_does_not_exist(int, text)");
-
-        assertInvalidThrowMessage("Function 'keyspace_does_not_exist.func_does_not_exist' doesn't exist",
-                                  InvalidRequestException.class,
-                                  "DROP FUNCTION keyspace_does_not_exist.func_does_not_exist");
-
-        assertInvalidThrowMessage("Function 'keyspace_does_not_exist.func_does_not_exist(int, text)' doesn't exist",
-                                  InvalidRequestException.class,
-                                  "DROP FUNCTION keyspace_does_not_exist.func_does_not_exist(int, text)");
+        assertInvalidThrowMessage("Cannot drop non existing function", InvalidRequestException.class, "DROP FUNCTION " + KEYSPACE + ".func_does_not_exist");
+        assertInvalidThrowMessage("Cannot drop non existing function", InvalidRequestException.class, "DROP FUNCTION " + KEYSPACE + ".func_does_not_exist(int,text)");
+        assertInvalidThrowMessage("Cannot drop non existing function", InvalidRequestException.class, "DROP FUNCTION keyspace_does_not_exist.func_does_not_exist");
+        assertInvalidThrowMessage("Cannot drop non existing function", InvalidRequestException.class, "DROP FUNCTION keyspace_does_not_exist.func_does_not_exist(int,text)");
 
         execute("DROP FUNCTION IF EXISTS " + KEYSPACE + ".func_does_not_exist");
         execute("DROP FUNCTION IF EXISTS " + KEYSPACE + ".func_does_not_exist(int,text)");
@@ -111,7 +89,7 @@ public class UFTest extends CQLTester
                      "RETURNS NULL ON NULL INPUT " +
                      "RETURNS int " +
                      "LANGUAGE javascript " +
-                     "AS '\"string1\";';");
+                     "AS '\"string\";';");
 
         assertLastSchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.FUNCTION,
                                KEYSPACE, parseFunctionName(f).name,
@@ -170,16 +148,16 @@ public class UFTest extends CQLTester
 
         ResultMessage.Prepared preparedSelect1 = QueryProcessor.prepare(
                                                                        String.format("SELECT key, %s(d) FROM %s.%s", fSin, KEYSPACE, currentTable()),
-                                                                       ClientState.forInternalCalls());
+                                                                       ClientState.forInternalCalls(), false);
         ResultMessage.Prepared preparedSelect2 = QueryProcessor.prepare(
                                                     String.format("SELECT key FROM %s.%s", KEYSPACE, currentTable()),
-                                                    ClientState.forInternalCalls());
+                                                    ClientState.forInternalCalls(), false);
         ResultMessage.Prepared preparedInsert1 = QueryProcessor.prepare(
                                                       String.format("INSERT INTO %s.%s (key, d) VALUES (?, %s(?))", KEYSPACE, currentTable(), fSin),
-                                                      ClientState.forInternalCalls());
+                                                      ClientState.forInternalCalls(), false);
         ResultMessage.Prepared preparedInsert2 = QueryProcessor.prepare(
                                                       String.format("INSERT INTO %s.%s (key, d) VALUES (?, ?)", KEYSPACE, currentTable()),
-                                                      ClientState.forInternalCalls());
+                                                      ClientState.forInternalCalls(), false);
 
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(preparedSelect1.statementId));
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(preparedSelect2.statementId));
@@ -204,10 +182,10 @@ public class UFTest extends CQLTester
 
         preparedSelect1= QueryProcessor.prepare(
                                          String.format("SELECT key, %s(d) FROM %s.%s", fSin, KEYSPACE, currentTable()),
-                                         ClientState.forInternalCalls());
+                                         ClientState.forInternalCalls(), false);
         preparedInsert1 = QueryProcessor.prepare(
                                          String.format("INSERT INTO %s.%s (key, d) VALUES (?, %s(?))", KEYSPACE, currentTable(), fSin),
-                                         ClientState.forInternalCalls());
+                                         ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(preparedSelect1.statementId));
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(preparedInsert1.statementId));
 
@@ -273,7 +251,7 @@ public class UFTest extends CQLTester
                                                                              KEYSPACE,
                                                                              currentTable(),
                                                                              literalArgs),
-                                                                ClientState.forInternalCalls());
+                                                                ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
         return prepared;
     }
@@ -289,7 +267,7 @@ public class UFTest extends CQLTester
                                                                              KEYSPACE,
                                                                              currentTable(),
                                                                              function),
-                                                                ClientState.forInternalCalls());
+                                                                ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
         return prepared;
     }
@@ -304,7 +282,7 @@ public class UFTest extends CQLTester
                                                                String.format("INSERT INTO %s.%s (key, val) VALUES (?, ?)",
                                                                             KEYSPACE,
                                                                             currentTable()),
-                                                               ClientState.forInternalCalls());
+                                                               ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(control.statementId));
 
         // a function that we'll drop and verify that statements which use it to
@@ -380,7 +358,7 @@ public class UFTest extends CQLTester
                              "CREATE OR REPLACE FUNCTION " + fSin + " ( input double ) " +
                              "CALLED ON NULL INPUT " +
                              "RETURNS text " +
-                             "LANGUAGE java AS 'return \"42d\";'");
+                             "LANGUAGE java AS 'return Double.valueOf(42d);'");
 
         // proper replacement
         execute("CREATE OR REPLACE FUNCTION " + fSin + " ( input double ) " +
@@ -413,13 +391,13 @@ public class UFTest extends CQLTester
         execute("DROP FUNCTION " + fSin2);
 
         // Drop unexisting function
-        assertInvalidMessage(String.format("Function '%s' doesn't exist", fSin), "DROP FUNCTION " + fSin);
+        assertInvalidMessage("Cannot drop non existing function", "DROP FUNCTION " + fSin);
         // but don't complain with "IF EXISTS"
         execute("DROP FUNCTION IF EXISTS " + fSin);
 
         // can't drop native functions
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable", "DROP FUNCTION totimestamp");
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable", "DROP FUNCTION uuid");
+        assertInvalidMessage("system keyspace is not user-modifiable", "DROP FUNCTION totimestamp");
+        assertInvalidMessage("system keyspace is not user-modifiable", "DROP FUNCTION uuid");
 
         // sin() no longer exists
         assertInvalidMessage("Unknown function", "SELECT key, sin(d) FROM %s");
@@ -520,8 +498,8 @@ public class UFTest extends CQLTester
         assertEmpty(execute("SELECT v FROM %s WHERE k = " + fOverload + "((varchar)?)", "foo"));
 
         // no such functions exist...
-        assertInvalidMessage(String.format("Function '%s(boolean)' doesn't exist", fOverload), "DROP FUNCTION " + fOverload + "(boolean)");
-        assertInvalidMessage(String.format("Function '%s(bigint)' doesn't exist", fOverload), "DROP FUNCTION " + fOverload + "(bigint)");
+        assertInvalidMessage("non existing function", "DROP FUNCTION " + fOverload + "(boolean)");
+        assertInvalidMessage("non existing function", "DROP FUNCTION " + fOverload + "(bigint)");
 
         // 'overloaded' has multiple overloads - so it has to fail (CASSANDRA-7812)
         assertInvalidMessage("matches multiple function definitions", "DROP FUNCTION " + fOverload);
@@ -652,43 +630,43 @@ public class UFTest extends CQLTester
 
                 "AS 'return null;';");
 
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "CREATE OR REPLACE FUNCTION system.jnft(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
                              "LANGUAGE JAVA\n" +
                              "AS 'return null;';");
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "CREATE OR REPLACE FUNCTION system.totimestamp(val timeuuid) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS timestamp " +
                              "LANGUAGE JAVA\n" +
 
                              "AS 'return null;';");
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "DROP FUNCTION system.now");
 
-        // KS for executeLocally() is system
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        // KS for executeInternal() is system
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "CREATE OR REPLACE FUNCTION jnft(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
                              "LANGUAGE JAVA\n" +
                              "AS 'return null;';");
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "CREATE OR REPLACE FUNCTION totimestamp(val timeuuid) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS timestamp " +
                              "LANGUAGE JAVA\n" +
                              "AS 'return null;';");
-        assertInvalidMessage("System keyspace 'system' is not user-modifiable",
+        assertInvalidMessage("system keyspace is not user-modifiable",
                              "DROP FUNCTION now");
     }
 
     @Test
     public void testFunctionNonExistingKeyspace() throws Throwable
     {
-        assertInvalidMessage("Keyspace 'this_ks_does_not_exist' doesn't exist",
+        assertInvalidMessage("Keyspace this_ks_does_not_exist doesn't exist",
                              "CREATE OR REPLACE FUNCTION this_ks_does_not_exist.jnft(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
@@ -701,7 +679,7 @@ public class UFTest extends CQLTester
     {
         dropPerTestKeyspace();
 
-        assertInvalidMessage("Keyspace '" + KEYSPACE_PER_TEST + "' doesn't exist",
+        assertInvalidMessage("Keyspace " + KEYSPACE_PER_TEST + " doesn't exist",
                              "CREATE OR REPLACE FUNCTION " + KEYSPACE_PER_TEST + ".jnft(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
@@ -752,7 +730,7 @@ public class UFTest extends CQLTester
         Assert.assertEquals(1, Schema.instance.getFunctions(fNameName).size());
 
         ResultMessage.Prepared prepared = QueryProcessor.prepare(String.format("SELECT key, %s(udt) FROM %s.%s", fName, KEYSPACE, currentTable()),
-                                                                 ClientState.forInternalCalls());
+                                                                 ClientState.forInternalCalls(), false);
         Assert.assertNotNull(QueryProcessor.instance.getPrepared(prepared.statementId));
 
         // UT still referenced by table
@@ -772,7 +750,7 @@ public class UFTest extends CQLTester
     @Test
     public void testDuplicateArgNames() throws Throwable
     {
-        assertInvalidMessage("Duplicate argument names for given function",
+        assertInvalidMessage("duplicate argument names for given function",
                              "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".scrinv(val double, val text) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS text " +
@@ -834,7 +812,7 @@ public class UFTest extends CQLTester
                                       "LANGUAGE JAVA\n" +
                                       "AS 'throw new RuntimeException();';");
 
-        KeyspaceMetadata ksm = Schema.instance.getKeyspaceMetadata(KEYSPACE_PER_TEST);
+        KeyspaceMetadata ksm = Schema.instance.getKSMetaData(KEYSPACE_PER_TEST);
         UDFunction f = (UDFunction) ksm.functions.get(parseFunctionName(fName)).iterator().next();
 
         UDFunction broken = UDFunction.createBrokenFunction(f.name(),
@@ -845,7 +823,7 @@ public class UFTest extends CQLTester
                                                             "java",
                                                             f.body(),
                                                             new InvalidRequestException("foo bar is broken"));
-        Schema.instance.load(ksm.withSwapped(ksm.functions.without(f.name(), f.argTypes()).with(broken)));
+        Schema.instance.setKeyspaceMetadata(ksm.withSwapped(ksm.functions.without(f.name(), f.argTypes()).with(broken)));
 
         assertInvalidThrowMessage("foo bar is broken", InvalidRequestException.class,
                                   "SELECT key, " + fName + "(dval) FROM %s");
@@ -864,7 +842,7 @@ public class UFTest extends CQLTester
                                       "LANGUAGE JAVA\n" +
                                       "AS 'throw new RuntimeException();'");
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
         {
             try
             {
@@ -875,11 +853,11 @@ public class UFTest extends CQLTester
             catch (com.datastax.driver.core.exceptions.FunctionExecutionException fee)
             {
                 // Java driver neither throws FunctionExecutionException nor does it set the exception code correctly
-                Assert.assertTrue(version.isGreaterOrEqualTo(ProtocolVersion.V4));
+                Assert.assertTrue(version >= Server.VERSION_4);
             }
             catch (InvalidQueryException e)
             {
-                Assert.assertTrue(version.isSmallerThan(ProtocolVersion.V4));
+                Assert.assertTrue(version < Server.VERSION_4);
             }
         }
     }
@@ -990,5 +968,29 @@ public class UFTest extends CQLTester
         assertRows(execute("SELECT " + fNameIRN + "(empty_int) FROM %s"), row(new Object[]{ null }));
         assertRows(execute("SELECT " + fNameICC + "(empty_int) FROM %s"), row(0));
         assertRows(execute("SELECT " + fNameICN + "(empty_int) FROM %s"), row(new Object[]{ null }));
+    }
+
+    @Test(expected = SyntaxException.class)
+    public void testEmptyFunctionName() throws Throwable
+    {
+        execute("CREATE FUNCTION IF NOT EXISTS " + KEYSPACE + ".\"\" (arg int)\n" +
+                "  RETURNS NULL ON NULL INPUT\n" +
+                "  RETURNS int\n" +
+                "  LANGUAGE java\n" +
+                "  AS $$\n" +
+                "    return a;\n" +
+                "  $$");
+    }
+
+    @Test(expected = SyntaxException.class)
+    public void testEmptyArgName() throws Throwable
+    {
+        execute("CREATE FUNCTION IF NOT EXISTS " + KEYSPACE + ".myfn (\"\" int)\n" +
+                "  RETURNS NULL ON NULL INPUT\n" +
+                "  RETURNS int\n" +
+                "  LANGUAGE java\n" +
+                "  AS $$\n" +
+                "    return a;\n" +
+                "  $$");
     }
 }

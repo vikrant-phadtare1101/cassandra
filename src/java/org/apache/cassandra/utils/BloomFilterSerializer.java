@@ -17,15 +17,16 @@
  */
 package org.apache.cassandra.utils;
 
-import java.io.DataInputStream;
+import java.io.DataInput;
 import java.io.IOException;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.obs.IBitSet;
 import org.apache.cassandra.utils.obs.OffHeapBitSet;
+import org.apache.cassandra.utils.obs.OpenBitSet;
 
-public final class BloomFilterSerializer
+final class BloomFilterSerializer
 {
     private BloomFilterSerializer()
     {
@@ -37,13 +38,18 @@ public final class BloomFilterSerializer
         bf.bitset.serialize(out);
     }
 
+    public static BloomFilter deserialize(DataInput in, boolean oldBfHashOrder) throws IOException
+    {
+        return deserialize(in, false, oldBfHashOrder);
+    }
+
     @SuppressWarnings("resource")
-    public static BloomFilter deserialize(DataInputStream in, boolean oldBfFormat) throws IOException
+    public static BloomFilter deserialize(DataInput in, boolean offheap, boolean oldBfHashOrder) throws IOException
     {
         int hashes = in.readInt();
-        IBitSet bs = OffHeapBitSet.deserialize(in, oldBfFormat);
+        IBitSet bs = offheap ? OffHeapBitSet.deserialize(in) : OpenBitSet.deserialize(in);
 
-        return new BloomFilter(hashes, bs);
+        return new BloomFilter(hashes, bs, oldBfHashOrder);
     }
 
     /**

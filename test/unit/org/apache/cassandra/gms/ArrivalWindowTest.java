@@ -25,8 +25,9 @@ import static org.junit.Assert.*;
 
 import org.junit.Test;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.utils.FBUtilities;
+import java.lang.RuntimeException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 
 public class ArrivalWindowTest
 {
@@ -35,7 +36,15 @@ public class ArrivalWindowTest
     {
         final ArrivalWindow windowWithNano = new ArrivalWindow(4);
         final long toNano = 1000000L;
-        InetAddressAndPort ep = FBUtilities.getLocalAddressAndPort();
+        InetAddress ep;
+        try
+        {
+            ep = InetAddress.getLocalHost();
+        }
+        catch (UnknownHostException e)
+        {
+            throw new RuntimeException(e);
+        }
         windowWithNano.add(111 * toNano, ep);
         windowWithNano.add(222 * toNano, ep);
         windowWithNano.add(333 * toNano, ep);

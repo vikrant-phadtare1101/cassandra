@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.db.partitions;
 
-import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 import org.apache.cassandra.db.*;
@@ -26,15 +25,21 @@ import org.apache.cassandra.db.transform.Transformation;
 
 public abstract class PurgeFunction extends Transformation<UnfilteredRowIterator>
 {
+    private final boolean isForThrift;
     private final DeletionPurger purger;
     private final int nowInSec;
 
     private final boolean enforceStrictLiveness;
     private boolean isReverseOrder;
 
-    public PurgeFunction(int nowInSec, int gcBefore, int oldestUnrepairedTombstone, boolean onlyPurgeRepairedTombstones,
+    public PurgeFunction(boolean isForThrift,
+                         int nowInSec,
+                         int gcBefore,
+                         int oldestUnrepairedTombstone,
+                         boolean onlyPurgeRepairedTombstones,
                          boolean enforceStrictLiveness)
     {
+        this.isForThrift = isForThrift;
         this.nowInSec = nowInSec;
         this.purger = (timestamp, localDeletionTime) ->
                       !(onlyPurgeRepairedTombstones && localDeletionTime >= oldestUnrepairedTombstone)
@@ -43,7 +48,7 @@ public abstract class PurgeFunction extends Transformation<UnfilteredRowIterator
         this.enforceStrictLiveness = enforceStrictLiveness;
     }
 
-    protected abstract LongPredicate getPurgeEvaluator();
+    protected abstract Predicate<Long> getPurgeEvaluator();
 
     // Called at the beginning of each new partition
     protected void onNewPartition(DecoratedKey partitionKey)
@@ -61,14 +66,13 @@ public abstract class PurgeFunction extends Transformation<UnfilteredRowIterator
     }
 
     @Override
-    @SuppressWarnings("resource")
     protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
     {
         onNewPartition(partition.partitionKey());
 
         isReverseOrder = partition.isReverseOrder();
         UnfilteredRowIterator purged = Transformation.apply(partition, this);
-        if (purged.isEmpty())
+        if (!isForThrift && purged.isEmpty())
         {
             onEmptyPartitionPostPurge(purged.partitionKey());
             purged.close();

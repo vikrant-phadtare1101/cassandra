@@ -19,7 +19,6 @@
 package org.apache.cassandra.distributed.api;
 
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 
 public interface IMessageFilters
 {
@@ -37,7 +36,7 @@ public interface IMessageFilters
         Filter drop();
     }
 
-    Builder verbs(Verb ... verbs);
+    Builder verbs(MessagingService.Verb... verbs);
     Builder allVerbs();
     void reset();
 

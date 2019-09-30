@@ -20,7 +20,7 @@ package org.apache.cassandra.db;
 
 import java.util.NoSuchElementException;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.partitions.BasePartitionIterator;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
@@ -52,14 +52,21 @@ public class EmptyIterators
 
     private static class EmptyUnfilteredPartitionIterator extends EmptyBasePartitionIterator<UnfilteredRowIterator> implements UnfilteredPartitionIterator
     {
-        final TableMetadata metadata;
+        final CFMetaData metadata;
+        final boolean isForThrift;
 
-        public EmptyUnfilteredPartitionIterator(TableMetadata metadata)
+        public EmptyUnfilteredPartitionIterator(CFMetaData metadata, boolean isForThrift)
         {
             this.metadata = metadata;
+            this.isForThrift = isForThrift;
         }
 
-        public TableMetadata metadata()
+        public boolean isForThrift()
+        {
+            return isForThrift;
+        }
+
+        public CFMetaData metadata()
         {
             return metadata;
         }
@@ -76,13 +83,13 @@ public class EmptyIterators
 
     private static class EmptyBaseRowIterator<U extends Unfiltered> implements BaseRowIterator<U>
     {
-        final RegularAndStaticColumns columns;
-        final TableMetadata metadata;
+        final PartitionColumns columns;
+        final CFMetaData metadata;
         final DecoratedKey partitionKey;
         final boolean isReverseOrder;
         final Row staticRow;
 
-        EmptyBaseRowIterator(RegularAndStaticColumns columns, TableMetadata metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow)
+        EmptyBaseRowIterator(PartitionColumns columns, CFMetaData metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow)
         {
             this.columns = columns;
             this.metadata = metadata;
@@ -91,7 +98,7 @@ public class EmptyIterators
             this.staticRow = staticRow;
         }
 
-        public TableMetadata metadata()
+        public CFMetaData metadata()
         {
             return metadata;
         }
@@ -101,7 +108,7 @@ public class EmptyIterators
             return isReverseOrder;
         }
 
-        public RegularAndStaticColumns columns()
+        public PartitionColumns columns()
         {
             return columns;
         }
@@ -139,7 +146,7 @@ public class EmptyIterators
     private static class EmptyUnfilteredRowIterator extends EmptyBaseRowIterator<Unfiltered> implements UnfilteredRowIterator
     {
         final DeletionTime partitionLevelDeletion;
-        public EmptyUnfilteredRowIterator(RegularAndStaticColumns columns, TableMetadata metadata, DecoratedKey partitionKey,
+        public EmptyUnfilteredRowIterator(PartitionColumns columns, CFMetaData metadata, DecoratedKey partitionKey,
                                           boolean isReverseOrder, Row staticRow, DeletionTime partitionLevelDeletion)
         {
             super(columns, metadata, partitionKey, isReverseOrder, staticRow);
@@ -164,15 +171,15 @@ public class EmptyIterators
 
     private static class EmptyRowIterator extends EmptyBaseRowIterator<Row> implements RowIterator
     {
-        public EmptyRowIterator(TableMetadata metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow)
+        public EmptyRowIterator(CFMetaData metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow)
         {
-            super(RegularAndStaticColumns.NONE, metadata, partitionKey, isReverseOrder, staticRow);
+            super(PartitionColumns.NONE, metadata, partitionKey, isReverseOrder, staticRow);
         }
     }
 
-    public static UnfilteredPartitionIterator unfilteredPartition(TableMetadata metadata)
+    public static UnfilteredPartitionIterator unfilteredPartition(CFMetaData metadata, boolean isForThrift)
     {
-        return new EmptyUnfilteredPartitionIterator(metadata);
+        return new EmptyUnfilteredPartitionIterator(metadata, isForThrift);
     }
 
     public static PartitionIterator partition()
@@ -181,11 +188,11 @@ public class EmptyIterators
     }
 
     // this method is the only one that can return a non-empty iterator, but it still has no rows, so it seems cleanest to keep it here
-    public static UnfilteredRowIterator unfilteredRow(TableMetadata metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow, DeletionTime partitionDeletion)
+    public static UnfilteredRowIterator unfilteredRow(CFMetaData metadata, DecoratedKey partitionKey, boolean isReverseOrder, Row staticRow, DeletionTime partitionDeletion)
     {
-        RegularAndStaticColumns columns = RegularAndStaticColumns.NONE;
+        PartitionColumns columns = PartitionColumns.NONE;
         if (!staticRow.isEmpty())
-            columns = new RegularAndStaticColumns(Columns.from(staticRow.columns()), Columns.NONE);
+            columns = new PartitionColumns(Columns.from(staticRow.columns()), Columns.NONE);
         else
             staticRow = Rows.EMPTY_STATIC_ROW;
 
@@ -195,12 +202,12 @@ public class EmptyIterators
         return new EmptyUnfilteredRowIterator(columns, metadata, partitionKey, isReverseOrder, staticRow, partitionDeletion);
     }
 
-    public static UnfilteredRowIterator unfilteredRow(TableMetadata metadata, DecoratedKey partitionKey, boolean isReverseOrder)
+    public static UnfilteredRowIterator unfilteredRow(CFMetaData metadata, DecoratedKey partitionKey, boolean isReverseOrder)
     {
-        return new EmptyUnfilteredRowIterator(RegularAndStaticColumns.NONE, metadata, partitionKey, isReverseOrder, Rows.EMPTY_STATIC_ROW, DeletionTime.LIVE);
+        return new EmptyUnfilteredRowIterator(PartitionColumns.NONE, metadata, partitionKey, isReverseOrder, Rows.EMPTY_STATIC_ROW, DeletionTime.LIVE);
     }
 
-    public static RowIterator row(TableMetadata metadata, DecoratedKey partitionKey, boolean isReverseOrder)
+    public static RowIterator row(CFMetaData metadata, DecoratedKey partitionKey, boolean isReverseOrder)
     {
         return new EmptyRowIterator(metadata, partitionKey, isReverseOrder, Rows.EMPTY_STATIC_ROW);
     }

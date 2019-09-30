@@ -18,41 +18,42 @@
 package org.apache.cassandra.streaming.messages;
 
 import java.io.*;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.util.UUID;
 
 import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
-import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.streaming.StreamSession;
+import org.apache.cassandra.utils.UUIDSerializer;
 
 public class ReceivedMessage extends StreamMessage
 {
     public static Serializer<ReceivedMessage> serializer = new Serializer<ReceivedMessage>()
     {
         @SuppressWarnings("resource") // Not closing constructed DataInputPlus's as the channel needs to remain open.
-        public ReceivedMessage deserialize(DataInputPlus input, int version, StreamSession session) throws IOException
+        public ReceivedMessage deserialize(ReadableByteChannel in, int version, StreamSession session) throws IOException
         {
-            return new ReceivedMessage(TableId.deserialize(input), input.readInt());
+            DataInputPlus input = new DataInputStreamPlus(Channels.newInputStream(in));
+            return new ReceivedMessage(UUIDSerializer.serializer.deserialize(input, MessagingService.current_version), input.readInt());
         }
 
         public void serialize(ReceivedMessage message, DataOutputStreamPlus out, int version, StreamSession session) throws IOException
         {
-            message.tableId.serialize(out);
+            UUIDSerializer.serializer.serialize(message.cfId, out, MessagingService.current_version);
             out.writeInt(message.sequenceNumber);
-        }
-
-        public long serializedSize(ReceivedMessage message, int version)
-        {
-            return message.tableId.serializedSize() + 4;
         }
     };
 
-    public final TableId tableId;
+    public final UUID cfId;
     public final int sequenceNumber;
 
-    public ReceivedMessage(TableId tableId, int sequenceNumber)
+    public ReceivedMessage(UUID cfId, int sequenceNumber)
     {
         super(Type.RECEIVED);
-        this.tableId = tableId;
+        this.cfId = cfId;
         this.sequenceNumber = sequenceNumber;
     }
 
@@ -60,7 +61,7 @@ public class ReceivedMessage extends StreamMessage
     public String toString()
     {
         final StringBuilder sb = new StringBuilder("Received (");
-        sb.append(tableId).append(", #").append(sequenceNumber).append(')');
+        sb.append(cfId).append(", #").append(sequenceNumber).append(')');
         return sb.toString();
     }
 }

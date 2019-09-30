@@ -43,7 +43,7 @@ cscope.*
 # NetBeans
 nbbuild/
 nbdist/
-ide/nbproject/private
+nbproject/
 nb-configuration.xml
 nbactions.xml
 
@@ -70,10 +70,4 @@ lib/jsr223/jruby/ruby
 lib/jsr223/jython/*.jar
 lib/jsr223/jython/cachedir
 lib/jsr223/scala/*.jar
-
-/.ant-targets-build.xml
-
-# Generated files from the documentation
-doc/source/configuration/cassandra_config_file.rst
-doc/source/tools/nodetool
 

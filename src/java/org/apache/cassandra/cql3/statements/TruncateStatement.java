@@ -17,78 +17,71 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import java.io.IOException;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.cassandra.audit.AuditLogContext;
-import org.apache.cassandra.audit.AuditLogEntryType;
 import org.apache.cassandra.auth.Permission;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.service.StorageProxy;
-import org.apache.cassandra.transport.messages.ResultMessage;
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
+import org.apache.cassandra.thrift.ThriftValidation;
 
-public class TruncateStatement extends QualifiedStatement implements CQLStatement
+public class TruncateStatement extends CFStatement implements CQLStatement
 {
-    public TruncateStatement(QualifiedName name)
+    public TruncateStatement(CFName name)
     {
         super(name);
     }
 
-    public TruncateStatement prepare(ClientState state)
+    public int getBoundTerms()
     {
-        return this;
+        return 0;
     }
 
-    public void authorize(ClientState state) throws InvalidRequestException, UnauthorizedException
+    public Prepared prepare(ClientState clientState) throws InvalidRequestException
     {
-        state.ensureTablePermission(keyspace(), name(), Permission.MODIFY);
+        return new Prepared(this);
+    }
+
+    public void checkAccess(ClientState state) throws InvalidRequestException, UnauthorizedException
+    {
+        state.hasColumnFamilyAccess(keyspace(), columnFamily(), Permission.MODIFY);
     }
 
     public void validate(ClientState state) throws InvalidRequestException
     {
-        Schema.instance.validateTable(keyspace(), name());
+        ThriftValidation.validateColumnFamily(keyspace(), columnFamily());
     }
 
-    public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime) throws InvalidRequestException, TruncateException
+    public ResultMessage execute(QueryState state, QueryOptions options) throws InvalidRequestException, TruncateException
     {
         try
         {
-            TableMetadata metaData = Schema.instance.getTableMetadata(keyspace(), name());
+            CFMetaData metaData = Schema.instance.getCFMetaData(keyspace(), columnFamily());
             if (metaData.isView())
                 throw new InvalidRequestException("Cannot TRUNCATE materialized view directly; must truncate base table instead");
 
-            if (metaData.isVirtual())
-                throw new InvalidRequestException("Cannot truncate virtual tables");
-
-            StorageProxy.truncateBlocking(keyspace(), name());
+            StorageProxy.truncateBlocking(keyspace(), columnFamily());
         }
-        catch (UnavailableException | TimeoutException e)
+        catch (UnavailableException | TimeoutException | IOException e)
         {
             throw new TruncateException(e);
         }
         return null;
     }
 
-    public ResultMessage executeLocally(QueryState state, QueryOptions options)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
         try
         {
-            TableMetadata metaData = Schema.instance.getTableMetadata(keyspace(), name());
-            if (metaData.isView())
-                throw new InvalidRequestException("Cannot TRUNCATE materialized view directly; must truncate base table instead");
-
-            if (metaData.isVirtual())
-                throw new InvalidRequestException("Cannot truncate virtual tables");
-
-            ColumnFamilyStore cfs = Keyspace.open(keyspace()).getColumnFamilyStore(name());
+            ColumnFamilyStore cfs = Keyspace.open(keyspace()).getColumnFamilyStore(columnFamily());
             cfs.truncateBlocking();
         }
         catch (Exception e)
@@ -96,17 +89,5 @@ public class TruncateStatement extends QualifiedStatement implements CQLStatemen
             throw new TruncateException(e);
         }
         return null;
-    }
-    
-    @Override
-    public String toString()
-    {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
-    }
-
-    @Override
-    public AuditLogContext getAuditLogContext()
-    {
-        return new AuditLogContext(AuditLogEntryType.TRUNCATE, keyspace(), name());
     }
 }

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.dht.tokenallocator;
 
+import java.net.InetAddress;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
@@ -32,12 +33,10 @@ import org.apache.commons.math3.stat.descriptive.SummaryStatistics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.locator.IEndpointSnitch;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.NetworkTopologyStrategy;
 import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.locator.TokenMetadata;
@@ -49,7 +48,7 @@ public class TokenAllocation
 
     public static Collection<Token> allocateTokens(final TokenMetadata tokenMetadata,
                                                    final AbstractReplicationStrategy rs,
-                                                   final InetAddressAndPort endpoint,
+                                                   final InetAddress endpoint,
                                                    int numTokens)
     {
         TokenMetadata tokenMetadataCopy = tokenMetadata.cloneOnlyTokenMap();
@@ -63,27 +62,13 @@ public class TokenAllocation
             SummaryStatistics os = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
             tokenMetadataCopy.updateNormalTokens(tokens, endpoint);
             SummaryStatistics ns = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
-            logger.warn("Replicated node load in datacenter before allocation {}", statToString(os));
-            logger.warn("Replicated node load in datacenter after allocation {}", statToString(ns));
+            logger.warn("Replicated node load in datacentre before allocation " + statToString(os));
+            logger.warn("Replicated node load in datacentre after allocation " + statToString(ns));
 
             // TODO: Is it worth doing the replicated ownership calculation always to be able to raise this alarm?
             if (ns.getStandardDeviation() > os.getStandardDeviation())
                 logger.warn("Unexpected growth in standard deviation after allocation.");
         }
-        return tokens;
-    }
-
-    public static Collection<Token> allocateTokens(final TokenMetadata tokenMetadata,
-                                                   final int replicas,
-                                                   final InetAddressAndPort endpoint,
-                                                   int numTokens)
-    {
-        TokenMetadata tokenMetadataCopy = tokenMetadata.cloneOnlyTokenMap();
-        StrategyAdapter strategy = getStrategy(tokenMetadataCopy, replicas, endpoint);
-        Collection<Token> tokens = create(tokenMetadata, strategy).addUnit(endpoint, numTokens);
-        tokens = adjustForCrossDatacenterClashes(tokenMetadata, strategy, tokens);
-        logger.warn("Selected tokens {}", tokens);
-        // SummaryStatistics is not implemented for `allocate_tokens_for_local_replication_factor`
         return tokens;
     }
 
@@ -96,7 +81,7 @@ public class TokenAllocation
         {
             while (tokenMetadata.getEndpoint(t) != null)
             {
-                InetAddressAndPort other = tokenMetadata.getEndpoint(t);
+                InetAddress other = tokenMetadata.getEndpoint(t);
                 if (strategy.inAllocationRing(other))
                     throw new ConfigurationException(String.format("Allocated token %s already assigned to node %s. Is another node also allocating tokens?", t, other));
                 t = t.increaseSlightly();
@@ -107,9 +92,9 @@ public class TokenAllocation
     }
 
     // return the ratio of ownership for each endpoint
-    public static Map<InetAddressAndPort, Double> evaluateReplicatedOwnership(TokenMetadata tokenMetadata, AbstractReplicationStrategy rs)
+    public static Map<InetAddress, Double> evaluateReplicatedOwnership(TokenMetadata tokenMetadata, AbstractReplicationStrategy rs)
     {
-        Map<InetAddressAndPort, Double> ownership = Maps.newHashMap();
+        Map<InetAddress, Double> ownership = Maps.newHashMap();
         List<Token> sortedTokens = tokenMetadata.sortedTokens();
         Iterator<Token> it = sortedTokens.iterator();
         Token current = it.next();
@@ -124,11 +109,11 @@ public class TokenAllocation
         return ownership;
     }
 
-    static void addOwnership(final TokenMetadata tokenMetadata, final AbstractReplicationStrategy rs, Token current, Token next, Map<InetAddressAndPort, Double> ownership)
+    static void addOwnership(final TokenMetadata tokenMetadata, final AbstractReplicationStrategy rs, Token current, Token next, Map<InetAddress, Double> ownership)
     {
         double size = current.size(next);
         Token representative = current.getPartitioner().midpoint(current, next);
-        for (InetAddressAndPort n : rs.calculateNaturalReplicas(representative, tokenMetadata).endpoints())
+        for (InetAddress n : rs.calculateNaturalEndpoints(representative, tokenMetadata))
         {
             Double v = ownership.get(n);
             ownership.put(n, v != null ? v + size : size);
@@ -141,11 +126,11 @@ public class TokenAllocation
     }
 
     public static SummaryStatistics replicatedOwnershipStats(TokenMetadata tokenMetadata,
-                                                             AbstractReplicationStrategy rs, InetAddressAndPort endpoint)
+                                                             AbstractReplicationStrategy rs, InetAddress endpoint)
     {
         SummaryStatistics stat = new SummaryStatistics();
         StrategyAdapter strategy = getStrategy(tokenMetadata, rs, endpoint);
-        for (Map.Entry<InetAddressAndPort, Double> en : evaluateReplicatedOwnership(tokenMetadata, rs).entrySet())
+        for (Map.Entry<InetAddress, Double> en : evaluateReplicatedOwnership(tokenMetadata, rs).entrySet())
         {
             // Filter only in the same datacentre.
             if (strategy.inAllocationRing(en.getKey()))
@@ -154,26 +139,26 @@ public class TokenAllocation
         return stat;
     }
 
-    static TokenAllocator<InetAddressAndPort> create(TokenMetadata tokenMetadata, StrategyAdapter strategy)
+    static TokenAllocator<InetAddress> create(TokenMetadata tokenMetadata, StrategyAdapter strategy)
     {
-        NavigableMap<Token, InetAddressAndPort> sortedTokens = new TreeMap<>();
-        for (Map.Entry<Token, InetAddressAndPort> en : tokenMetadata.getNormalAndBootstrappingTokenToEndpointMap().entrySet())
+        NavigableMap<Token, InetAddress> sortedTokens = new TreeMap<>();
+        for (Map.Entry<Token, InetAddress> en : tokenMetadata.getNormalAndBootstrappingTokenToEndpointMap().entrySet())
         {
             if (strategy.inAllocationRing(en.getValue()))
                 sortedTokens.put(en.getKey(), en.getValue());
         }
-        return TokenAllocatorFactory.createTokenAllocator(sortedTokens, strategy, tokenMetadata.partitioner);
+        return new ReplicationAwareTokenAllocator<>(sortedTokens, strategy, tokenMetadata.partitioner);
     }
 
-    interface StrategyAdapter extends ReplicationStrategy<InetAddressAndPort>
+    interface StrategyAdapter extends ReplicationStrategy<InetAddress>
     {
         // return true iff the provided endpoint occurs in the same virtual token-ring we are allocating for
         // i.e. the set of the nodes that share ownership with the node we are allocating
         // alternatively: return false if the endpoint's ownership is independent of the node we are allocating tokens for
-        boolean inAllocationRing(InetAddressAndPort other);
+        boolean inAllocationRing(InetAddress other);
     }
 
-    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final AbstractReplicationStrategy rs, final InetAddressAndPort endpoint)
+    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final AbstractReplicationStrategy rs, final InetAddress endpoint)
     {
         if (rs instanceof NetworkTopologyStrategy)
             return getStrategy(tokenMetadata, (NetworkTopologyStrategy) rs, rs.snitch, endpoint);
@@ -182,9 +167,9 @@ public class TokenAllocation
         throw new ConfigurationException("Token allocation does not support replication strategy " + rs.getClass().getSimpleName());
     }
 
-    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final SimpleStrategy rs, final InetAddressAndPort endpoint)
+    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final SimpleStrategy rs, final InetAddress endpoint)
     {
-        final int replicas = rs.getReplicationFactor().allReplicas;
+        final int replicas = rs.getReplicationFactor();
 
         return new StrategyAdapter()
         {
@@ -195,58 +180,23 @@ public class TokenAllocation
             }
 
             @Override
-            public Object getGroup(InetAddressAndPort unit)
+            public Object getGroup(InetAddress unit)
             {
                 return unit;
             }
 
             @Override
-            public boolean inAllocationRing(InetAddressAndPort other)
+            public boolean inAllocationRing(InetAddress other)
             {
                 return true;
             }
         };
     }
 
-    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final NetworkTopologyStrategy rs, final IEndpointSnitch snitch, final InetAddressAndPort endpoint)
+    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final NetworkTopologyStrategy rs, final IEndpointSnitch snitch, final InetAddress endpoint)
     {
         final String dc = snitch.getDatacenter(endpoint);
-        final int replicas = rs.getReplicationFactor(dc).allReplicas;
-        return getStrategy(tokenMetadata, replicas, snitch, endpoint);
-    }
-
-    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final int replicas, final InetAddressAndPort endpoint)
-    {
-        return getStrategy(tokenMetadata, replicas, DatabaseDescriptor.getEndpointSnitch(), endpoint);
-    }
-
-    static StrategyAdapter getStrategy(final TokenMetadata tokenMetadata, final int replicas, final IEndpointSnitch snitch, final InetAddressAndPort endpoint)
-    {
-        final String dc = snitch.getDatacenter(endpoint);
-        if (replicas == 0 || replicas == 1)
-        {
-            // No replication, each node is treated as separate.
-            return new StrategyAdapter()
-            {
-                @Override
-                public int replicas()
-                {
-                    return 1;
-                }
-
-                @Override
-                public Object getGroup(InetAddressAndPort unit)
-                {
-                    return unit;
-                }
-
-                @Override
-                public boolean inAllocationRing(InetAddressAndPort other)
-                {
-                    return dc.equals(snitch.getDatacenter(other));
-                }
-            };
-        }
+        final int replicas = rs.getReplicationFactor(dc);
 
         Topology topology = tokenMetadata.getTopology();
 
@@ -266,13 +216,13 @@ public class TokenAllocation
                 }
 
                 @Override
-                public Object getGroup(InetAddressAndPort unit)
+                public Object getGroup(InetAddress unit)
                 {
                     return snitch.getRack(unit);
                 }
 
                 @Override
-                public boolean inAllocationRing(InetAddressAndPort other)
+                public boolean inAllocationRing(InetAddress other)
                 {
                     return dc.equals(snitch.getDatacenter(other));
                 }
@@ -290,13 +240,13 @@ public class TokenAllocation
                 }
 
                 @Override
-                public Object getGroup(InetAddressAndPort unit)
+                public Object getGroup(InetAddress unit)
                 {
                     return unit;
                 }
 
                 @Override
-                public boolean inAllocationRing(InetAddressAndPort other)
+                public boolean inAllocationRing(InetAddress other)
                 {
                     return dc.equals(snitch.getDatacenter(other));
                 }

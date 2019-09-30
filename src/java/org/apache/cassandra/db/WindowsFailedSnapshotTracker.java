@@ -85,7 +85,8 @@ public class WindowsFailedSnapshotTracker
             }
             catch (IOException e)
             {
-                logger.warn("Failed to open {}. Obsolete snapshots from previous runs will not be deleted.", TODELETEFILE, e);
+                logger.warn("Failed to open {}. Obsolete snapshots from previous runs will not be deleted.", TODELETEFILE);
+                logger.warn("Exception: " + e);
             }
         }
 

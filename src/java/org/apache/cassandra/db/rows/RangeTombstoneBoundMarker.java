@@ -18,59 +18,59 @@
 package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.Objects;
 
-import com.google.common.hash.Hasher;
-
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.utils.memory.AbstractAllocator;
 
 /**
  * A range tombstone marker that indicates the bound of a range tombstone (start or end).
  */
-public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<ClusteringBound>
+public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker
 {
     private final DeletionTime deletion;
 
-    public RangeTombstoneBoundMarker(ClusteringBound bound, DeletionTime deletion)
+    public RangeTombstoneBoundMarker(RangeTombstone.Bound bound, DeletionTime deletion)
     {
         super(bound);
+        assert !bound.isBoundary();
         this.deletion = deletion;
+    }
+
+    public RangeTombstoneBoundMarker(Slice.Bound bound, DeletionTime deletion)
+    {
+        this(new RangeTombstone.Bound(bound.kind(), bound.getRawValues()), deletion);
     }
 
     public static RangeTombstoneBoundMarker inclusiveOpen(boolean reversed, ByteBuffer[] boundValues, DeletionTime deletion)
     {
-        ClusteringBound bound = ClusteringBound.inclusiveOpen(reversed, boundValues);
+        RangeTombstone.Bound bound = RangeTombstone.Bound.inclusiveOpen(reversed, boundValues);
         return new RangeTombstoneBoundMarker(bound, deletion);
     }
 
     public static RangeTombstoneBoundMarker exclusiveOpen(boolean reversed, ByteBuffer[] boundValues, DeletionTime deletion)
     {
-        ClusteringBound bound = ClusteringBound.exclusiveOpen(reversed, boundValues);
+        RangeTombstone.Bound bound = RangeTombstone.Bound.exclusiveOpen(reversed, boundValues);
         return new RangeTombstoneBoundMarker(bound, deletion);
     }
 
     public static RangeTombstoneBoundMarker inclusiveClose(boolean reversed, ByteBuffer[] boundValues, DeletionTime deletion)
     {
-        ClusteringBound bound = ClusteringBound.inclusiveClose(reversed, boundValues);
+        RangeTombstone.Bound bound = RangeTombstone.Bound.inclusiveClose(reversed, boundValues);
         return new RangeTombstoneBoundMarker(bound, deletion);
     }
 
     public static RangeTombstoneBoundMarker exclusiveClose(boolean reversed, ByteBuffer[] boundValues, DeletionTime deletion)
     {
-        ClusteringBound bound = ClusteringBound.exclusiveClose(reversed, boundValues);
+        RangeTombstone.Bound bound = RangeTombstone.Bound.exclusiveClose(reversed, boundValues);
         return new RangeTombstoneBoundMarker(bound, deletion);
     }
 
     public boolean isBoundary()
     {
         return false;
-    }
-
-    public boolean hasInvalidDeletions()
-    {
-        return !deletionTime().validate();
     }
 
     /**
@@ -109,12 +109,12 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
         return bound.isInclusive();
     }
 
-    public ClusteringBound openBound(boolean reversed)
+    public RangeTombstone.Bound openBound(boolean reversed)
     {
         return isOpen(reversed) ? clustering() : null;
     }
 
-    public ClusteringBound closeBound(boolean reversed)
+    public RangeTombstone.Bound closeBound(boolean reversed)
     {
         return isClose(reversed) ? clustering() : null;
     }
@@ -132,13 +132,13 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
         return new RangeTombstoneBoundMarker(clustering(), newDeletionTime);
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
-        bound.digest(hasher);
-        deletion.digest(hasher);
+        bound.digest(digest);
+        deletion.digest(digest);
     }
 
-    public String toString(TableMetadata metadata)
+    public String toString(CFMetaData metadata)
     {
         return String.format("Marker %s@%d/%d", bound.toString(metadata), deletion.markedForDeleteAt(), deletion.localDeletionTime());
     }

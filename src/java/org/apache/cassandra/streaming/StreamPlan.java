@@ -17,17 +17,13 @@
  */
 package org.apache.cassandra.streaming;
 
+import java.net.InetAddress;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
-
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.RangesAtEndpoint;
-import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.UUIDGen;
-
-import static com.google.common.collect.Iterables.all;
-import static org.apache.cassandra.service.ActiveRepairService.NO_PENDING_REPAIR;
 
 /**
  * {@link StreamPlan} is a helper class that builds StreamOperation of given configuration.
@@ -36,10 +32,10 @@ import static org.apache.cassandra.service.ActiveRepairService.NO_PENDING_REPAIR
  */
 public class StreamPlan
 {
-    private static final String[] EMPTY_COLUMN_FAMILIES = new String[0];
     private final UUID planId = UUIDGen.getTimeUUID();
-    private final StreamOperation streamOperation;
+    private final String description;
     private final List<StreamEventHandler> handlers = new ArrayList<>();
+    private final long repairedAt;
     private final StreamCoordinator coordinator;
 
     private boolean flushBeforeTransfer = true;
@@ -47,98 +43,110 @@ public class StreamPlan
     /**
      * Start building stream plan.
      *
-     * @param streamOperation Stream streamOperation that describes this StreamPlan
+     * @param description Stream type that describes this StreamPlan
      */
-    public StreamPlan(StreamOperation streamOperation)
+    public StreamPlan(String description)
     {
-        this(streamOperation, 1, false, NO_PENDING_REPAIR, PreviewKind.NONE);
+        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, false, false);
     }
 
-    public StreamPlan(StreamOperation streamOperation, boolean connectSequentially)
+    public StreamPlan(String description, boolean keepSSTableLevels)
     {
-        this(streamOperation, 1, connectSequentially, NO_PENDING_REPAIR, PreviewKind.NONE);
+        this(description, ActiveRepairService.UNREPAIRED_SSTABLE, 1, keepSSTableLevels, false);
     }
 
-    public StreamPlan(StreamOperation streamOperation, int connectionsPerHost,
-                      boolean connectSequentially, UUID pendingRepair, PreviewKind previewKind)
+    public StreamPlan(String description, long repairedAt, int connectionsPerHost, boolean keepSSTableLevels, boolean isIncremental)
     {
-        this.streamOperation = streamOperation;
-        this.coordinator = new StreamCoordinator(streamOperation, connectionsPerHost, new DefaultConnectionFactory(),
-                                                 connectSequentially, pendingRepair, previewKind);
+        this.description = description;
+        this.repairedAt = repairedAt;
+        this.coordinator = new StreamCoordinator(connectionsPerHost, keepSSTableLevels, isIncremental, new DefaultConnectionFactory());
     }
 
     /**
      * Request data in {@code keyspace} and {@code ranges} from specific node.
      *
-     * Here, we have to encode both _local_ range transientness (encoded in Replica itself, in RangesAtEndpoint)
-     * and _remote_ (source) range transientmess, which is encoded by splitting ranges into full and transient.
-     *
-     * At the other end the distinction between full and transient is ignored it just used the transient status
-     * of the Replica objects we send to determine what to send. The real reason we have this split down to
-     * StreamRequest is that on completion StreamRequest is used to write to the system table tracking
-     * what has already been streamed. At that point since we only have the local Replica instances so we don't
-     * know what we got from the remote. We preserve that here by splitting based on the remotes transient
-     * status.
-     * 
      * @param from endpoint address to fetch data from.
+     * @param connecting Actual connecting address for the endpoint
      * @param keyspace name of keyspace
-     * @param fullRanges ranges to fetch that from provides the full version of
-     * @param transientRanges ranges to fetch that from provides only transient data of
+     * @param ranges ranges to fetch
      * @return this object for chaining
      */
-    public StreamPlan requestRanges(InetAddressAndPort from, String keyspace, RangesAtEndpoint fullRanges, RangesAtEndpoint transientRanges)
+    public StreamPlan requestRanges(InetAddress from, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges)
     {
-        return requestRanges(from, keyspace, fullRanges, transientRanges, EMPTY_COLUMN_FAMILIES);
+        return requestRanges(from, connecting, keyspace, ranges, new String[0]);
     }
 
     /**
      * Request data in {@code columnFamilies} under {@code keyspace} and {@code ranges} from specific node.
      *
      * @param from endpoint address to fetch data from.
+     * @param connecting Actual connecting address for the endpoint
      * @param keyspace name of keyspace
-     * @param fullRanges ranges to fetch that from provides the full data for
-     * @param transientRanges ranges to fetch that from provides only transient data for
+     * @param ranges ranges to fetch
      * @param columnFamilies specific column families
      * @return this object for chaining
      */
-    public StreamPlan requestRanges(InetAddressAndPort from, String keyspace, RangesAtEndpoint fullRanges, RangesAtEndpoint transientRanges, String... columnFamilies)
+    public StreamPlan requestRanges(InetAddress from, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges, String... columnFamilies)
     {
-        //It should either be a dummy address for repair or if it's a bootstrap/move/rebuild it should be this node
-        assert all(fullRanges, Replica::isSelf) || RangesAtEndpoint.isDummyList(fullRanges) : fullRanges.toString();
-        assert all(transientRanges, Replica::isSelf) || RangesAtEndpoint.isDummyList(transientRanges) : transientRanges.toString();
-
-        StreamSession session = coordinator.getOrCreateNextSession(from);
-        session.addStreamRequest(keyspace, fullRanges, transientRanges, Arrays.asList(columnFamilies));
+        StreamSession session = coordinator.getOrCreateNextSession(from, connecting);
+        session.addStreamRequest(keyspace, ranges, Arrays.asList(columnFamilies), repairedAt);
         return this;
     }
 
     /**
      * Add transfer task to send data of specific {@code columnFamilies} under {@code keyspace} and {@code ranges}.
      *
+     * @see #transferRanges(java.net.InetAddress, java.net.InetAddress, String, java.util.Collection, String...)
+     */
+    public StreamPlan transferRanges(InetAddress to, String keyspace, Collection<Range<Token>> ranges, String... columnFamilies)
+    {
+        return transferRanges(to, to, keyspace, ranges, columnFamilies);
+    }
+
+    /**
+     * Add transfer task to send data of specific keyspace and ranges.
+     *
      * @param to endpoint address of receiver
+     * @param connecting Actual connecting address of the endpoint
      * @param keyspace name of keyspace
-     * @param replicas ranges to send
+     * @param ranges ranges to send
+     * @return this object for chaining
+     */
+    public StreamPlan transferRanges(InetAddress to, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges)
+    {
+        return transferRanges(to, connecting, keyspace, ranges, new String[0]);
+    }
+
+    /**
+     * Add transfer task to send data of specific {@code columnFamilies} under {@code keyspace} and {@code ranges}.
+     *
+     * @param to endpoint address of receiver
+     * @param connecting Actual connecting address of the endpoint
+     * @param keyspace name of keyspace
+     * @param ranges ranges to send
      * @param columnFamilies specific column families
      * @return this object for chaining
      */
-    public StreamPlan transferRanges(InetAddressAndPort to, String keyspace, RangesAtEndpoint replicas, String... columnFamilies)
+    public StreamPlan transferRanges(InetAddress to, InetAddress connecting, String keyspace, Collection<Range<Token>> ranges, String... columnFamilies)
     {
-        StreamSession session = coordinator.getOrCreateNextSession(to);
-        session.addTransferRanges(keyspace, replicas, Arrays.asList(columnFamilies), flushBeforeTransfer);
+        StreamSession session = coordinator.getOrCreateNextSession(to, connecting);
+        session.addTransferRanges(keyspace, ranges, Arrays.asList(columnFamilies), flushBeforeTransfer, repairedAt);
         return this;
     }
 
     /**
-     * Add transfer task to send given streams
+     * Add transfer task to send given SSTable files.
      *
      * @param to endpoint address of receiver
-     * @param streams streams to send
+     * @param sstableDetails sstables with file positions and estimated key count.
+     *                       this collection will be modified to remove those files that are successfully handed off
      * @return this object for chaining
      */
-    public StreamPlan transferStreams(InetAddressAndPort to, Collection<OutgoingStream> streams)
+    public StreamPlan transferFiles(InetAddress to, Collection<StreamSession.SSTableStreamingSections> sstableDetails)
     {
-        coordinator.transferStreams(to, streams);
+        coordinator.transferFiles(to, sstableDetails);
         return this;
+
     }
 
     public StreamPlan listeners(StreamEventHandler handler, StreamEventHandler... handlers)
@@ -176,7 +184,7 @@ public class StreamPlan
      */
     public StreamResultFuture execute()
     {
-        return StreamResultFuture.init(planId, streamOperation, handlers, coordinator);
+        return StreamResultFuture.init(planId, description, handlers, coordinator);
     }
 
     /**
@@ -190,21 +198,5 @@ public class StreamPlan
     {
         this.flushBeforeTransfer = flushBeforeTransfer;
         return this;
-    }
-
-    public UUID getPendingRepair()
-    {
-        return coordinator.getPendingRepair();
-    }
-
-    public boolean getFlushBeforeTransfer()
-    {
-        return flushBeforeTransfer;
-    }
-
-    @VisibleForTesting
-    public StreamCoordinator getCoordinator()
-    {
-        return coordinator;
     }
 }

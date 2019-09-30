@@ -112,7 +112,11 @@ public class EstimatedHistogram
         return bucketOffsets;
     }
 
-    private int findIndex(long n)
+    /**
+     * Increments the count of the bucket closest to n, rounding UP.
+     * @param n
+     */
+    public void add(long n)
     {
         int index = Arrays.binarySearch(bucketOffsets, n);
         if (index < 0)
@@ -120,25 +124,8 @@ public class EstimatedHistogram
             // inexact match, take the first bucket higher than n
             index = -index - 1;
         }
-        return index;
-    }
-
-    /**
-     * Increments the count of the bucket closest to n, rounding UP.
-     * @param n
-     */
-    public void add(long n)
-    {
-        buckets.incrementAndGet(findIndex(n));
-    }
-
-    /**
-     * Increments the count of the bucket closest to n, rounding UP by delta
-     * @param n
-     */
-    public void add(long n, long delta)
-    {
-        buckets.addAndGet(findIndex(n), delta);
+        // else exact match; we're good
+        buckets.incrementAndGet(index);
     }
 
     /**
@@ -385,8 +372,7 @@ public class EstimatedHistogram
             long[] offsets = new long[size - 1];
             long[] buckets = new long[size];
 
-            for (int i = 0; i < size; i++)
-            {
+            for (int i = 0; i < size; i++) {
                 offsets[i == 0 ? 0 : i - 1] = in.readLong();
                 buckets[i] = in.readLong();
             }

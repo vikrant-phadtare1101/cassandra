@@ -25,7 +25,7 @@ public final class IndexNotAvailableException extends RuntimeException
 {
     /**
      * Creates a new <code>IndexNotAvailableException</code> for the specified index.
-     * @param index the index
+     * @param name the index name
      */
     public IndexNotAvailableException(Index index)
     {

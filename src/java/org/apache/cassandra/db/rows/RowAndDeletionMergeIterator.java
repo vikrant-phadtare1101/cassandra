@@ -20,7 +20,7 @@ package org.apache.cassandra.db.rows;
 import java.util.Comparator;
 import java.util.Iterator;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 
@@ -51,7 +51,7 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
     // The currently open tombstone. Note that unless this is null, there is no point in checking nextRange.
     private RangeTombstone openRange;
 
-    public RowAndDeletionMergeIterator(TableMetadata metadata,
+    public RowAndDeletionMergeIterator(CFMetaData metadata,
                                        DecoratedKey partitionKey,
                                        DeletionTime partitionLevelDeletion,
                                        ColumnFilter selection,
@@ -191,12 +191,12 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
         return range;
     }
 
-    private ClusteringBound openBound(RangeTombstone range)
+    private Slice.Bound openBound(RangeTombstone range)
     {
         return range.deletedSlice().open(isReverseOrder());
     }
 
-    private ClusteringBound closeBound(RangeTombstone range)
+    private Slice.Bound closeBound(RangeTombstone range)
     {
         return range.deletedSlice().close(isReverseOrder());
     }

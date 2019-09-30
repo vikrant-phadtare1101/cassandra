@@ -25,9 +25,6 @@ import java.util.Arrays;
 public class HistogramBuilder
 {
 
-    public static final long[] EMPTY_LONG_ARRAY = new long[]{};
-    public static final long[] ZERO = new long[]{ 0 };
-
     public HistogramBuilder() {}
     public HistogramBuilder(long[] values)
     {
@@ -76,7 +73,7 @@ public class HistogramBuilder
         final long[] values = this.values;
 
         if (count == 0)
-            return new EstimatedHistogram(EMPTY_LONG_ARRAY, ZERO);
+            return new EstimatedHistogram(new long[] { }, new long[] { 0 });
 
         long min = Long.MAX_VALUE, max = Long.MIN_VALUE;
         double sum = 0, sumsq = 0;
@@ -117,7 +114,7 @@ public class HistogramBuilder
             // minormax == mean we have no range to produce, but given the exclusive starts
             // that begin at zero by default (or -Inf) in EstimatedHistogram we have to generate a min range
             // to indicate where we start from
-            return ismin ? new long[] { mean - 1 } : EMPTY_LONG_ARRAY;
+            return ismin ? new long[] { mean - 1 } : new long[0];
 
         if (stdev < 1)
         {

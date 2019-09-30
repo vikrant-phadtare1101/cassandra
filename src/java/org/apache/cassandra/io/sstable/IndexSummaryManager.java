@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -44,7 +45,6 @@ import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MBeanWrapper;
@@ -193,17 +193,14 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
     }
 
     /**
-     * Marks the non-compacting sstables as compacting for index summary redistribution for all keyspaces/tables.
-     *
-     * @return Pair containing:
-     *          left: total size of the off heap index summaries for the sstables we were unable to mark compacting (they were involved in other compactions)
-     *          right: the transactions, keyed by table id.
+     * Returns a Pair of all compacting and non-compacting sstables.  Non-compacting sstables will be marked as
+     * compacting.
      */
     @SuppressWarnings("resource")
-    private Pair<Long, Map<TableId, LifecycleTransaction>> getRestributionTransactions()
+    private Pair<List<SSTableReader>, Map<UUID, LifecycleTransaction>> getCompactingAndNonCompactingSSTables()
     {
         List<SSTableReader> allCompacting = new ArrayList<>();
-        Map<TableId, LifecycleTransaction> allNonCompacting = new HashMap<>();
+        Map<UUID, LifecycleTransaction> allNonCompacting = new HashMap<>();
         for (Keyspace ks : Keyspace.all())
         {
             for (ColumnFamilyStore cfStore: ks.getColumnFamilyStores())
@@ -218,23 +215,20 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
                 }
                 while (null == (txn = cfStore.getTracker().tryModify(nonCompacting, OperationType.UNKNOWN)));
 
-                allNonCompacting.put(cfStore.metadata.id, txn);
+                allNonCompacting.put(cfStore.metadata.cfId, txn);
                 allCompacting.addAll(Sets.difference(allSSTables, nonCompacting));
             }
         }
-        long nonRedistributingOffHeapSize = allCompacting.stream().mapToLong(SSTableReader::getIndexSummaryOffHeapSize).sum();
-        return Pair.create(nonRedistributingOffHeapSize, allNonCompacting);
+        return Pair.create(allCompacting, allNonCompacting);
     }
 
     public void redistributeSummaries() throws IOException
     {
-        Pair<Long, Map<TableId, LifecycleTransaction>> redistributionTransactionInfo = getRestributionTransactions();
-        Map<TableId, LifecycleTransaction> transactions = redistributionTransactionInfo.right;
-        long nonRedistributingOffHeapSize = redistributionTransactionInfo.left;
+        Pair<List<SSTableReader>, Map<UUID, LifecycleTransaction>> compactingAndNonCompacting = getCompactingAndNonCompactingSSTables();
         try
         {
-            redistributeSummaries(new IndexSummaryRedistribution(transactions,
-                                                                 nonRedistributingOffHeapSize,
+            redistributeSummaries(new IndexSummaryRedistribution(compactingAndNonCompacting.left,
+                                                                 compactingAndNonCompacting.right,
                                                                  this.memoryPoolBytes));
         }
         catch (Exception e)
@@ -247,7 +241,7 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
         {
             try
             {
-                FBUtilities.closeAll(transactions.values());
+                FBUtilities.closeAll(compactingAndNonCompacting.right.values());
             }
             catch (Exception e)
             {

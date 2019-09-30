@@ -24,23 +24,23 @@ import java.util.*;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.primitives.Ints;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Clustering;
-import org.apache.cassandra.db.CompactTables;
+import org.apache.cassandra.db.LegacyLayout;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.BytesType;
-import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.transport.ProtocolException;
-import org.apache.cassandra.transport.ProtocolVersion;
 
 import static org.apache.cassandra.db.TypeSizes.sizeof;
 import static org.apache.cassandra.db.TypeSizes.sizeofUnsignedVInt;
+import static org.apache.cassandra.transport.Server.VERSION_3;
+import static org.apache.cassandra.transport.Server.VERSION_4;
 import static org.apache.cassandra.utils.ByteBufferUtil.*;
 import static org.apache.cassandra.utils.vint.VIntCoding.computeUnsignedVIntSize;
 import static org.apache.cassandra.utils.vint.VIntCoding.getUnsignedVInt;
@@ -61,12 +61,12 @@ public class PagingState
         this.remainingInPartition = remainingInPartition;
     }
 
-    public ByteBuffer serialize(ProtocolVersion protocolVersion)
+    public ByteBuffer serialize(int protocolVersion)
     {
         assert rowMark == null || protocolVersion == rowMark.protocolVersion;
         try
         {
-            return protocolVersion.isGreaterThan(ProtocolVersion.V3) ? modernSerialize() : legacySerialize(true);
+            return protocolVersion > VERSION_3 ? modernSerialize() : legacySerialize(true);
         }
         catch (IOException e)
         {
@@ -74,11 +74,11 @@ public class PagingState
         }
     }
 
-    public int serializedSize(ProtocolVersion protocolVersion)
+    public int serializedSize(int protocolVersion)
     {
         assert rowMark == null || protocolVersion == rowMark.protocolVersion;
 
-        return protocolVersion.isGreaterThan(ProtocolVersion.V3) ? modernSerializedSize() : legacySerializedSize(true);
+        return protocolVersion > VERSION_3 ? modernSerializedSize() : legacySerializedSize(true);
     }
 
     /**
@@ -87,7 +87,7 @@ public class PagingState
      * a paging state that adheres to the protocol version provided, or, if not - see if it is in a different
      * version, in which case we try the other format.
      */
-    public static PagingState deserialize(ByteBuffer bytes, ProtocolVersion protocolVersion)
+    public static PagingState deserialize(ByteBuffer bytes, int protocolVersion)
     {
         if (bytes == null)
             return null;
@@ -100,16 +100,16 @@ public class PagingState
              * to a lesser extent, readWithShortLength()
              */
 
-            if (protocolVersion.isGreaterThan(ProtocolVersion.V3))
+            if (protocolVersion > VERSION_3)
             {
                 if (isModernSerialized(bytes)) return modernDeserialize(bytes, protocolVersion);
-                if (isLegacySerialized(bytes)) return legacyDeserialize(bytes, ProtocolVersion.V3);
+                if (isLegacySerialized(bytes)) return legacyDeserialize(bytes, VERSION_3);
             }
 
-            if (protocolVersion.isSmallerThan(ProtocolVersion.V4))
+            if (protocolVersion < VERSION_4)
             {
                 if (isLegacySerialized(bytes)) return legacyDeserialize(bytes, protocolVersion);
-                if (isModernSerialized(bytes)) return modernDeserialize(bytes, ProtocolVersion.V4);
+                if (isModernSerialized(bytes)) return modernDeserialize(bytes, VERSION_4);
             }
         }
         catch (IOException e)
@@ -169,9 +169,9 @@ public class PagingState
     }
 
     @SuppressWarnings({ "resource", "RedundantSuppression" })
-    private static PagingState modernDeserialize(ByteBuffer bytes, ProtocolVersion protocolVersion) throws IOException
+    private static PagingState modernDeserialize(ByteBuffer bytes, int protocolVersion) throws IOException
     {
-        if (protocolVersion.isSmallerThan(ProtocolVersion.V4))
+        if (protocolVersion < VERSION_4)
             throw new IllegalArgumentException();
 
         DataInputBuffer in = new DataInputBuffer(bytes, false);
@@ -254,9 +254,9 @@ public class PagingState
     }
 
     @SuppressWarnings({ "resource", "RedundantSuppression" })
-    private static PagingState legacyDeserialize(ByteBuffer bytes, ProtocolVersion protocolVersion) throws IOException
+    private static PagingState legacyDeserialize(ByteBuffer bytes, int protocolVersion) throws IOException
     {
-        if (protocolVersion.isGreaterThan(ProtocolVersion.V3))
+        if (protocolVersion > VERSION_3)
             throw new IllegalArgumentException();
 
         DataInputBuffer in = new DataInputBuffer(bytes, false);
@@ -325,15 +325,15 @@ public class PagingState
     {
         // This can be null for convenience if no row is marked.
         private final ByteBuffer mark;
-        private final ProtocolVersion protocolVersion;
+        private final int protocolVersion;
 
-        private RowMark(ByteBuffer mark, ProtocolVersion protocolVersion)
+        private RowMark(ByteBuffer mark, int protocolVersion)
         {
             this.mark = mark;
             this.protocolVersion = protocolVersion;
         }
 
-        private static List<AbstractType<?>> makeClusteringTypes(TableMetadata metadata)
+        private static List<AbstractType<?>> makeClusteringTypes(CFMetaData metadata)
         {
             // This is the types that will be used when serializing the clustering in the paging state. We can't really use the actual clustering
             // types however because we can't guarantee that there won't be a schema change between when we send the paging state and get it back,
@@ -347,10 +347,10 @@ public class PagingState
             return l;
         }
 
-        public static RowMark create(TableMetadata metadata, Row row, ProtocolVersion protocolVersion)
+        public static RowMark create(CFMetaData metadata, Row row, int protocolVersion)
         {
             ByteBuffer mark;
-            if (protocolVersion.isSmallerOrEqualTo(ProtocolVersion.V3))
+            if (protocolVersion <= VERSION_3)
             {
                 // We need to be backward compatible with 2.1/2.2 nodes paging states. Which means we have to send
                 // the full cellname of the "last" cell in the row we get (since that's how 2.1/2.2 nodes will start after
@@ -361,12 +361,12 @@ public class PagingState
                     // If the last returned row has no cell, this means in 2.1/2.2 terms that we stopped on the row
                     // marker. Note that this shouldn't happen if the table is COMPACT.
                     assert !metadata.isCompactTable();
-                    mark = encodeCellName(metadata, row.clustering(), EMPTY_BYTE_BUFFER, null);
+                    mark = LegacyLayout.encodeCellName(metadata, row.clustering(), EMPTY_BYTE_BUFFER, null);
                 }
                 else
                 {
                     Cell cell = cells.next();
-                    mark = encodeCellName(metadata, row.clustering(), cell.column().name.bytes, cell.column().isComplex() ? cell.path().get(0) : null);
+                    mark = LegacyLayout.encodeCellName(metadata, row.clustering(), cell.column().name.bytes, cell.column().isComplex() ? cell.path().get(0) : null);
                 }
             }
             else
@@ -378,88 +378,14 @@ public class PagingState
             return new RowMark(mark, protocolVersion);
         }
 
-        public Clustering clustering(TableMetadata metadata)
+        public Clustering clustering(CFMetaData metadata)
         {
             if (mark == null)
                 return null;
 
-            return protocolVersion.isSmallerOrEqualTo(ProtocolVersion.V3)
-                 ? decodeClustering(metadata, mark)
+            return protocolVersion <= VERSION_3
+                 ? LegacyLayout.decodeClustering(metadata, mark)
                  : Clustering.serializer.deserialize(mark, MessagingService.VERSION_30, makeClusteringTypes(metadata));
-        }
-
-        // Old (pre-3.0) encoding of cells. We need that for the protocol v3 as that is how things where encoded
-        private static ByteBuffer encodeCellName(TableMetadata metadata, Clustering clustering, ByteBuffer columnName, ByteBuffer collectionElement)
-        {
-            boolean isStatic = clustering == Clustering.STATIC_CLUSTERING;
-
-            if (!metadata.isCompound())
-            {
-                if (isStatic)
-                    return columnName;
-
-                assert clustering.size() == 1 : "Expected clustering size to be 1, but was " + clustering.size();
-                return clustering.get(0);
-            }
-
-            // We use comparator.size() rather than clustering.size() because of static clusterings
-            int clusteringSize = metadata.comparator.size();
-            int size = clusteringSize + (metadata.isDense() ? 0 : 1) + (collectionElement == null ? 0 : 1);
-            if (metadata.isSuper())
-                size = clusteringSize + 1;
-            ByteBuffer[] values = new ByteBuffer[size];
-            for (int i = 0; i < clusteringSize; i++)
-            {
-                if (isStatic)
-                {
-                    values[i] = EMPTY_BYTE_BUFFER;
-                    continue;
-                }
-
-                ByteBuffer v = clustering.get(i);
-                // we can have null (only for dense compound tables for backward compatibility reasons) but that
-                // means we're done and should stop there as far as building the composite is concerned.
-                if (v == null)
-                    return CompositeType.build(Arrays.copyOfRange(values, 0, i));
-
-                values[i] = v;
-            }
-
-            if (metadata.isSuper())
-            {
-                // We need to set the "column" (in thrift terms) name, i.e. the value corresponding to the subcomparator.
-                // What it is depends if this a cell for a declared "static" column or a "dynamic" column part of the
-                // super-column internal map.
-                assert columnName != null; // This should never be null for supercolumns, see decodeForSuperColumn() above
-                values[clusteringSize] = columnName.equals(CompactTables.SUPER_COLUMN_MAP_COLUMN)
-                                         ? collectionElement
-                                         : columnName;
-            }
-            else
-            {
-                if (!metadata.isDense())
-                    values[clusteringSize] = columnName;
-                if (collectionElement != null)
-                    values[clusteringSize + 1] = collectionElement;
-            }
-
-            return CompositeType.build(isStatic, values);
-        }
-
-        private static Clustering decodeClustering(TableMetadata metadata, ByteBuffer value)
-        {
-            int csize = metadata.comparator.size();
-            if (csize == 0)
-                return Clustering.EMPTY;
-
-            if (metadata.isCompound() && CompositeType.isStaticName(value))
-                return Clustering.STATIC_CLUSTERING;
-
-            List<ByteBuffer> components = metadata.isCompound()
-                                          ? CompositeType.splitName(value)
-                                          : Collections.singletonList(value);
-
-            return Clustering.make(components.subList(0, Math.min(csize, components.size())).toArray(new ByteBuffer[csize]));
         }
 
         @Override

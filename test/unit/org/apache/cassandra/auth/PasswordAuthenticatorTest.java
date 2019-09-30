@@ -28,11 +28,10 @@ import org.junit.Test;
 import com.datastax.driver.core.Authenticator;
 import com.datastax.driver.core.PlainTextAuthProvider;
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableMetadata;
 
 import static org.apache.cassandra.auth.CassandraRoleManager.*;
 import static org.apache.cassandra.auth.PasswordAuthenticator.*;
@@ -130,15 +129,15 @@ public class PasswordAuthenticatorTest extends CQLTester
     @BeforeClass
     public static void setUp()
     {
-        SchemaLoader.createKeyspace(SchemaConstants.AUTH_KEYSPACE_NAME,
+        SchemaLoader.createKeyspace(AuthKeyspace.NAME,
                                     KeyspaceParams.simple(1),
-                                    Iterables.toArray(AuthKeyspace.metadata().tables, TableMetadata.class));
+                                    Iterables.toArray(AuthKeyspace.metadata().tables, CFMetaData.class));
         authenticator.setup();
     }
 
     @AfterClass
     public static void tearDown()
     {
-        schemaChange("DROP KEYSPACE " + SchemaConstants.AUTH_KEYSPACE_NAME);
+        schemaChange("DROP KEYSPACE " + AuthKeyspace.NAME);
     }
 }

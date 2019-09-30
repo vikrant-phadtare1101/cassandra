@@ -21,8 +21,6 @@ package org.apache.cassandra.hints;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.compress.ICompressor;
 import org.apache.cassandra.io.util.ChannelProxy;
@@ -36,11 +34,13 @@ public final class CompressedChecksummedDataInput extends ChecksummedDataInput
     private volatile ByteBuffer compressedBuffer = null;
     private final ByteBuffer metadataBuffer = ByteBuffer.allocate(CompressedHintsWriter.METADATA_SIZE);
 
-    public CompressedChecksummedDataInput(ChannelProxy channel, ICompressor compressor, long filePosition)
+    public CompressedChecksummedDataInput(Builder builder)
     {
-        super(channel, compressor.preferredBufferType());
-        this.compressor = compressor;
-        this.sourcePosition = this.filePosition = filePosition;
+        super(builder);
+        assert regions == null;  //mmapped regions are not supported
+
+        compressor = builder.compressor;
+        sourcePosition =  filePosition = builder.position;
     }
 
     /**
@@ -96,8 +96,7 @@ public final class CompressedChecksummedDataInput extends ChecksummedDataInput
         assert buffer.position() == pos.bufferPosition;
     }
 
-    @Override
-    protected void readBuffer()
+    protected void reBufferStandard()
     {
         sourcePosition = filePosition;
         if (isEOF())
@@ -118,7 +117,7 @@ public final class CompressedChecksummedDataInput extends ChecksummedDataInput
             {
                 BufferPool.put(compressedBuffer);
             }
-            compressedBuffer = BufferPool.get(bufferSize, compressor.preferredBufferType());
+            compressedBuffer = allocateBuffer(bufferSize, compressor.preferredBufferType());
         }
 
         compressedBuffer.clear();
@@ -127,11 +126,12 @@ public final class CompressedChecksummedDataInput extends ChecksummedDataInput
         compressedBuffer.rewind();
         filePosition += compressedSize;
 
+        bufferOffset += buffer.position();
         if (buffer.capacity() < uncompressedSize)
         {
             int bufferSize = uncompressedSize + (uncompressedSize / 20);
             BufferPool.put(buffer);
-            buffer = BufferPool.get(bufferSize, compressor.preferredBufferType());
+            buffer = allocateBuffer(bufferSize, compressor.preferredBufferType());
         }
 
         buffer.clear();
@@ -147,25 +147,63 @@ public final class CompressedChecksummedDataInput extends ChecksummedDataInput
         }
     }
 
-    @Override
-    public void close()
+    protected void releaseBuffer()
     {
-        BufferPool.put(compressedBuffer);
-        super.close();
+        super.releaseBuffer();
+        if (compressedBuffer != null)
+        {
+            BufferPool.put(compressedBuffer);
+            compressedBuffer = null;
+        }
     }
 
-    @SuppressWarnings("resource") // Closing the ChecksummedDataInput will close the underlying channel.
-    public static ChecksummedDataInput upgradeInput(ChecksummedDataInput input, ICompressor compressor)
+    protected void reBufferMmap()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    public static final class Builder extends ChecksummedDataInput.Builder
+    {
+        private long position;
+        private ICompressor compressor;
+
+        public Builder(ChannelProxy channel)
+        {
+            super(channel);
+            bufferType = null;
+        }
+
+        public CompressedChecksummedDataInput build()
+        {
+            assert position >= 0;
+            assert compressor != null;
+            return new CompressedChecksummedDataInput(this);
+        }
+
+        public Builder withCompressor(ICompressor compressor)
+        {
+            this.compressor = compressor;
+            bufferType = compressor.preferredBufferType();
+            return this;
+        }
+
+        public Builder withPosition(long position)
+        {
+            this.position = position;
+            return this;
+        }
+    }
+
+    // Closing the CompressedChecksummedDataInput will close the underlying channel.
+    @SuppressWarnings("resource")
+    public static final CompressedChecksummedDataInput upgradeInput(ChecksummedDataInput input, ICompressor compressor)
     {
         long position = input.getPosition();
         input.close();
 
-        return new CompressedChecksummedDataInput(new ChannelProxy(input.getPath()), compressor, position);
-    }
-
-    @VisibleForTesting
-    ICompressor getCompressor()
-    {
-        return compressor;
+        Builder builder = new Builder(new ChannelProxy(input.getPath()));
+        builder.withPosition(position);
+        builder.withCompressor(compressor);
+        return builder.build();
     }
 }

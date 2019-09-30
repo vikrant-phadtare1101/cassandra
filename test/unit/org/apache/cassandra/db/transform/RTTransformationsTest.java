@@ -25,6 +25,7 @@ import org.junit.Test;
 
 import com.google.common.collect.Iterators;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.ClusteringPrefix.Kind;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -34,7 +35,6 @@ import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundValidator.Stage;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.db.transform.RTBoundCloser.close;
@@ -52,20 +52,20 @@ public final class RTTransformationsTest
 
     private final int nowInSec = FBUtilities.nowInSeconds();
 
-    private TableMetadata metadata;
+    private CFMetaData metadata;
     private DecoratedKey key;
 
     @Before
     public void setUp()
     {
         metadata =
-            TableMetadata.builder(KEYSPACE, TABLE)
-                         .addPartitionKeyColumn("pk", UTF8Type.instance)
-                         .addClusteringColumn("ck0", UTF8Type.instance)
-                         .addClusteringColumn("ck1", UTF8Type.instance)
-                         .addClusteringColumn("ck2", UTF8Type.instance)
-                         .partitioner(Murmur3Partitioner.instance)
-                         .build();
+            CFMetaData.Builder
+                      .create(KEYSPACE, TABLE)
+                      .addPartitionKey("pk", UTF8Type.instance)
+                      .addClusteringColumn("ck0", UTF8Type.instance)
+                      .addClusteringColumn("ck1", UTF8Type.instance)
+                      .addClusteringColumn("ck2", UTF8Type.instance)
+                      .build();
         key = Murmur3Partitioner.instance.decorateKey(bytes("key"));
     }
 
@@ -375,7 +375,7 @@ public final class RTTransformationsTest
         for (int i = 0; i < clusteringValues.length; i++)
             clusteringByteBuffers[i] = decompose(metadata.clusteringColumns().get(i).type, clusteringValues[i]);
 
-        return new RangeTombstoneBoundMarker(ClusteringBound.create(kind, clusteringByteBuffers), new DeletionTime(timestamp, nowInSec));
+        return new RangeTombstoneBoundMarker(new RangeTombstone.Bound(kind, clusteringByteBuffers), new DeletionTime(timestamp, nowInSec));
     }
 
     private RangeTombstoneBoundaryMarker boundary(ClusteringPrefix.Kind kind, long closeTimestamp, long openTimestamp, Object... clusteringValues)
@@ -384,7 +384,7 @@ public final class RTTransformationsTest
         for (int i = 0; i < clusteringValues.length; i++)
             clusteringByteBuffers[i] = decompose(metadata.clusteringColumns().get(i).type, clusteringValues[i]);
 
-        return new RangeTombstoneBoundaryMarker(ClusteringBoundary.create(kind, clusteringByteBuffers),
+        return new RangeTombstoneBoundaryMarker(new RangeTombstone.Bound(kind, clusteringByteBuffers),
                                                 new DeletionTime(closeTimestamp, nowInSec),
                                                 new DeletionTime(openTimestamp, nowInSec));
     }
@@ -395,7 +395,7 @@ public final class RTTransformationsTest
         for (int i = 0; i < clusteringValues.length; i++)
             clusteringByteBuffers[i] = decompose(metadata.clusteringColumns().get(i).type, clusteringValues[i]);
 
-        return BTreeRow.noCellLiveRow(Clustering.make(clusteringByteBuffers), LivenessInfo.create(timestamp, nowInSec));
+        return BTreeRow.noCellLiveRow(new Clustering(clusteringByteBuffers), LivenessInfo.create(metadata, timestamp, nowInSec));
     }
 
     @SuppressWarnings("unchecked")
@@ -412,7 +412,7 @@ public final class RTTransformationsTest
             new AbstractUnfilteredRowIterator(metadata,
                                               key,
                                               DeletionTime.LIVE,
-                                              metadata.regularAndStaticColumns(),
+                                              metadata.partitionColumns(),
                                               Rows.EMPTY_STATIC_ROW,
                                               isReversedOrder,
                                               EncodingStats.NO_STATS)
@@ -423,7 +423,7 @@ public final class RTTransformationsTest
             }
         };
 
-        return new SingletonUnfilteredPartitionIterator(rowIter);
+        return new SingletonUnfilteredPartitionIterator(rowIter, false);
     }
 
     private void assertIteratorsEqual(UnfilteredPartitionIterator iter1, UnfilteredPartitionIterator iter2)

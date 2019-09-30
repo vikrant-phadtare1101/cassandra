@@ -24,7 +24,7 @@ import java.util.List;
 import org.apache.cassandra.db.marshal.AbstractType;
 
 /**
- * Allows to build ClusteringPrefixes, either Clustering or ClusteringBound.
+ * Allows to build ClusteringPrefixes, either Clustering or Slice.Bound.
  */
 public abstract class CBuilder
 {
@@ -60,7 +60,7 @@ public abstract class CBuilder
             return Clustering.STATIC_CLUSTERING;
         }
 
-        public ClusteringBound buildBound(boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBound(boolean isStart, boolean isInclusive)
         {
             throw new UnsupportedOperationException();
         }
@@ -80,12 +80,12 @@ public abstract class CBuilder
             throw new UnsupportedOperationException();
         }
 
-        public ClusteringBound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive)
         {
             throw new UnsupportedOperationException();
         }
 
-        public ClusteringBound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive)
         {
             throw new UnsupportedOperationException();
         }
@@ -102,12 +102,12 @@ public abstract class CBuilder
     public abstract CBuilder add(ByteBuffer value);
     public abstract CBuilder add(Object value);
     public abstract Clustering build();
-    public abstract ClusteringBound buildBound(boolean isStart, boolean isInclusive);
+    public abstract Slice.Bound buildBound(boolean isStart, boolean isInclusive);
     public abstract Slice buildSlice();
     public abstract Clustering buildWith(ByteBuffer value);
     public abstract Clustering buildWith(List<ByteBuffer> newValues);
-    public abstract ClusteringBound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive);
-    public abstract ClusteringBound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive);
+    public abstract Slice.Bound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive);
+    public abstract Slice.Bound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive);
 
     private static class ArrayBackedBuilder extends CBuilder
     {
@@ -162,20 +162,20 @@ public abstract class CBuilder
             built = true;
 
             // Currently, only dense table can leave some clustering column out (see #7990)
-            return size == 0 ? Clustering.EMPTY : Clustering.make(values);
+            return size == 0 ? Clustering.EMPTY : new Clustering(values);
         }
 
-        public ClusteringBound buildBound(boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBound(boolean isStart, boolean isInclusive)
         {
             // We don't allow to add more element to a builder that has been built so
             // that we don't have to copy values (even though we have to do it in most cases).
             built = true;
 
             if (size == 0)
-                return isStart ? ClusteringBound.BOTTOM : ClusteringBound.TOP;
+                return isStart ? Slice.Bound.BOTTOM : Slice.Bound.TOP;
 
-            return ClusteringBound.create(ClusteringBound.boundKind(isStart, isInclusive),
-                                size == values.length ? values : Arrays.copyOfRange(values, 0, size));
+            return Slice.Bound.create(Slice.Bound.boundKind(isStart, isInclusive),
+                                      size == values.length ? values : Arrays.copyOfRange(values, 0, size));
         }
 
         public Slice buildSlice()
@@ -196,7 +196,7 @@ public abstract class CBuilder
 
             ByteBuffer[] newValues = Arrays.copyOf(values, type.size());
             newValues[size] = value;
-            return Clustering.make(newValues);
+            return new Clustering(newValues);
         }
 
         public Clustering buildWith(List<ByteBuffer> newValues)
@@ -207,24 +207,24 @@ public abstract class CBuilder
             for (ByteBuffer value : newValues)
                 buffers[newSize++] = value;
 
-            return Clustering.make(buffers);
+            return new Clustering(buffers);
         }
 
-        public ClusteringBound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBoundWith(ByteBuffer value, boolean isStart, boolean isInclusive)
         {
             ByteBuffer[] newValues = Arrays.copyOf(values, size+1);
             newValues[size] = value;
-            return ClusteringBound.create(ClusteringBound.boundKind(isStart, isInclusive), newValues);
+            return Slice.Bound.create(Slice.Bound.boundKind(isStart, isInclusive), newValues);
         }
 
-        public ClusteringBound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive)
+        public Slice.Bound buildBoundWith(List<ByteBuffer> newValues, boolean isStart, boolean isInclusive)
         {
             ByteBuffer[] buffers = Arrays.copyOf(values, size + newValues.size());
             int newSize = size;
             for (ByteBuffer value : newValues)
                 buffers[newSize++] = value;
 
-            return ClusteringBound.create(ClusteringBound.boundKind(isStart, isInclusive), buffers);
+            return Slice.Bound.create(Slice.Bound.boundKind(isStart, isInclusive), buffers);
         }
     }
 }

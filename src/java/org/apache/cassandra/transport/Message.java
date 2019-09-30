@@ -48,12 +48,9 @@ import org.apache.cassandra.exceptions.OverloadedException;
 import org.apache.cassandra.metrics.ClientMetrics;
 import org.apache.cassandra.net.ResourceLimits;
 import org.apache.cassandra.service.ClientWarn;
-import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.messages.*;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.UUIDGen;
 
 import static org.apache.cassandra.concurrent.SharedExecutorPool.SHARED;
 
@@ -98,7 +95,7 @@ public abstract class Message
         STARTUP        (1,  Direction.REQUEST,  StartupMessage.codec),
         READY          (2,  Direction.RESPONSE, ReadyMessage.codec),
         AUTHENTICATE   (3,  Direction.RESPONSE, AuthenticateMessage.codec),
-        CREDENTIALS    (4,  Direction.REQUEST,  UnsupportedMessageCodec.instance),
+        CREDENTIALS    (4,  Direction.REQUEST,  CredentialsMessage.codec),
         OPTIONS        (5,  Direction.REQUEST,  OptionsMessage.codec),
         SUPPORTED      (6,  Direction.RESPONSE, SupportedMessage.codec),
         QUERY          (7,  Direction.REQUEST,  QueryMessage.codec),
@@ -131,7 +128,7 @@ public abstract class Message
             }
         }
 
-        Type(int opcode, Direction direction, Codec<?> codec)
+        private Type(int opcode, Direction direction, Codec<?> codec)
         {
             this.opcode = opcode;
             this.direction = direction;
@@ -160,7 +157,7 @@ public abstract class Message
     private int streamId;
     private Frame sourceFrame;
     private Map<String, ByteBuffer> customPayload;
-    protected ProtocolVersion forcedProtocolVersion = null;
+    protected Integer forcedProtocolVersion = null;
 
     protected Message(Type type)
     {
@@ -210,7 +207,7 @@ public abstract class Message
 
     public static abstract class Request extends Message
     {
-        private boolean tracingRequested;
+        protected boolean tracingRequested;
 
         protected Request(Type type)
         {
@@ -220,56 +217,14 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        protected boolean isTraceable()
+        public abstract Response execute(QueryState queryState);
+
+        public void setTracingRequested()
         {
-            return false;
+            this.tracingRequested = true;
         }
 
-        protected abstract Response execute(QueryState queryState, long queryStartNanoTime, boolean traceRequest);
-
-        final Response execute(QueryState queryState, long queryStartNanoTime)
-        {
-            boolean shouldTrace = false;
-            UUID tracingSessionId = null;
-
-            if (isTraceable())
-            {
-                if (isTracingRequested())
-                {
-                    shouldTrace = true;
-                    tracingSessionId = UUIDGen.getTimeUUID();
-                    Tracing.instance.newSession(tracingSessionId, getCustomPayload());
-                }
-                else if (StorageService.instance.shouldTraceProbablistically())
-                {
-                    shouldTrace = true;
-                    Tracing.instance.newSession(getCustomPayload());
-                }
-            }
-
-            Response response;
-            try
-            {
-                response = execute(queryState, queryStartNanoTime, shouldTrace);
-            }
-            finally
-            {
-                if (shouldTrace)
-                    Tracing.instance.stopSession();
-            }
-
-            if (isTraceable() && isTracingRequested())
-                response.setTracingId(tracingSessionId);
-
-            return response;
-        }
-
-        void setTracingRequested()
-        {
-            tracingRequested = true;
-        }
-
-        boolean isTracingRequested()
+        public boolean isTracingRequested()
         {
             return tracingRequested;
         }
@@ -288,18 +243,18 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        Message setTracingId(UUID tracingId)
+        public Message setTracingId(UUID tracingId)
         {
             this.tracingId = tracingId;
             return this;
         }
 
-        UUID getTracingId()
+        public UUID getTracingId()
         {
             return tracingId;
         }
 
-        Message setWarnings(List<String> warnings)
+        public Message setWarnings(List<String> warnings)
         {
             this.warnings = warnings;
             return this;
@@ -327,7 +282,7 @@ public abstract class Message
 
             try
             {
-                if (isCustomPayload && frame.header.version.isSmallerThan(ProtocolVersion.V4))
+                if (isCustomPayload && frame.header.version < Server.VERSION_4)
                     throw new ProtocolException("Received frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
 
                 Message message = frame.header.type.codec.decode(frame.body, frame.header.version);
@@ -371,7 +326,8 @@ public abstract class Message
         {
             Connection connection = ctx.channel().attr(Connection.attributeKey).get();
             // The only case the connection can be null is when we send the initial STARTUP message (client side thus)
-            ProtocolVersion version = connection == null ? ProtocolVersion.CURRENT : connection.getVersion();
+            int version = connection == null ? Server.CURRENT_VERSION : connection.getVersion();
+
             EnumSet<Frame.Header.Flag> flags = EnumSet.noneOf(Frame.Header.Flag.class);
 
             Codec<Message> codec = (Codec<Message>)message.type.codec;
@@ -388,13 +344,13 @@ public abstract class Message
                     List<String> warnings = ((Response)message).getWarnings();
                     if (warnings != null)
                     {
-                        if (version.isSmallerThan(ProtocolVersion.V4))
+                        if (version < Server.VERSION_4)
                             throw new ProtocolException("Must not send frame with WARNING flag for native protocol version < 4");
                         messageSize += CBUtil.sizeOfStringList(warnings);
                     }
                     if (customPayload != null)
                     {
-                        if (version.isSmallerThan(ProtocolVersion.V4))
+                        if (version < Server.VERSION_4)
                             throw new ProtocolException("Must not send frame with CUSTOM_PAYLOAD flag for native protocol version < 4");
                         messageSize += CBUtil.sizeOfBytesMap(customPayload);
                     }
@@ -443,13 +399,9 @@ public abstract class Message
 
                 // if the driver attempted to connect with a protocol version lower than the minimum supported
                 // version, respond with a protocol error message with the correct frame header for that version
-                ProtocolVersion responseVersion = message.forcedProtocolVersion == null
+                int responseVersion = message.forcedProtocolVersion == null
                                     ? version
                                     : message.forcedProtocolVersion;
-
-                if (responseVersion.isBeta())
-                    flags.add(Frame.Header.Flag.USE_BETA);
-
                 results.add(Frame.create(message.type, message.getStreamId(), responseVersion, flags, body));
             }
             catch (Throwable e)
@@ -708,20 +660,18 @@ public abstract class Message
         {
             final Response response;
             final ServerConnection connection;
-            long queryStartNanoTime = System.nanoTime();
 
             try
             {
                 assert request.connection() instanceof ServerConnection;
                 connection = (ServerConnection)request.connection();
-                if (connection.getVersion().isGreaterOrEqualTo(ProtocolVersion.V4))
+                if (connection.getVersion() >= Server.VERSION_4)
                     ClientWarn.instance.captureWarnings();
 
-                QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion());
+                QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion(), request.getStreamId());
 
                 logger.trace("Received: {}, v={}", request, connection.getVersion());
-                connection.requests.inc();
-                response = request.execute(qstate, queryStartNanoTime);
+                response = request.execute(qstate);
                 response.setStreamId(request.getStreamId());
                 response.setWarnings(ClientWarn.instance.getWarnings());
                 response.attach(connection);
@@ -838,9 +788,7 @@ public abstract class Message
                 message = "Unexpected exception during request; channel = <unprintable>";
             }
 
-            // netty wraps SSL errors in a CodecExcpetion
-            boolean isIOException = exception instanceof IOException || (exception.getCause() instanceof IOException);
-            if (!alwaysLogAtError && isIOException)
+            if (!alwaysLogAtError && exception instanceof IOException)
             {
                 String errorMessage = exception.getMessage();
                 boolean logAtTrace = false;

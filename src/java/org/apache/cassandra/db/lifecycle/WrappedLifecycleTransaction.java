@@ -109,8 +109,4 @@ public class WrappedLifecycleTransaction implements ILifecycleTransaction
         return delegate.opType();
     }
 
-    public boolean isOffline()
-    {
-        return delegate.isOffline();
-    }
 }

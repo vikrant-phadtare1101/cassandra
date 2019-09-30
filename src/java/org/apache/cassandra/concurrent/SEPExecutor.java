@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.cassandra.metrics.ThreadPoolMetrics;
+import org.apache.cassandra.metrics.SEPMetrics;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 
@@ -34,9 +34,8 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
     private final SharedExecutorPool pool;
 
     public final int maxWorkers;
-    public final String name;
-    public final int maxTasksQueued;
-    private final ThreadPoolMetrics metrics;
+    private final int maxTasksQueued;
+    private final SEPMetrics metrics;
 
     // stores both a set of work permits and task permits:
     //  bottom 32 bits are number of queued tasks, in the range [0..maxTasksQueued]   (initially 0)
@@ -56,22 +55,15 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
     SEPExecutor(SharedExecutorPool pool, int maxWorkers, int maxTasksQueued, String jmxPath, String name)
     {
         this.pool = pool;
-        this.name = name;
         this.maxWorkers = maxWorkers;
         this.maxTasksQueued = maxTasksQueued;
         this.permits.set(combine(0, maxWorkers));
-        this.metrics = new ThreadPoolMetrics(this, jmxPath, name).register();
+        this.metrics = new SEPMetrics(this, jmxPath, name);
     }
 
     protected void onCompletion()
     {
         completedTasks.incrementAndGet();
-    }
-
-    @Override
-    public int getMaxTasksQueued()
-    {
-        return maxTasksQueued;
     }
 
     // schedules another worker for this pool if there is work outstanding and there are no spinning threads that
@@ -182,7 +174,11 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
             long current = permits.get();
             int workPermits = workPermits(current);
             if (permits.compareAndSet(current, updateWorkPermits(current, workPermits + 1)))
-                return;
+            {
+                if (shuttingDown && workPermits + 1 == maxWorkers)
+                    shutdown.signalAll();
+                break;
+            }
         }
     }
 
@@ -214,7 +210,7 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
     {
         shuttingDown = true;
         pool.executors.remove(this);
-        if (getActiveTaskCount() == 0)
+        if (getActiveCount() == 0 && getPendingTasks() == 0)
             shutdown.signalAll();
 
         // release metrics
@@ -227,6 +223,8 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
         List<Runnable> aborted = new ArrayList<>();
         while (takeTaskPermit())
             aborted.add(tasks.poll());
+        if (getActiveCount() == 0)
+            shutdown.signalAll();
         return aborted;
     }
 
@@ -246,27 +244,19 @@ public class SEPExecutor extends AbstractLocalAwareExecutorService
         return isTerminated();
     }
 
-    @Override
-    public int getPendingTaskCount()
+    public long getPendingTasks()
     {
         return taskPermits(permits.get());
     }
 
-    @Override
-    public long getCompletedTaskCount()
+    public long getCompletedTasks()
     {
         return completedTasks.get();
     }
 
-    public int getActiveTaskCount()
+    public int getActiveCount()
     {
         return maxWorkers - workPermits(permits.get());
-    }
-
-    @Override
-    public int getMaximumPoolSize()
-    {
-        return maxWorkers;
     }
 
     private static int taskPermits(long both)

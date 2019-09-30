@@ -21,7 +21,6 @@ package org.apache.cassandra.db.commitlog;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Random;
 
 import org.junit.Assert;
@@ -29,6 +28,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -38,6 +38,9 @@ import org.apache.cassandra.db.RowUpdateBuilder;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.db.rows.SerializationHelper;
+import org.apache.cassandra.io.util.DataInputBuffer;
+import org.apache.cassandra.io.util.RebufferingInputStream;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.jboss.byteman.contrib.bmunit.BMRule;
 import org.jboss.byteman.contrib.bmunit.BMUnitRunner;
@@ -59,8 +62,6 @@ public class CommitLogChainedMarkersTest
     action = "$flush = false")
     public void replayCommitLogWithoutFlushing() throws IOException
     {
-        // this method is blend of CommitLogSegmentBackpressureTest & CommitLogReaderTest methods
-        DatabaseDescriptor.daemonInitialization();
         DatabaseDescriptor.setCommitLogSegmentSize(5);
         DatabaseDescriptor.setCommitLogSync(Config.CommitLogSync.periodic);
         DatabaseDescriptor.setCommitLogSyncPeriod(10000 * 1000);
@@ -75,7 +76,7 @@ public class CommitLogChainedMarkersTest
 
         byte[] entropy = new byte[1024];
         new Random().nextBytes(entropy);
-        final Mutation m = new RowUpdateBuilder(cfs1.metadata.get(), 0, "k")
+        final Mutation m = new RowUpdateBuilder(cfs1.metadata, 0, "k")
                            .clustering("bytes")
                            .add("val", ByteBuffer.wrap(entropy))
                            .build();
@@ -84,14 +85,43 @@ public class CommitLogChainedMarkersTest
         for (int i = 0; i < samples; i++)
             CommitLog.instance.add(m);
 
-        CommitLog.instance.sync(false);
+        CommitLog.instance.sync(false, true);
 
-        ArrayList<File> toCheck = CommitLogReaderTest.getCommitLogs();
-        CommitLogReader reader = new CommitLogReader();
-        CommitLogReaderTest.TestCLRHandler testHandler = new CommitLogReaderTest.TestCLRHandler(cfs1.metadata.get());
-        for (File f : toCheck)
-            reader.readCommitLogSegment(testHandler, f, CommitLogReader.ALL_MUTATIONS, false);
+        Replayer replayer = new Replayer(cfs1.metadata);
+        File commitLogDir = new File(DatabaseDescriptor.getCommitLogLocation());
+        replayer.recover(commitLogDir.listFiles());
+        Assert.assertEquals(samples, replayer.count);
+    }
 
-        Assert.assertEquals(samples, testHandler.seenMutationCount());
+    private static class Replayer extends CommitLogReplayer
+    {
+        private final CFMetaData cfm;
+        private int count;
+
+        Replayer(CFMetaData cfm)
+        {
+            super(CommitLog.instance, ReplayPosition.NONE, null, ReplayFilter.create());
+            this.cfm = cfm;
+        }
+
+        @Override
+        void replayMutation(byte[] inputBuffer, int size, final int entryLocation, final CommitLogDescriptor desc)
+        {
+            RebufferingInputStream bufIn = new DataInputBuffer(inputBuffer, 0, size);
+            try
+            {
+                Mutation mutation = Mutation.serializer.deserialize(bufIn,
+                                                           desc.getMessagingVersion(),
+                                                           SerializationHelper.Flag.LOCAL);
+
+                if (cfm == null || mutation.get(cfm) != null)
+                    count++;
+            }
+            catch (IOException e)
+            {
+                // Test fails.
+                throw new AssertionError(e);
+            }
+        }
     }
 }

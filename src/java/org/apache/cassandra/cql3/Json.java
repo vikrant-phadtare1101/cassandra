@@ -18,17 +18,17 @@
 package org.apache.cassandra.cql3;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.fasterxml.jackson.core.util.BufferRecyclers;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.functions.Function;
-import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
+import org.codehaus.jackson.io.JsonStringEncoder;
+import org.codehaus.jackson.map.ObjectMapper;
 
 /** Term-related classes for INSERT JSON support. */
 public class Json
@@ -42,7 +42,7 @@ public class Json
      */
     public static String quoteAsJsonString(String s)
     {
-        return new String(BufferRecyclers.getJsonStringEncoder().quoteAsString(s));
+        return new String(JsonStringEncoder.getInstance().quoteAsString(s));
     }
 
     public static Object decodeJson(String json)
@@ -59,7 +59,7 @@ public class Json
 
     public interface Raw
     {
-        public Prepared prepareAndCollectMarkers(TableMetadata metadata, Collection<ColumnMetadata> receivers, VariableSpecifications boundNames);
+        public Prepared prepareAndCollectMarkers(CFMetaData metadata, Collection<ColumnDefinition> receivers, VariableSpecifications boundNames);
     }
 
     /**
@@ -75,7 +75,7 @@ public class Json
             this.text = text;
         }
 
-        public Prepared prepareAndCollectMarkers(TableMetadata metadata, Collection<ColumnMetadata> receivers, VariableSpecifications boundNames)
+        public Prepared prepareAndCollectMarkers(CFMetaData metadata, Collection<ColumnDefinition> receivers, VariableSpecifications boundNames)
         {
             return new PreparedLiteral(parseJson(text, receivers));
         }
@@ -94,15 +94,15 @@ public class Json
             this.bindIndex = bindIndex;
         }
 
-        public Prepared prepareAndCollectMarkers(TableMetadata metadata, Collection<ColumnMetadata> receivers, VariableSpecifications boundNames)
+        public Prepared prepareAndCollectMarkers(CFMetaData metadata, Collection<ColumnDefinition> receivers, VariableSpecifications boundNames)
         {
             boundNames.add(bindIndex, makeReceiver(metadata));
             return new PreparedMarker(bindIndex, receivers);
         }
 
-        private ColumnSpecification makeReceiver(TableMetadata metadata)
+        private ColumnSpecification makeReceiver(CFMetaData metadata)
         {
-            return new ColumnSpecification(metadata.keyspace, metadata.name, JSON_COLUMN_ID, UTF8Type.instance);
+            return new ColumnSpecification(metadata.ksName, metadata.cfName, JSON_COLUMN_ID, UTF8Type.instance);
         }
     }
 
@@ -111,7 +111,7 @@ public class Json
      */
     public static abstract class Prepared
     {
-        public abstract Term.Raw getRawTermForColumn(ColumnMetadata def, boolean defaultUnset);
+        public abstract Term.Raw getRawTermForColumn(ColumnDefinition def);
     }
 
     /**
@@ -126,12 +126,10 @@ public class Json
             this.columnMap = columnMap;
         }
 
-        public Term.Raw getRawTermForColumn(ColumnMetadata def, boolean defaultUnset)
+        public Term.Raw getRawTermForColumn(ColumnDefinition def)
         {
             Term value = columnMap.get(def.name);
-            return value == null
-                 ? (defaultUnset ? Constants.UNSET_LITERAL : Constants.NULL_LITERAL)
-                 : new ColumnValue(value);
+            return value == null ? Constants.NULL_LITERAL : new ColumnValue(value);
         }
     }
 
@@ -141,17 +139,17 @@ public class Json
     private static class PreparedMarker extends Prepared
     {
         private final int bindIndex;
-        private final Collection<ColumnMetadata> columns;
+        private final Collection<ColumnDefinition> columns;
 
-        public PreparedMarker(int bindIndex, Collection<ColumnMetadata> columns)
+        public PreparedMarker(int bindIndex, Collection<ColumnDefinition> columns)
         {
             this.bindIndex = bindIndex;
             this.columns = columns;
         }
 
-        public RawDelayedColumnValue getRawTermForColumn(ColumnMetadata def, boolean defaultUnset)
+        public RawDelayedColumnValue getRawTermForColumn(ColumnDefinition def)
         {
-            return new RawDelayedColumnValue(this, def, defaultUnset);
+            return new RawDelayedColumnValue(this, def);
         }
     }
 
@@ -182,11 +180,6 @@ public class Json
             return TestResult.NOT_ASSIGNABLE;
         }
 
-        public AbstractType<?> getExactTypeIfKnown(String keyspace)
-        {
-            return null;
-        }
-
         public String getText()
         {
             return term.toString();
@@ -199,31 +192,24 @@ public class Json
     private static class RawDelayedColumnValue extends Term.Raw
     {
         private final PreparedMarker marker;
-        private final ColumnMetadata column;
-        private final boolean defaultUnset;
+        private final ColumnDefinition column;
 
-        public RawDelayedColumnValue(PreparedMarker prepared, ColumnMetadata column, boolean defaultUnset)
+        public RawDelayedColumnValue(PreparedMarker prepared, ColumnDefinition column)
         {
             this.marker = prepared;
             this.column = column;
-            this.defaultUnset = defaultUnset;
         }
 
         @Override
         public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
-            return new DelayedColumnValue(marker, column, defaultUnset);
+            return new DelayedColumnValue(marker, column);
         }
 
         @Override
         public TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
             return TestResult.WEAKLY_ASSIGNABLE;
-        }
-
-        public AbstractType<?> getExactTypeIfKnown(String keyspace)
-        {
-            return null;
         }
 
         public String getText()
@@ -238,14 +224,12 @@ public class Json
     private static class DelayedColumnValue extends Term.NonTerminal
     {
         private final PreparedMarker marker;
-        private final ColumnMetadata column;
-        private final boolean defaultUnset;
+        private final ColumnDefinition column;
 
-        public DelayedColumnValue(PreparedMarker prepared, ColumnMetadata column, boolean defaultUnset)
+        public DelayedColumnValue(PreparedMarker prepared, ColumnDefinition column)
         {
             this.marker = prepared;
             this.column = column;
-            this.defaultUnset = defaultUnset;
         }
 
         @Override
@@ -264,9 +248,7 @@ public class Json
         public Terminal bind(QueryOptions options) throws InvalidRequestException
         {
             Term term = options.getJsonColumnValue(marker.bindIndex, column.name, marker.columns);
-            return term == null
-                 ? (defaultUnset ? Constants.UNSET_VALUE : null)
-                 : term.bind(options);
+            return term == null ? null : term.bind(options);
         }
 
         @Override
@@ -278,7 +260,7 @@ public class Json
     /**
      * Given a JSON string, return a map of columns to their values for the insert.
      */
-    public static Map<ColumnIdentifier, Term> parseJson(String jsonString, Collection<ColumnMetadata> expectedReceivers)
+    public static Map<ColumnIdentifier, Term> parseJson(String jsonString, Collection<ColumnDefinition> expectedReceivers)
     {
         try
         {
@@ -292,16 +274,10 @@ public class Json
             Map<ColumnIdentifier, Term> columnMap = new HashMap<>(expectedReceivers.size());
             for (ColumnSpecification spec : expectedReceivers)
             {
-                // We explicitely test containsKey() because the value itself can be null, and we want to distinguish an
-                // explicit null value from no value
-                if (!valueMap.containsKey(spec.name.toString()))
-                    continue;
-
                 Object parsedJsonObject = valueMap.remove(spec.name.toString());
                 if (parsedJsonObject == null)
                 {
-                    // This is an explicit user null
-                    columnMap.put(spec.name, Constants.NULL_VALUE);
+                    columnMap.put(spec.name, null);
                 }
                 else
                 {

@@ -17,6 +17,12 @@
  */
 package org.apache.cassandra.cql3;
 
+import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.util.Arrays;
+import java.util.Collections;
+
 import org.junit.Test;
 
 import static junit.framework.Assert.assertEquals;
