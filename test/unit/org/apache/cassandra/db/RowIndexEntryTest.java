@@ -33,8 +33,7 @@ import org.junit.Test;
 
 import org.apache.cassandra.Util;
 import org.apache.cassandra.cache.IMeasurableMemory;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.columniterator.AbstractSSTableIterator;
@@ -132,21 +131,18 @@ public class RowIndexEntryTest extends CQLTester
 
     private static class DoubleSerializer implements AutoCloseable
     {
-        TableMetadata metadata =
-            CreateTableStatement.parse("CREATE TABLE pipe.dev_null (pk bigint, ck bigint, val text, PRIMARY KEY(pk, ck))", "foo")
-                                .build();
-
+        CFMetaData cfMeta = CFMetaData.compile("CREATE TABLE pipe.dev_null (pk bigint, ck bigint, val text, PRIMARY KEY(pk, ck))", "foo");
         Version version = BigFormat.latestVersion;
 
         DeletionTime deletionInfo = new DeletionTime(FBUtilities.timestampMicros(), FBUtilities.nowInSeconds());
         LivenessInfo primaryKeyLivenessInfo = LivenessInfo.EMPTY;
         Row.Deletion deletion = Row.Deletion.LIVE;
 
-        SerializationHeader header = new SerializationHeader(true, metadata, metadata.regularAndStaticColumns(), EncodingStats.NO_STATS);
+        SerializationHeader header = new SerializationHeader(true, cfMeta, cfMeta.partitionColumns(), EncodingStats.NO_STATS);
 
         // create C-11206 + old serializer instances
-        RowIndexEntry.IndexSerializer rieSerializer = new RowIndexEntry.Serializer(version, header);
-        Pre_C_11206_RowIndexEntry.Serializer oldSerializer = new Pre_C_11206_RowIndexEntry.Serializer(metadata, version, header);
+        RowIndexEntry.IndexSerializer rieSerializer = new RowIndexEntry.Serializer(cfMeta, version, header);
+        Pre_C_11206_RowIndexEntry.Serializer oldSerializer = new Pre_C_11206_RowIndexEntry.Serializer(cfMeta, version, header);
 
         @SuppressWarnings({ "resource", "IOResourceOpenedButNotSafelyClosed" })
         final DataOutputBuffer rieOutput = new DataOutputBuffer(1024);
@@ -165,12 +161,12 @@ public class RowIndexEntryTest extends CQLTester
         DoubleSerializer() throws IOException
         {
             SequentialWriterOption option = SequentialWriterOption.newBuilder().bufferSize(1024).build();
-            File f = FileUtils.createTempFile("RowIndexEntryTest-", "db");
+            File f = File.createTempFile("RowIndexEntryTest-", "db");
             dataWriterNew = new SequentialWriter(f, option);
             columnIndex = new org.apache.cassandra.db.ColumnIndex(header, dataWriterNew, version, Collections.emptyList(),
                                                                   rieSerializer.indexInfoSerializer());
 
-            f = FileUtils.createTempFile("RowIndexEntryTest-", "db");
+            f = File.createTempFile("RowIndexEntryTest-", "db");
             dataWriterOld = new SequentialWriter(f, option);
         }
 
@@ -205,7 +201,7 @@ public class RowIndexEntryTest extends CQLTester
         private AbstractUnfilteredRowIterator makeRowIter(Row staticRow, DecoratedKey partitionKey,
                                                           Iterator<Clustering> clusteringIter, SequentialWriter dataWriter)
         {
-            return new AbstractUnfilteredRowIterator(metadata, partitionKey, deletionInfo, metadata.regularAndStaticColumns(),
+            return new AbstractUnfilteredRowIterator(cfMeta, partitionKey, deletionInfo, cfMeta.partitionColumns(),
                                                      staticRow, false, new EncodingStats(0, 0, 0))
             {
                 protected Unfiltered computeNext()
@@ -229,7 +225,7 @@ public class RowIndexEntryTest extends CQLTester
         private Unfiltered buildRow(Clustering clustering)
         {
             BTree.Builder<ColumnData> builder = BTree.builder(ColumnData.comparator);
-            builder.add(BufferCell.live(metadata.regularAndStaticColumns().iterator().next(),
+            builder.add(BufferCell.live(cfMeta.partitionColumns().iterator().next(),
                                         1L,
                                         ByteBuffer.allocate(0)));
             return BTreeRow.create(clustering, primaryKeyLivenessInfo, deletion, builder.build());
@@ -260,7 +256,7 @@ public class RowIndexEntryTest extends CQLTester
                                               Collection<SSTableFlushObserver> observers,
                                               Version version) throws IOException
         {
-            assert !iterator.isEmpty();
+            assert !iterator.isEmpty() && version.storeRows();
 
             Builder builder = new Builder(iterator, output, header, observers, version.correspondingMessagingVersion());
             return builder.build();
@@ -408,8 +404,8 @@ public class RowIndexEntryTest extends CQLTester
         Pre_C_11206_RowIndexEntry simple = new Pre_C_11206_RowIndexEntry(123);
 
         DataOutputBuffer buffer = new DataOutputBuffer();
-        SerializationHeader header = new SerializationHeader(true, cfs.metadata(), cfs.metadata().regularAndStaticColumns(), EncodingStats.NO_STATS);
-        Pre_C_11206_RowIndexEntry.Serializer serializer = new Pre_C_11206_RowIndexEntry.Serializer(cfs.metadata(), BigFormat.latestVersion, header);
+        SerializationHeader header = new SerializationHeader(true, cfs.metadata, cfs.metadata.partitionColumns(), EncodingStats.NO_STATS);
+        Pre_C_11206_RowIndexEntry.Serializer serializer = new Pre_C_11206_RowIndexEntry.Serializer(cfs.metadata, BigFormat.latestVersion, header);
 
         serializer.serialize(simple, buffer);
 
@@ -421,12 +417,12 @@ public class RowIndexEntryTest extends CQLTester
 
         ImmutableBTreePartition partition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs).build());
 
-        File tempFile = FileUtils.createTempFile("row_index_entry_test", null);
+        File tempFile = File.createTempFile("row_index_entry_test", null);
         tempFile.deleteOnExit();
         SequentialWriter writer = new SequentialWriter(tempFile);
         ColumnIndex columnIndex = RowIndexEntryTest.ColumnIndex.writeAndBuildIndex(partition.unfilteredIterator(), writer, header, Collections.emptySet(), BigFormat.latestVersion);
         Pre_C_11206_RowIndexEntry withIndex = Pre_C_11206_RowIndexEntry.create(0xdeadbeef, DeletionTime.LIVE, columnIndex);
-        IndexInfo.Serializer indexSerializer = IndexInfo.serializer(BigFormat.latestVersion, header);
+        IndexInfo.Serializer indexSerializer = cfs.metadata.serializers().indexInfoSerializer(BigFormat.latestVersion, header);
 
         // sanity check
         assertTrue(columnIndex.columnsIndex.size() >= 3);
@@ -569,14 +565,16 @@ public class RowIndexEntryTest extends CQLTester
             private final IndexInfo.Serializer idxSerializer;
             private final Version version;
 
-            Serializer(TableMetadata metadata, Version version, SerializationHeader header)
+            Serializer(CFMetaData metadata, Version version, SerializationHeader header)
             {
-                this.idxSerializer = IndexInfo.serializer(version, header);
+                this.idxSerializer = metadata.serializers().indexInfoSerializer(version, header);
                 this.version = version;
             }
 
             public void serialize(Pre_C_11206_RowIndexEntry rie, DataOutputPlus out) throws IOException
             {
+                assert version.storeRows() : "We read old index files but we should never write them";
+
                 out.writeUnsignedVInt(rie.position);
                 out.writeUnsignedVInt(rie.promotedSize(idxSerializer));
 
@@ -624,6 +622,35 @@ public class RowIndexEntryTest extends CQLTester
 
             public Pre_C_11206_RowIndexEntry deserialize(DataInputPlus in) throws IOException
             {
+                if (!version.storeRows())
+                {
+                    long position = in.readLong();
+
+                    int size = in.readInt();
+                    if (size > 0)
+                    {
+                        DeletionTime deletionTime = DeletionTime.serializer.deserialize(in);
+
+                        int entries = in.readInt();
+                        List<IndexInfo> columnsIndex = new ArrayList<>(entries);
+
+                        long headerLength = 0L;
+                        for (int i = 0; i < entries; i++)
+                        {
+                            IndexInfo info = idxSerializer.deserialize(in);
+                            columnsIndex.add(info);
+                            if (i == 0)
+                                headerLength = info.offset;
+                        }
+
+                        return new Pre_C_11206_RowIndexEntry.IndexedEntry(position, deletionTime, headerLength, columnsIndex);
+                    }
+                    else
+                    {
+                        return new Pre_C_11206_RowIndexEntry(position);
+                    }
+                }
+
                 long position = in.readUnsignedVInt();
 
                 int size = (int)in.readUnsignedVInt();
@@ -651,7 +678,7 @@ public class RowIndexEntryTest extends CQLTester
             // should be used instead.
             static long readPosition(DataInputPlus in, Version version) throws IOException
             {
-                return in.readUnsignedVInt();
+                return version.storeRows() ? in.readUnsignedVInt() : in.readLong();
             }
 
             public static void skip(DataInputPlus in, Version version) throws IOException
@@ -662,7 +689,7 @@ public class RowIndexEntryTest extends CQLTester
 
             private static void skipPromotedIndex(DataInputPlus in, Version version) throws IOException
             {
-                int size = (int)in.readUnsignedVInt();
+                int size = version.storeRows() ? (int)in.readUnsignedVInt() : in.readInt();
                 if (size <= 0)
                     return;
 
@@ -671,6 +698,8 @@ public class RowIndexEntryTest extends CQLTester
 
             public int serializedSize(Pre_C_11206_RowIndexEntry rie)
             {
+                assert version.storeRows() : "We read old index files but we should never write them";
+
                 int indexedSize = 0;
                 if (rie.isIndexed())
                 {

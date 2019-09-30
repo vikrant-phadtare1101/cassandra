@@ -17,8 +17,11 @@
  */
 package org.apache.cassandra.hints;
 
+import java.util.UUID;
+
 import com.google.common.collect.Iterators;
 
+import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.partitions.AbstractBTreePartition;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 
@@ -27,6 +30,15 @@ import static junit.framework.Assert.assertTrue;
 
 final class HintsTestUtil
 {
+    static void assertMutationsEqual(Mutation expected, Mutation actual)
+    {
+        assertEquals(expected.key(), actual.key());
+        assertEquals(expected.getPartitionUpdates().size(), actual.getPartitionUpdates().size());
+
+        for (UUID id : expected.getColumnFamilyIds())
+            assertPartitionsEqual(expected.getPartitionUpdate(id), actual.getPartitionUpdate(id));
+    }
+
     static void assertPartitionsEqual(AbstractBTreePartition expected, AbstractBTreePartition actual)
     {
         assertEquals(expected.partitionKey(), actual.partitionKey());
@@ -39,9 +51,9 @@ final class HintsTestUtil
     {
         assertEquals(expected.mutation.getKeyspaceName(), actual.mutation.getKeyspaceName());
         assertEquals(expected.mutation.key(), actual.mutation.key());
-        assertEquals(expected.mutation.getTableIds(), actual.mutation.getTableIds());
+        assertEquals(expected.mutation.getColumnFamilyIds(), actual.mutation.getColumnFamilyIds());
         for (PartitionUpdate partitionUpdate : expected.mutation.getPartitionUpdates())
-            assertPartitionsEqual(partitionUpdate, actual.mutation.getPartitionUpdate(partitionUpdate.metadata()));
+            assertPartitionsEqual(partitionUpdate, actual.mutation.getPartitionUpdate(partitionUpdate.metadata().cfId));
         assertEquals(expected.creationTime, actual.creationTime);
         assertEquals(expected.gcgs, actual.gcgs);
     }

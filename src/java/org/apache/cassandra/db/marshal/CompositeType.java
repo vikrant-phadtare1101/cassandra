@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.db.marshal;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -25,15 +26,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
+import org.apache.cassandra.io.util.DataOutputBuffer;
+import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
 
 /*
  * The encoding of a CompositeType column name should be:
@@ -62,26 +63,21 @@ import static com.google.common.collect.Iterables.transform;
  */
 public class CompositeType extends AbstractCompositeType
 {
-    private static final int STATIC_MARKER = 0xFFFF;
+    public static final int STATIC_MARKER = 0xFFFF;
 
     public final List<AbstractType<?>> types;
 
     // interning instances
-    private static final ConcurrentMap<List<AbstractType<?>>, CompositeType> instances = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<List<AbstractType<?>>, CompositeType> instances = new ConcurrentHashMap<List<AbstractType<?>>, CompositeType>();
 
     public static CompositeType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
         return getInstance(parser.getTypeParameters());
     }
 
-    public static CompositeType getInstance(Iterable<AbstractType<?>> types)
-    {
-        return getInstance(Lists.newArrayList(types));
-    }
-
     public static CompositeType getInstance(AbstractType... types)
     {
-        return getInstance(Arrays.asList(types));
+        return getInstance(Arrays.<AbstractType<?>>asList(types));
     }
 
     protected boolean readIsStatic(ByteBuffer bb)
@@ -105,10 +101,18 @@ public class CompositeType extends AbstractCompositeType
     public static CompositeType getInstance(List<AbstractType<?>> types)
     {
         assert types != null && !types.isEmpty();
-        CompositeType t = instances.get(types);
-        return null == t
-             ? instances.computeIfAbsent(types, CompositeType::new)
-             : t;
+
+        CompositeType ct = instances.get(types);
+        if (ct == null)
+        {
+            ct = new CompositeType(types);
+            CompositeType previous = instances.putIfAbsent(types, ct);
+            if (previous != null)
+            {
+                ct = previous;
+            }
+        }
+        return ct;
     }
 
     protected CompositeType(List<AbstractType<?>> types)
@@ -124,8 +128,9 @@ public class CompositeType extends AbstractCompositeType
         }
         catch (IndexOutOfBoundsException e)
         {
-            // We shouldn't get there in general we shouldn't construct broken composites
-            // but there is a few cases where if the schema has changed since we created/validated
+            // We shouldn't get there in general because 1) we shouldn't construct broken composites
+            // from CQL and 2) broken composites coming from thrift should be rejected by validate.
+            // There is a few cases however where, if the schema has changed since we created/validated
             // the composite, this will be thrown (see #6262). Those cases are a user error but
             // throwing a more meaningful error message to make understanding such error easier. .
             throw new RuntimeException("Cannot get comparator " + i + " in " + this + ". "
@@ -199,6 +204,11 @@ public class CompositeType extends AbstractCompositeType
         return l;
     }
 
+    public static byte lastEOC(ByteBuffer name)
+    {
+        return name.get(name.limit() - 1);
+    }
+
     // Extract component idx from bb. Return null if there is not enough component.
     public static ByteBuffer extractComponent(ByteBuffer bb, int idx)
     {
@@ -215,6 +225,13 @@ public class CompositeType extends AbstractCompositeType
             ++i;
         }
         return null;
+    }
+
+    // Extract CQL3 column name from the full column name.
+    public ByteBuffer extractLastComponent(ByteBuffer bb)
+    {
+        int idx = types.get(types.size() - 1) instanceof ColumnToCollectionType ? types.size() - 2 : types.size() - 1;
+        return extractComponent(bb, idx);
     }
 
     public static boolean isStaticName(ByteBuffer bb)
@@ -282,29 +299,6 @@ public class CompositeType extends AbstractCompositeType
         return true;
     }
 
-    @Override
-    public boolean referencesUserType(ByteBuffer name)
-    {
-        return any(types, t -> t.referencesUserType(name));
-    }
-
-    @Override
-    public CompositeType withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        instances.remove(types);
-
-        return getInstance(transform(types, t -> t.withUpdatedUserType(udt)));
-    }
-
-    @Override
-    public AbstractType<?> expandUserTypes()
-    {
-        return getInstance(transform(types, AbstractType::expandUserTypes));
-    }
-
     private static class StaticParsedComparator implements ParsedComparator
     {
         final AbstractType<?> type;
@@ -340,6 +334,16 @@ public class CompositeType extends AbstractCompositeType
         return getClass().getName() + TypeParser.stringifyTypeParameters(types);
     }
 
+    public Builder builder()
+    {
+        return new Builder(this);
+    }
+
+    public Builder builder(boolean isStatic)
+    {
+        return new Builder(this, isStatic);
+    }
+
     public static ByteBuffer build(ByteBuffer... buffers)
     {
         return build(false, buffers);
@@ -360,11 +364,150 @@ public class CompositeType extends AbstractCompositeType
         {
             ByteBufferUtil.writeShortLength(out, bb.remaining());
             int toCopy = bb.remaining();
-            ByteBufferUtil.copyBytes(bb, bb.position(), out, out.position(), toCopy);
+            ByteBufferUtil.arrayCopy(bb, bb.position(), out, out.position(), toCopy);
             out.position(out.position() + toCopy);
             out.put((byte) 0);
         }
         out.flip();
         return out;
+    }
+
+    public static class Builder
+    {
+        private final CompositeType composite;
+
+        private final List<ByteBuffer> components;
+        private final byte[] endOfComponents;
+        private int serializedSize;
+        private final boolean isStatic;
+
+        public Builder(CompositeType composite)
+        {
+            this(composite, false);
+        }
+
+        public Builder(CompositeType composite, boolean isStatic)
+        {
+            this(composite, new ArrayList<>(composite.types.size()), new byte[composite.types.size()], isStatic);
+        }
+
+        private Builder(CompositeType composite, List<ByteBuffer> components, byte[] endOfComponents, boolean isStatic)
+        {
+            assert endOfComponents.length == composite.types.size();
+
+            this.composite = composite;
+            this.components = components;
+            this.endOfComponents = endOfComponents;
+            this.isStatic = isStatic;
+            if (isStatic)
+                serializedSize = 2;
+        }
+
+        private Builder(Builder b)
+        {
+            this(b.composite, new ArrayList<>(b.components), Arrays.copyOf(b.endOfComponents, b.endOfComponents.length), b.isStatic);
+            this.serializedSize = b.serializedSize;
+        }
+
+        public Builder add(ByteBuffer bb)
+        {
+            if (components.size() >= composite.types.size())
+                throw new IllegalStateException("Composite column is already fully constructed");
+
+            components.add(bb);
+            serializedSize += 3 + bb.remaining(); // 2 bytes lenght + 1 byte eoc
+            return this;
+        }
+
+        public Builder add(ColumnIdentifier name)
+        {
+            return add(name.bytes);
+        }
+
+        public int componentCount()
+        {
+            return components.size();
+        }
+
+        public int remainingCount()
+        {
+            return composite.types.size() - components.size();
+        }
+
+        public ByteBuffer get(int i)
+        {
+            return components.get(i);
+        }
+
+        public ByteBuffer build()
+        {
+            try (DataOutputBuffer out = new DataOutputBufferFixed(serializedSize))
+            {
+                if (isStatic)
+                    out.writeShort(STATIC_MARKER);
+
+                for (int i = 0; i < components.size(); i++)
+                {
+                    ByteBufferUtil.writeWithShortLength(components.get(i), out);
+                    out.write(endOfComponents[i]);
+                }
+                return ByteBuffer.wrap(out.getData(), 0, out.getLength());
+            }
+            catch (IOException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
+
+        public ByteBuffer buildAsEndOfRange()
+        {
+            if (components.isEmpty())
+                return ByteBufferUtil.EMPTY_BYTE_BUFFER;
+
+            ByteBuffer bb = build();
+            bb.put(bb.remaining() - 1, (byte)1);
+            return bb;
+        }
+
+        public ByteBuffer buildForRelation(Operator op)
+        {
+            /*
+             * Given the rules for eoc (end-of-component, see AbstractCompositeType.compare()),
+             * We can select:
+             *   - = 'a' by using <'a'><0>
+             *   - < 'a' by using <'a'><-1>
+             *   - <= 'a' by using <'a'><1>
+             *   - > 'a' by using <'a'><1>
+             *   - >= 'a' by using <'a'><0>
+             */
+            int current = components.size() - 1;
+            switch (op)
+            {
+                case LT:
+                    endOfComponents[current] = (byte) -1;
+                    break;
+                case GT:
+                case LTE:
+                    endOfComponents[current] = (byte) 1;
+                    break;
+                default:
+                    endOfComponents[current] = (byte) 0;
+                    break;
+            }
+            return build();
+        }
+
+        public Builder copy()
+        {
+            return new Builder(this);
+        }
+
+        public ByteBuffer getComponent(int i)
+        {
+            if (i >= components.size())
+                throw new IllegalArgumentException();
+
+            return components.get(i);
+        }
     }
 }

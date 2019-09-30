@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.cql3.validation.entities;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.Json;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.Duration;
@@ -42,17 +41,10 @@ import static org.junit.Assert.fail;
 
 public class JsonTest extends CQLTester
 {
-    // This method will be ran instead of the CQLTester#setUpClass
     @BeforeClass
-    public static void setUpClass()
+    public static void setUp()
     {
-        if (ROW_CACHE_SIZE_IN_MB > 0)
-            DatabaseDescriptor.setRowCacheSizeInMB(ROW_CACHE_SIZE_IN_MB);
-
         StorageService.instance.setPartitionerUnsafe(ByteOrderedPartitioner.instance);
-
-        // Once per-JVM is enough
-        prepareServer();
     }
 
     @Test
@@ -1364,7 +1356,7 @@ public class JsonTest extends CQLTester
         Assert.assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
     }
 
-    @Test
+   @Test
     public void emptyStringJsonSerializationTest() throws Throwable
     {
         createTable("create table %s(id INT, name TEXT, PRIMARY KEY(id));");
@@ -1382,7 +1374,7 @@ public class JsonTest extends CQLTester
     @Test
     public void testJsonOrdering() throws Throwable
     {
-        createTable("CREATE TABLE %s(a INT, b INT, PRIMARY KEY (a, b))");
+        createTable("CREATE TABLE %s( PRIMARY KEY (a, b), a INT, b INT);");
         execute("INSERT INTO %s(a, b) VALUES (20, 30);");
         execute("INSERT INTO %s(a, b) VALUES (100, 200);");
 
@@ -1398,7 +1390,7 @@ public class JsonTest extends CQLTester
                    row("{\"a\": 100}"),
                    row("{\"a\": 20}"));
 
-        // Check ordering with alias
+        // Check ordering with alias 
         assertRows(execute("SELECT JSON a, b as c FROM %s WHERE a IN (20, 100) ORDER BY b"),
                    row("{\"a\": 20, \"c\": 30}"),
                    row("{\"a\": 100, \"c\": 200}"));
@@ -1407,7 +1399,7 @@ public class JsonTest extends CQLTester
                    row("{\"a\": 100, \"c\": 200}"),
                    row("{\"a\": 20, \"c\": 30}"));
 
-        // Check ordering with CAST
+        // Check ordering with CAST 
         assertRows(execute("SELECT JSON a, CAST(b AS FLOAT) FROM %s WHERE a IN (20, 100) ORDER BY b"),
                    row("{\"a\": 20, \"cast(b as float)\": 30.0}"),
                    row("{\"a\": 100, \"cast(b as float)\": 200.0}"));

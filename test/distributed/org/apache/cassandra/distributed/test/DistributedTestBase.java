@@ -80,14 +80,14 @@ public class DistributedTestBase
 
     public static void assertRows(Object[][] actual, Object[]... expected)
     {
-        Assert.assertEquals(rowsNotEqualErrorMessage(expected, actual),
+        Assert.assertEquals(rowsNotEqualErrorMessage(actual, expected),
                             expected.length, actual.length);
 
         for (int i = 0; i < expected.length; i++)
         {
             Object[] expectedRow = expected[i];
             Object[] actualRow = actual[i];
-            Assert.assertTrue(rowsNotEqualErrorMessage(expected, actual),
+            Assert.assertTrue(rowsNotEqualErrorMessage(actual, expected),
                               Arrays.equals(expectedRow, actualRow));
         }
     }

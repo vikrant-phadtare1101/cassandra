@@ -18,28 +18,26 @@
  */
 package org.apache.cassandra.metrics;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Meter;
-import org.apache.cassandra.transport.ClientStat;
-import org.apache.cassandra.transport.ConnectedClient;
 import org.apache.cassandra.transport.Server;
 
 import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
-public final class ClientMetrics
+
+public class ClientMetrics
 {
+    private static final MetricNameFactory factory = new DefaultNameFactory("Client");
     public static final ClientMetrics instance = new ClientMetrics();
 
-    private static final MetricNameFactory factory = new DefaultNameFactory("Client");
-
     private volatile boolean initialized = false;
-    private Collection<Server> servers = Collections.emptyList();
 
-    private Meter authSuccess;
-    private Meter authFailure;
+    private Collection<Server> servers = Collections.emptyList();
 
     private AtomicInteger pausedConnections;
     private Gauge<Integer> pausedConnectionsGauge;
@@ -49,30 +47,9 @@ public final class ClientMetrics
     {
     }
 
-    public void markAuthSuccess()
-    {
-        authSuccess.mark();
-    }
-
-    public void markAuthFailure()
-    {
-        authFailure.mark();
-    }
-
     public void pauseConnection() { pausedConnections.incrementAndGet(); }
     public void unpauseConnection() { pausedConnections.decrementAndGet(); }
-
     public void markRequestDiscarded() { requestDiscarded.mark(); }
-
-    public List<ConnectedClient> allConnectedClients()
-    {
-        List<ConnectedClient> clients = new ArrayList<>();
-
-        for (Server server : servers)
-            clients.addAll(server.getConnectedClients());
-
-        return clients;
-    }
 
     public synchronized void init(Collection<Server> servers)
     {
@@ -81,13 +58,7 @@ public final class ClientMetrics
 
         this.servers = servers;
 
-        registerGauge("connectedNativeClients",       this::countConnectedClients);
-        registerGauge("connectedNativeClientsByUser", this::countConnectedClientsByUser);
-        registerGauge("connections",                  this::connectedClients);
-        registerGauge("clientsByProtocolVersion",     this::recentClientStats);
-
-        authSuccess = registerMeter("AuthSuccess");
-        authFailure = registerMeter("AuthFailure");
+        registerGauge("connectedNativeClients", this::countConnectedClients);
 
         pausedConnections = new AtomicInteger();
         pausedConnectionsGauge = registerGauge("PausedConnections", pausedConnections::get);
@@ -96,51 +67,27 @@ public final class ClientMetrics
         initialized = true;
     }
 
+    public void addCounter(String name, final Callable<Integer> provider)
+    {
+        Metrics.register(factory.createMetricName(name), (Gauge<Integer>) () -> {
+            try
+            {
+                return provider.call();
+            } catch (Exception e)
+            {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
     private int countConnectedClients()
     {
         int count = 0;
 
         for (Server server : servers)
-            count += server.countConnectedClients();
+            count += server.getConnectedClients();
 
         return count;
-    }
-
-    private Map<String, Integer> countConnectedClientsByUser()
-    {
-        Map<String, Integer> counts = new HashMap<>();
-
-        for (Server server : servers)
-        {
-            server.countConnectedClientsByUser()
-                  .forEach((username, count) -> counts.put(username, counts.getOrDefault(username, 0) + count));
-        }
-
-        return counts;
-    }
-
-    private List<Map<String, String>> connectedClients()
-    {
-        List<Map<String, String>> clients = new ArrayList<>();
-
-        for (Server server : servers)
-            for (ConnectedClient client : server.getConnectedClients())
-                clients.add(client.asMap());
-
-        return clients;
-    }
-
-    private List<Map<String, String>> recentClientStats()
-    {
-        List<Map<String, String>> stats = new ArrayList<>();
-
-        for (Server server : servers)
-            for (ClientStat stat : server.recentClientStats())
-                stats.add(stat.asMap());
-
-        stats.sort(Comparator.comparing(map -> map.get(ClientStat.PROTOCOL_VERSION)));
-
-        return stats;
     }
 
     private <T> Gauge<T> registerGauge(String name, Gauge<T> gauge)
@@ -148,7 +95,7 @@ public final class ClientMetrics
         return Metrics.register(factory.createMetricName(name), gauge);
     }
 
-    private Meter registerMeter(String name)
+    public Meter registerMeter(String name)
     {
         return Metrics.meter(factory.createMetricName(name));
     }

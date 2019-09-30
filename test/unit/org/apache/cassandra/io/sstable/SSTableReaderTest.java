@@ -22,11 +22,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileAttribute;
 import java.util.*;
 import java.util.concurrent.*;
 
 import com.google.common.collect.Sets;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,8 +39,6 @@ import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.db.lifecycle.SSTableSet;
-import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.dht.IPartitioner;
@@ -56,10 +54,10 @@ import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FilterFactory;
-
+import org.apache.cassandra.utils.Pair;
 import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
+
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -105,7 +103,7 @@ public class SSTableReaderTest
         CompactionManager.instance.disableAutoCompaction();
         for (int j = 0; j < 10; j++)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
                 .clustering("0")
                 .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
                 .build()
@@ -127,11 +125,11 @@ public class SSTableReaderTest
         // confirm that positions increase continuously
         SSTableReader sstable = store.getLiveSSTables().iterator().next();
         long previous = -1;
-        for (SSTableReader.PartitionPositionBounds section : sstable.getPositionsForRanges(ranges))
+        for (Pair<Long,Long> section : sstable.getPositionsForRanges(ranges))
         {
-            assert previous <= section.lowerPosition : previous + " ! < " + section.lowerPosition;
-            assert section.lowerPosition < section.upperPosition : section.lowerPosition + " ! < " + section.upperPosition;
-            previous = section.upperPosition;
+            assert previous <= section.left : previous + " ! < " + section.left;
+            assert section.left < section.right : section.left + " ! < " + section.right;
+            previous = section.right;
         }
     }
 
@@ -151,7 +149,7 @@ public class SSTableReaderTest
             CompactionManager.instance.disableAutoCompaction();
             for (int j = 0; j < 100; j += 2)
             {
-                new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+                new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
                 .clustering("0")
                 .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
                 .build()
@@ -193,7 +191,7 @@ public class SSTableReaderTest
 
         for (int j = 0; j < 100; j += 2)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
             .clustering("0")
             .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
             .build()
@@ -221,7 +219,7 @@ public class SSTableReaderTest
 
         for (int j = 0; j < 10; j++)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
             .clustering("0")
             .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
             .build()
@@ -254,7 +252,7 @@ public class SSTableReaderTest
         for (int j = 0; j < 10; j++)
         {
 
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
             .clustering("0")
             .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
             .build()
@@ -270,13 +268,13 @@ public class SSTableReaderTest
         long p6 = sstable.getPosition(k(6), SSTableReader.Operator.EQ).position;
         long p7 = sstable.getPosition(k(7), SSTableReader.Operator.EQ).position;
 
-        SSTableReader.PartitionPositionBounds p = sstable.getPositionsForRanges(makeRanges(t(2), t(6))).get(0);
+        Pair<Long, Long> p = sstable.getPositionsForRanges(makeRanges(t(2), t(6))).get(0);
 
         // range are start exclusive so we should start at 3
-        assert p.lowerPosition == p3;
+        assert p.left == p3;
 
         // to capture 6 we have to stop at the start of 7
-        assert p.upperPosition == p7;
+        assert p.right == p7;
     }
 
     @Test
@@ -287,7 +285,7 @@ public class SSTableReaderTest
         ColumnFamilyStore store = keyspace.getColumnFamilyStore(CF_INDEXED);
         partitioner = store.getPartitioner();
 
-        new RowUpdateBuilder(store.metadata(), System.currentTimeMillis(), "k1")
+        new RowUpdateBuilder(store.metadata, System.currentTimeMillis(), "k1")
             .clustering("0")
             .add("birthdate", 1L)
             .build()
@@ -309,7 +307,7 @@ public class SSTableReaderTest
         CompactionManager.instance.disableAutoCompaction();
         for (int j = 0; j < 10; j++)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
             .clustering("0")
             .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
             .build()
@@ -346,22 +344,23 @@ public class SSTableReaderTest
 
         DecoratedKey firstKey = null, lastKey = null;
         long timestamp = System.currentTimeMillis();
-        for (int i = 0; i < store.metadata().params.minIndexInterval; i++)
+        for (int i = 0; i < store.metadata.params.minIndexInterval; i++)
         {
             DecoratedKey key = Util.dk(String.valueOf(i));
             if (firstKey == null)
                 firstKey = key;
             if (lastKey == null)
                 lastKey = key;
-            if (store.metadata().partitionKeyType.compare(lastKey.getKey(), key.getKey()) < 0)
+            if (store.metadata.getKeyValidator().compare(lastKey.getKey(), key.getKey()) < 0)
                 lastKey = key;
 
 
-            new RowUpdateBuilder(store.metadata(), timestamp, key.getKey())
-                .clustering("col")
-                .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-                .build()
-                .applyUnsafe();
+            new RowUpdateBuilder(store.metadata, timestamp, key.getKey())
+            .clustering("col")
+            .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
+            .build()
+            .applyUnsafe();
+
         }
         store.forceBlockingFlush();
 
@@ -370,6 +369,8 @@ public class SSTableReaderTest
 
         // test to see if sstable can be opened as expected
         SSTableReader target = SSTableReader.open(desc);
+        Assert.assertEquals(target.getIndexSummarySize(), 1);
+        Assert.assertArrayEquals(ByteBufferUtil.getArray(firstKey.getKey()), target.getIndexSummaryKey(0));
         assert target.first.equals(firstKey);
         assert target.last.equals(lastKey);
 
@@ -459,7 +460,7 @@ public class SSTableReaderTest
         Keyspace keyspace = Keyspace.open(KEYSPACE1);
         ColumnFamilyStore store = keyspace.getColumnFamilyStore("Indexed1");
 
-        new RowUpdateBuilder(store.metadata(), System.currentTimeMillis(), "k1")
+        new RowUpdateBuilder(store.metadata, System.currentTimeMillis(), "k1")
         .clustering("0")
         .add("birthdate", 1L)
         .build()
@@ -488,7 +489,7 @@ public class SSTableReaderTest
         ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard1");
         partitioner = store.getPartitioner();
 
-        new RowUpdateBuilder(store.metadata(), 0, "k1")
+        new RowUpdateBuilder(store.metadata, 0, "k1")
             .clustering("xyz")
             .add("val", "abc")
             .build()
@@ -498,7 +499,7 @@ public class SSTableReaderTest
         boolean foundScanner = false;
         for (SSTableReader s : store.getLiveSSTables())
         {
-            try (ISSTableScanner scanner = s.getScanner(new Range<Token>(t(0), t(1))))
+            try (ISSTableScanner scanner = s.getScanner(new Range<Token>(t(0), t(1)), null))
             {
                 scanner.next(); // throws exception pre 5407
                 foundScanner = true;
@@ -521,7 +522,7 @@ public class SSTableReaderTest
         for (int j = 0; j < 130; j++)
         {
 
-            new RowUpdateBuilder(store.metadata(), j, String.valueOf(j))
+            new RowUpdateBuilder(store.metadata, j, String.valueOf(j))
             .clustering("0")
             .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
             .build()
@@ -537,7 +538,7 @@ public class SSTableReaderTest
         ranges.add(new Range<Token>(t(98), t(99)));
 
         SSTableReader sstable = store.getLiveSSTables().iterator().next();
-        List<SSTableReader.PartitionPositionBounds> sections = sstable.getPositionsForRanges(ranges);
+        List<Pair<Long,Long>> sections = sstable.getPositionsForRanges(ranges);
         assert sections.size() == 1 : "Expected to find range in sstable" ;
 
         // re-open the same sstable as it would be during bulk loading
@@ -560,7 +561,7 @@ public class SSTableReaderTest
         final int NUM_PARTITIONS = 512;
         for (int j = 0; j < NUM_PARTITIONS; j++)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.format("%3d", j))
+            new RowUpdateBuilder(store.metadata, j, String.format("%3d", j))
             .clustering("0")
             .add("val", String.format("%3d", j))
             .build()
@@ -639,7 +640,7 @@ public class SSTableReaderTest
         final int NUM_PARTITIONS = 512;
         for (int j = 0; j < NUM_PARTITIONS; j++)
         {
-            new RowUpdateBuilder(store.metadata(), j, String.format("%3d", j))
+            new RowUpdateBuilder(store.metadata, j, String.format("%3d", j))
             .clustering("0")
             .add("val", String.format("%3d", j))
             .build()
@@ -693,91 +694,5 @@ public class SSTableReaderTest
     private DecoratedKey k(int i)
     {
         return new BufferDecoratedKey(t(i), ByteBufferUtil.bytes(String.valueOf(i)));
-    }
-
-    @Test(expected = RuntimeException.class)
-    public void testMoveAndOpenLiveSSTable()
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE1);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
-        SSTableReader sstable = getNewSSTable(cfs);
-        Descriptor notLiveDesc = new Descriptor(new File("/tmp"), "", "", 0);
-        SSTableReader.moveAndOpenSSTable(cfs, sstable.descriptor, notLiveDesc, sstable.components);
-    }
-
-    @Test(expected = RuntimeException.class)
-    public void testMoveAndOpenLiveSSTable2()
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE1);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
-        SSTableReader sstable = getNewSSTable(cfs);
-        Descriptor notLiveDesc = new Descriptor(new File("/tmp"), "", "", 0);
-        SSTableReader.moveAndOpenSSTable(cfs, notLiveDesc, sstable.descriptor, sstable.components);
-    }
-
-    @Test
-    public void testMoveAndOpenSSTable() throws IOException
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE1);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
-        SSTableReader sstable = getNewSSTable(cfs);
-        cfs.clearUnsafe();
-        sstable.selfRef().release();
-        File tmpdir = Files.createTempDirectory("testMoveAndOpen").toFile();
-        tmpdir.deleteOnExit();
-        Descriptor notLiveDesc = new Descriptor(tmpdir, sstable.descriptor.ksname, sstable.descriptor.cfname, 100);
-        // make sure the new directory is empty and that the old files exist:
-        for (Component c : sstable.components)
-        {
-            File f = new File(notLiveDesc.filenameFor(c));
-            assertFalse(f.exists());
-            assertTrue(new File(sstable.descriptor.filenameFor(c)).exists());
-        }
-        SSTableReader.moveAndOpenSSTable(cfs, sstable.descriptor, notLiveDesc, sstable.components);
-        // make sure the files were moved:
-        for (Component c : sstable.components)
-        {
-            File f = new File(notLiveDesc.filenameFor(c));
-            assertTrue(f.exists());
-            assertTrue(f.toString().contains("-100-"));
-            f.deleteOnExit();
-            assertFalse(new File(sstable.descriptor.filenameFor(c)).exists());
-        }
-    }
-
-
-
-    private SSTableReader getNewSSTable(ColumnFamilyStore cfs)
-    {
-
-        Set<SSTableReader> before = cfs.getLiveSSTables();
-        for (int j = 0; j < 100; j += 2)
-        {
-            new RowUpdateBuilder(cfs.metadata(), j, String.valueOf(j))
-            .clustering("0")
-            .add("val", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-            .build()
-            .applyUnsafe();
-        }
-        cfs.forceBlockingFlush();
-        return Sets.difference(cfs.getLiveSSTables(), before).iterator().next();
-    }
-
-    @Test
-    public void testGetApproximateKeyCount() throws InterruptedException
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE1);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
-        cfs.discardSSTables(System.currentTimeMillis()); //Cleaning all existing SSTables.
-        getNewSSTable(cfs);
-
-        try (ColumnFamilyStore.RefViewFragment viewFragment1 = cfs.selectAndReference(View.selectFunction(SSTableSet.CANONICAL)))
-        {
-            cfs.discardSSTables(System.currentTimeMillis());
-
-            TimeUnit.MILLISECONDS.sleep(1000); //Giving enough time to clear files.
-            List<SSTableReader> sstables = new ArrayList<>(viewFragment1.sstables);
-            assertEquals(50, SSTableReader.getApproximateKeyCount(sstables));
-        }
     }
 }

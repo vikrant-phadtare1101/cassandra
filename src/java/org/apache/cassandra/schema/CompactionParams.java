@@ -107,7 +107,7 @@ public final class CompactionParams
         return new CompactionParams(klass, allOptions, isEnabled, tombstoneOption);
     }
 
-    public static CompactionParams stcs(Map<String, String> options)
+    public static CompactionParams scts(Map<String, String> options)
     {
         return create(SizeTieredCompactionStrategy.class, options);
     }
@@ -249,7 +249,7 @@ public final class CompactionParams
         return create(classFromName(className), options);
     }
 
-    public static Class<? extends AbstractCompactionStrategy> classFromName(String name)
+    private static Class<? extends AbstractCompactionStrategy> classFromName(String name)
     {
         String className = name.contains(".")
                          ? name

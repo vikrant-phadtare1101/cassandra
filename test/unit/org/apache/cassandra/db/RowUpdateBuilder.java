@@ -20,10 +20,16 @@ package org.apache.cassandra.db;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.db.marshal.SetType;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.ListType;
+import org.apache.cassandra.db.marshal.MapType;
 import org.apache.cassandra.utils.*;
 
 /**
@@ -46,34 +52,28 @@ public class RowUpdateBuilder
         this.updateBuilder = updateBuilder;
     }
 
-    public RowUpdateBuilder(TableMetadata metadata, long timestamp, Object partitionKey)
+    public RowUpdateBuilder(CFMetaData metadata, long timestamp, Object partitionKey)
     {
         this(metadata, FBUtilities.nowInSeconds(), timestamp, partitionKey);
     }
 
-    public RowUpdateBuilder(TableMetadata metadata, int localDeletionTime, long timestamp, Object partitionKey)
+    public RowUpdateBuilder(CFMetaData metadata, int localDeletionTime, long timestamp, Object partitionKey)
     {
         this(metadata, localDeletionTime, timestamp, metadata.params.defaultTimeToLive, partitionKey);
     }
 
-    public RowUpdateBuilder(TableMetadata metadata, long timestamp, int ttl, Object partitionKey)
+    public RowUpdateBuilder(CFMetaData metadata, long timestamp, int ttl, Object partitionKey)
     {
         this(metadata, FBUtilities.nowInSeconds(), timestamp, ttl, partitionKey);
     }
 
-    public RowUpdateBuilder(TableMetadata metadata, int localDeletionTime, long timestamp, int ttl, Object partitionKey)
+    public RowUpdateBuilder(CFMetaData metadata, int localDeletionTime, long timestamp, int ttl, Object partitionKey)
     {
         this(PartitionUpdate.simpleBuilder(metadata, partitionKey));
 
         this.updateBuilder.timestamp(timestamp);
         this.updateBuilder.ttl(ttl);
         this.updateBuilder.nowInSec(localDeletionTime);
-    }
-
-    public RowUpdateBuilder timestamp(long ts)
-    {
-        updateBuilder.timestamp(ts);
-        return this;
     }
 
     private Row.SimpleBuilder rowBuilder()
@@ -115,37 +115,49 @@ public class RowUpdateBuilder
 
     public PartitionUpdate buildUpdate()
     {
+        PartitionUpdate update = updateBuilder.build();
         for (RangeTombstone rt : rts)
-            updateBuilder.addRangeTombstone(rt);
-        return updateBuilder.build();
+            update.add(rt);
+        return update;
     }
 
-    private static void deleteRow(PartitionUpdate.Builder updateBuilder, long timestamp, int localDeletionTime, Object... clusteringValues)
+    private static void deleteRow(PartitionUpdate update, long timestamp, int localDeletionTime, Object... clusteringValues)
     {
-        SimpleBuilders.RowBuilder b = new SimpleBuilders.RowBuilder(updateBuilder.metadata(), clusteringValues);
-        b.nowInSec(localDeletionTime).timestamp(timestamp).delete();
-        updateBuilder.add(b.build());
+        assert clusteringValues.length == update.metadata().comparator.size() || (clusteringValues.length == 0 && !update.columns().statics.isEmpty());
+
+        boolean isStatic = clusteringValues.length != update.metadata().comparator.size();
+        Row.Builder builder = BTreeRow.sortedBuilder();
+
+        if (isStatic)
+            builder.newRow(Clustering.STATIC_CLUSTERING);
+        else
+            builder.newRow(clusteringValues.length == 0 ? Clustering.EMPTY : update.metadata().comparator.make(clusteringValues));
+        builder.addRowDeletion(Row.Deletion.regular(new DeletionTime(timestamp, localDeletionTime)));
+
+        update.add(builder.build());
     }
 
-    public static Mutation deleteRow(TableMetadata metadata, long timestamp, Object key, Object... clusteringValues)
+    public static Mutation deleteRow(CFMetaData metadata, long timestamp, Object key, Object... clusteringValues)
     {
         return deleteRowAt(metadata, timestamp, FBUtilities.nowInSeconds(), key, clusteringValues);
     }
 
-    public static Mutation deleteRowAt(TableMetadata metadata, long timestamp, int localDeletionTime, Object key, Object... clusteringValues)
+    public static Mutation deleteRowAt(CFMetaData metadata, long timestamp, int localDeletionTime, Object key, Object... clusteringValues)
     {
-        PartitionUpdate.Builder update = new PartitionUpdate.Builder(metadata, makeKey(metadata, key), metadata.regularAndStaticColumns(), 0);
+        PartitionUpdate update = new PartitionUpdate(metadata, makeKey(metadata, key), metadata.partitionColumns(), 0);
         deleteRow(update, timestamp, localDeletionTime, clusteringValues);
-        return new Mutation.PartitionUpdateCollector(update.metadata().keyspace, update.partitionKey()).add(update.build()).build();
+        // note that the created mutation may get further update later on, so we don't use the ctor that create a singletonMap
+        // underneath (this class if for convenience, not performance)
+        return new Mutation(update.metadata().ksName, update.partitionKey()).add(update);
     }
 
-    private static DecoratedKey makeKey(TableMetadata metadata, Object... partitionKey)
+    private static DecoratedKey makeKey(CFMetaData metadata, Object... partitionKey)
     {
         if (partitionKey.length == 1 && partitionKey[0] instanceof DecoratedKey)
             return (DecoratedKey)partitionKey[0];
 
-        ByteBuffer key = metadata.partitionKeyAsClusteringComparator().make(partitionKey).serializeAsPartitionKey();
-        return metadata.partitioner.decorateKey(key);
+        ByteBuffer key = CFMetaData.serializePartitionKey(metadata.getKeyValidatorAsClusteringComparator().make(partitionKey));
+        return metadata.decorateKey(key);
     }
 
     public RowUpdateBuilder addRangeTombstone(RangeTombstone rt)
@@ -166,9 +178,9 @@ public class RowUpdateBuilder
         return this;
     }
 
-    public RowUpdateBuilder add(ColumnMetadata columnMetadata, Object value)
+    public RowUpdateBuilder add(ColumnDefinition columnDefinition, Object value)
     {
-        return add(columnMetadata.name.toString(), value);
+        return add(columnDefinition.name.toString(), value);
     }
 
     public RowUpdateBuilder delete(String columnName)
@@ -177,8 +189,8 @@ public class RowUpdateBuilder
         return this;
     }
 
-    public RowUpdateBuilder delete(ColumnMetadata columnMetadata)
+    public RowUpdateBuilder delete(ColumnDefinition columnDefinition)
     {
-        return delete(columnMetadata.name.toString());
+        return delete(columnDefinition.name.toString());
     }
 }

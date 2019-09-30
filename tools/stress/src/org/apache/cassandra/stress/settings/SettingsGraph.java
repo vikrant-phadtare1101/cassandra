@@ -30,7 +30,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.stress.util.ResultLogger;
 
 public class SettingsGraph implements Serializable
@@ -55,7 +54,14 @@ public class SettingsGraph implements Serializable
 
         if (inGraphMode())
         {
-            temporaryLogFile = FileUtils.createTempFile("cassandra-stress", ".log");
+            try
+            {
+                temporaryLogFile = File.createTempFile("cassandra-stress", ".log");
+            }
+            catch (IOException e)
+            {
+                throw new RuntimeException("Cannot open temporary file");
+            }
         }
         else
         {

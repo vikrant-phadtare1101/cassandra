@@ -18,8 +18,8 @@
 package org.apache.cassandra.tools.nodetool;
 
 import static org.apache.commons.lang3.StringUtils.EMPTY;
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
 
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
@@ -36,10 +36,10 @@ public class RemoveNode extends NodeToolCmd
         switch (removeOperation)
         {
             case "status":
-                System.out.println("RemovalStatus: " + probe.getRemovalStatus(printPort));
+                System.out.println("RemovalStatus: " + probe.getRemovalStatus());
                 break;
             case "force":
-                System.out.println("RemovalStatus: " + probe.getRemovalStatus(printPort));
+                System.out.println("RemovalStatus: " + probe.getRemovalStatus());
                 probe.forceRemoveCompletion();
                 break;
             default:

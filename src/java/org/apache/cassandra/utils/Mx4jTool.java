@@ -19,7 +19,6 @@ package org.apache.cassandra.utils;
 
 import javax.management.ObjectName;
 
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,18 +74,17 @@ public class Mx4jTool
 
     private static String getAddress()
     {
-        String sAddress = System.getProperty("mx4jaddress");
-        if (StringUtils.isEmpty(sAddress))
-            sAddress = FBUtilities.getBroadcastAddressAndPort().address.getHostAddress();
-        return sAddress;
+        return System.getProperty("mx4jaddress", FBUtilities.getBroadcastAddress().getHostAddress());
     }
 
     private static int getPort()
     {
         int port = 8081;
         String sPort = System.getProperty("mx4jport");
-        if (StringUtils.isNotEmpty(sPort))
+        if (sPort != null && !sPort.equals(""))
+        {
             port = Integer.parseInt(sPort);
+        }
         return port;
     }
 }

@@ -19,7 +19,6 @@
 package org.apache.cassandra.stress.operations;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import org.apache.cassandra.stress.Operation;
@@ -76,16 +75,6 @@ public abstract class PartitionOperation extends Operation
         this.spec = spec;
     }
 
-    public DataSpec getDataSpecification()
-    {
-        return spec;
-    }
-
-    public List<PartitionIterator> getPartitions()
-    {
-        return Collections.unmodifiableList(partitions);
-    }
-
     public int ready(WorkManager permits)
     {
         int partitionCount = (int) spec.partitionCount.next();
@@ -97,7 +86,7 @@ public abstract class PartitionOperation extends Operation
 
         int i = 0;
         boolean success = true;
-        for (; i < partitionCount && success; i++)
+        for (; i < partitionCount && success ; i++)
         {
             if (i >= partitionCache.size())
                 partitionCache.add(PartitionIterator.get(spec.partitionGenerator, spec.seedManager));

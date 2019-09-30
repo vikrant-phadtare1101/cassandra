@@ -30,18 +30,18 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.ClusteringPrefix;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -56,22 +56,23 @@ public class RowAndDeletionMergeIteratorTest
     private int nowInSeconds;
     private DecoratedKey dk;
     private ColumnFamilyStore cfs;
-    private TableMetadata cfm;
-    private ColumnMetadata defA;
+    private CFMetaData cfm;
+    private ColumnDefinition defA;
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
         DatabaseDescriptor.daemonInitialization();
-
-        TableMetadata.Builder builder =
-            TableMetadata.builder(KEYSPACE1, CF_STANDARD1)
-                         .addPartitionKeyColumn("key", AsciiType.instance)
-                         .addClusteringColumn("col1", Int32Type.instance)
-                         .addRegularColumn("a", Int32Type.instance);
-
+        CFMetaData cfMetadata = CFMetaData.Builder.create(KEYSPACE1, CF_STANDARD1)
+                                                  .addPartitionKey("key", AsciiType.instance)
+                                                  .addClusteringColumn("col1", Int32Type.instance)
+                                                  .addRegularColumn("a", Int32Type.instance)
+                                                  .build();
         SchemaLoader.prepareServer();
-        SchemaLoader.createKeyspace(KEYSPACE1, KeyspaceParams.simple(1), builder);
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    KeyspaceParams.simple(1),
+                                    cfMetadata);
+
     }
 
     @Before
@@ -80,8 +81,8 @@ public class RowAndDeletionMergeIteratorTest
         nowInSeconds = FBUtilities.nowInSeconds();
         dk = Util.dk("key0");
         cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD1);
-        cfm = cfs.metadata();
-        defA = cfm.getColumn(new ColumnIdentifier("a", true));
+        cfm = cfs.metadata;
+        defA = cfm.getColumnDefinition(new ColumnIdentifier("a", true));
     }
 
     @Test
@@ -352,7 +353,7 @@ public class RowAndDeletionMergeIteratorTest
     @Test
     public void testWithNoopBoundaryMarkers()
     {
-        PartitionUpdate update = PartitionUpdate.emptyUpdate(cfm, dk);
+        PartitionUpdate update = new PartitionUpdate(cfm, dk, cfm.partitionColumns(), 1);
         RangeTombstoneList rtl = new RangeTombstoneList(cfm.comparator, 10);
         rtl.add(rt(1, 2, 5, 5));
         rtl.add(rt(3, 4, 5, 5));
@@ -393,11 +394,11 @@ public class RowAndDeletionMergeIteratorTest
 
     private Iterator<Row> createRowIterator()
     {
-        PartitionUpdate.Builder update = new PartitionUpdate.Builder(cfm, dk, cfm.regularAndStaticColumns(), 1);
+        PartitionUpdate update = new PartitionUpdate(cfm, dk, cfm.partitionColumns(), 1);
         for (int i = 0; i < 5; i++)
             addRow(update, i, i);
 
-        return update.build().iterator();
+        return update.iterator();
     }
 
     private UnfilteredRowIterator createMergeIterator(Iterator<Row> rows, Iterator<RangeTombstone> tombstones, boolean reversed)
@@ -422,14 +423,14 @@ public class RowAndDeletionMergeIteratorTest
                                                true);
     }
 
-    private void addRow(PartitionUpdate.Builder update, int col1, int a)
+    private void addRow(PartitionUpdate update, int col1, int a)
     {
         update.add(BTreeRow.singleCellRow(update.metadata().comparator.make(col1), makeCell(defA, a, 0)));
     }
 
-    private Cell makeCell(ColumnMetadata columnMetadata, int value, long timestamp)
+    private Cell makeCell(ColumnDefinition columnDefinition, int value, long timestamp)
     {
-        return BufferCell.live(columnMetadata, timestamp, ((AbstractType) columnMetadata.cellValueType()).decompose(value));
+        return BufferCell.live(columnDefinition, timestamp, ((AbstractType)columnDefinition.cellValueType()).decompose(value));
     }
 
     private static RangeTombstone atLeast(int start, long tstamp, int delTime)

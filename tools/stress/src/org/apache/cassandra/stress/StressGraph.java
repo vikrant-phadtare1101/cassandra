@@ -110,14 +110,17 @@ public class StressGraph
 
     private String getGraphHTML()
     {
-        try (InputStream graphHTMLRes = StressGraph.class.getClassLoader().getResourceAsStream("org/apache/cassandra/stress/graph/graph.html"))
+        InputStream graphHTMLRes = StressGraph.class.getClassLoader().getResourceAsStream("org/apache/cassandra/stress/graph/graph.html");
+        String graphHTML;
+        try
         {
-            return new String(ByteStreams.toByteArray(graphHTMLRes));
+            graphHTML = new String(ByteStreams.toByteArray(graphHTMLRes));
         }
         catch (IOException e)
         {
             throw new RuntimeException(e);
         }
+        return graphHTML;
     }
 
     /** Parse log and append to stats array */
@@ -148,7 +151,7 @@ public class StressGraph
                         currentThreadCount = tc.group(2);
                     }
                 }
-
+                
                 // Detect mode changes
                 if (line.equals(StressMetrics.HEAD))
                 {
@@ -232,7 +235,7 @@ public class StressGraph
 
     private JSONObject createJSONStats(JSONObject json)
     {
-        try (InputStream logStream = Files.newInputStream(stressSettings.graph.temporaryLogFile.toPath()))
+        try (InputStream logStream = new FileInputStream(stressSettings.graph.temporaryLogFile))
         {
             JSONArray stats;
             if (json == null)

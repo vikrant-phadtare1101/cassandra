@@ -24,7 +24,8 @@ the languages. However, the `changes <#changes>`_ section provides the diff betw
 
 CQL offers a model close to SQL in the sense that data is put in *tables* containing *rows* of *columns*. For
 that reason, when used in this document, these terms (tables, rows and columns) have the same definition than they have
-in SQL.
+in SQL. But please note that as such, they do **not** refer to the concept of rows and columns found in the deprecated
+thrift API (and earlier version 1 and 2 of CQL).
 
 .. toctree::
    :maxdepth: 2
@@ -37,7 +38,6 @@ in SQL.
    mvs
    security
    functions
-   operators
    json
    triggers
    appendices

@@ -17,26 +17,37 @@
  */
 package org.apache.cassandra.db.view;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
-
 import javax.annotation.Nullable;
 
 import com.google.common.collect.Iterables;
-
-import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.cql3.selection.RawSelector;
-import org.apache.cassandra.cql3.statements.SelectStatement;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.*;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.KeyspaceMetadata;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableMetadataRef;
-import org.apache.cassandra.schema.ViewMetadata;
-import org.apache.cassandra.utils.FBUtilities;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.ViewDefinition;
+import org.apache.cassandra.cql3.MultiColumnRelation;
+import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.Relation;
+import org.apache.cassandra.cql3.SingleColumnRelation;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.statements.ParsedStatement;
+import org.apache.cassandra.cql3.statements.SelectStatement;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.ReadQuery;
+import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.db.rows.Row;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.service.ClientState;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * A View copies data from a base table into a view table which can be queried independently from the
@@ -50,39 +61,47 @@ public class View
     private static final Logger logger = LoggerFactory.getLogger(View.class);
 
     public final String name;
-    private volatile ViewMetadata definition;
+    private volatile ViewDefinition definition;
 
     private final ColumnFamilyStore baseCfs;
 
-    public volatile List<ColumnMetadata> baseNonPKColumnsInViewPK;
+    public volatile List<ColumnDefinition> baseNonPKColumnsInViewPK;
+
     private ViewBuilder builder;
 
+    // Only the raw statement can be final, because the statement cannot always be prepared when the MV is initialized.
+    // For example, during startup, this view will be initialized as part of the Keyspace.open() work; preparing a statement
+    // also requires the keyspace to be open, so this results in double-initialization problems.
+    private final SelectStatement.RawStatement rawSelect;
     private SelectStatement select;
     private ReadQuery query;
 
-    public View(ViewMetadata definition, ColumnFamilyStore baseCfs)
+    public View(ViewDefinition definition,
+                ColumnFamilyStore baseCfs)
     {
         this.baseCfs = baseCfs;
-        this.name = definition.name();
+        this.name = definition.viewName;
+        this.rawSelect = definition.select;
 
         updateDefinition(definition);
     }
 
-    public ViewMetadata getDefinition()
+    public ViewDefinition getDefinition()
     {
         return definition;
     }
 
     /**
-     * This updates the columns stored which are dependent on the base TableMetadata.
+     * This updates the columns stored which are dependent on the base CFMetaData.
      */
-    public void updateDefinition(ViewMetadata definition)
+    public void updateDefinition(ViewDefinition definition)
     {
         this.definition = definition;
-        List<ColumnMetadata> nonPKDefPartOfViewPK = new ArrayList<>();
-        for (ColumnMetadata baseColumn : baseCfs.metadata.get().columns())
+
+        List<ColumnDefinition> nonPKDefPartOfViewPK = new ArrayList<>();
+        for (ColumnDefinition baseColumn : baseCfs.metadata.allColumns())
         {
-            ColumnMetadata viewColumn = getViewColumn(baseColumn);
+            ColumnDefinition viewColumn = getViewColumn(baseColumn);
             if (viewColumn != null && !baseColumn.isPrimaryKeyColumn() && viewColumn.isPrimaryKeyColumn())
                 nonPKDefPartOfViewPK.add(baseColumn);
         }
@@ -93,18 +112,18 @@ public class View
      * The view column corresponding to the provided base column. This <b>can</b>
      * return {@code null} if the column is denormalized in the view.
      */
-    public ColumnMetadata getViewColumn(ColumnMetadata baseColumn)
+    public ColumnDefinition getViewColumn(ColumnDefinition baseColumn)
     {
-        return definition.metadata.getColumn(baseColumn.name);
+        return definition.metadata.getColumnDefinition(baseColumn.name);
     }
 
     /**
      * The base column corresponding to the provided view column. This should
      * never return {@code null} since a view can't have its "own" columns.
      */
-    public ColumnMetadata getBaseColumn(ColumnMetadata viewColumn)
+    public ColumnDefinition getBaseColumn(ColumnDefinition viewColumn)
     {
-        ColumnMetadata baseColumn = baseCfs.metadata().getColumn(viewColumn.name);
+        ColumnDefinition baseColumn = baseCfs.metadata.getColumnDefinition(viewColumn.name);
         assert baseColumn != null;
         return baseColumn;
     }
@@ -148,95 +167,118 @@ public class View
     public boolean matchesViewFilter(DecoratedKey partitionKey, Row baseRow, int nowInSec)
     {
         return getReadQuery().selectsClustering(partitionKey, baseRow.clustering())
-            && getSelectStatement().rowFilterForInternalCalls().isSatisfiedBy(baseCfs.metadata(), partitionKey, baseRow, nowInSec);
+            && getSelectStatement().rowFilterForInternalCalls().isSatisfiedBy(baseCfs.metadata, partitionKey, baseRow, nowInSec);
     }
 
     /**
      * Returns the SelectStatement used to populate and filter this view.  Internal users should access the select
      * statement this way to ensure it has been prepared.
      */
-    SelectStatement getSelectStatement()
+    public SelectStatement getSelectStatement()
     {
-        if (null == select)
+        if (select == null)
         {
-            SelectStatement.Parameters parameters =
-                new SelectStatement.Parameters(Collections.emptyMap(),
-                                               Collections.emptyList(),
-                                               false,
-                                               true,
-                                               false);
-
-            SelectStatement.RawStatement rawSelect =
-                new SelectStatement.RawStatement(new QualifiedName(baseCfs.keyspace.getName(), baseCfs.name),
-                                                 parameters,
-                                                 selectClause(),
-                                                 definition.whereClause,
-                                                 null,
-                                                 null);
-
-            rawSelect.setBindVariables(Collections.emptyList());
-
-            select = rawSelect.prepare(true);
+            ClientState state = ClientState.forInternalCalls();
+            state.setKeyspace(baseCfs.keyspace.getName());
+            rawSelect.prepareKeyspace(state);
+            ParsedStatement.Prepared prepared = rawSelect.prepare(true, ClientState.forInternalCalls());
+            select = (SelectStatement) prepared.statement;
         }
 
         return select;
-    }
-
-    private List<RawSelector> selectClause()
-    {
-        return definition.metadata
-                         .columns()
-                         .stream()
-                         .map(c -> c.name.toString())
-                         .map(ColumnMetadata.Raw::forQuoted)
-                         .map(c -> new RawSelector(c, null))
-                         .collect(Collectors.toList());
     }
 
     /**
      * Returns the ReadQuery used to filter this view.  Internal users should access the query this way to ensure it
      * has been prepared.
      */
-    ReadQuery getReadQuery()
+    public ReadQuery getReadQuery()
     {
         if (query == null)
+        {
             query = getSelectStatement().getQuery(QueryOptions.forInternalCalls(Collections.emptyList()), FBUtilities.nowInSeconds());
+            logger.trace("View query: {}", rawSelect);
+        }
 
         return query;
     }
 
     public synchronized void build()
     {
-        stopBuild();
-        builder = new ViewBuilder(baseCfs, this);
-        builder.start();
-    }
-
-    /**
-     * Stops the building of this view, no-op if it isn't building.
-     */
-    synchronized void stopBuild()
-    {
-        if (builder != null)
+        if (this.builder != null)
         {
             logger.debug("Stopping current view builder due to schema change");
-            builder.stop();
-            builder = null;
+            this.builder.stop();
+            this.builder = null;
         }
+
+        this.builder = new ViewBuilder(baseCfs, this);
+        CompactionManager.instance.submitViewBuilder(builder);
     }
 
     @Nullable
-    public static TableMetadataRef findBaseTable(String keyspace, String viewName)
+    public static CFMetaData findBaseTable(String keyspace, String viewName)
     {
-        ViewMetadata view = Schema.instance.getView(keyspace, viewName);
-        return (view == null) ? null : Schema.instance.getTableMetadataRef(view.baseTableId);
+        ViewDefinition view = Schema.instance.getView(keyspace, viewName);
+        return (view == null) ? null : Schema.instance.getCFMetaData(view.baseTableId);
     }
 
-    // TODO: REMOVE
-    public static Iterable<ViewMetadata> findAll(String keyspace, String baseTable)
+    public static Iterable<ViewDefinition> findAll(String keyspace, String baseTable)
     {
-        KeyspaceMetadata ksm = Schema.instance.getKeyspaceMetadata(keyspace);
-        return Iterables.filter(ksm.views, view -> view.baseTableName.equals(baseTable));
+        KeyspaceMetadata ksm = Schema.instance.getKSMetaData(keyspace);
+        final UUID baseId = Schema.instance.getId(keyspace, baseTable);
+        return Iterables.filter(ksm.views, view -> view.baseTableId.equals(baseId));
+    }
+
+    /**
+     * Builds the string text for a materialized view's SELECT statement.
+     */
+    public static String buildSelectStatement(String cfName, Collection<ColumnDefinition> includedColumns, String whereClause)
+    {
+         StringBuilder rawSelect = new StringBuilder("SELECT ");
+        if (includedColumns == null || includedColumns.isEmpty())
+            rawSelect.append("*");
+        else
+            rawSelect.append(includedColumns.stream().map(id -> id.name.toCQLString()).collect(Collectors.joining(", ")));
+        rawSelect.append(" FROM \"").append(cfName).append("\" WHERE ") .append(whereClause).append(" ALLOW FILTERING");
+        return rawSelect.toString();
+    }
+
+    public static String relationsToWhereClause(List<Relation> whereClause)
+    {
+        List<String> expressions = new ArrayList<>(whereClause.size());
+        for (Relation rel : whereClause)
+        {
+            StringBuilder sb = new StringBuilder();
+
+            if (rel.isMultiColumn())
+            {
+                sb.append(((MultiColumnRelation) rel).getEntities().stream()
+                        .map(ColumnDefinition.Raw::toString)
+                        .collect(Collectors.joining(", ", "(", ")")));
+            }
+            else
+            {
+                sb.append(((SingleColumnRelation) rel).getEntity());
+            }
+
+            sb.append(" ").append(rel.operator()).append(" ");
+
+            if (rel.isIN())
+            {
+                sb.append(rel.getInValues().stream()
+                        .map(Term.Raw::getText)
+                        .collect(Collectors.joining(", ", "(", ")")));
+            }
+            else
+            {
+                sb.append(rel.getValue().getText());
+            }
+
+            expressions.add(sb.toString());
+        }
+
+        return expressions.stream().collect(Collectors.joining(" AND "));
     }
 
     public boolean hasSamePrimaryKeyColumnsAsBaseTable()
