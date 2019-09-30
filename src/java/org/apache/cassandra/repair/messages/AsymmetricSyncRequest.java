@@ -28,7 +28,6 @@ import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
@@ -39,6 +38,8 @@ import static org.apache.cassandra.locator.InetAddressAndPort.Serializer.inetAdd
 
 public class AsymmetricSyncRequest extends RepairMessage
 {
+    public static MessageSerializer serializer = new SyncRequestSerializer();
+
     public final InetAddressAndPort initiator;
     public final InetAddressAndPort fetchingNode;
     public final InetAddressAndPort fetchFrom;
@@ -47,7 +48,7 @@ public class AsymmetricSyncRequest extends RepairMessage
 
     public AsymmetricSyncRequest(RepairJobDesc desc, InetAddressAndPort initiator, InetAddressAndPort fetchingNode, InetAddressAndPort fetchFrom, Collection<Range<Token>> ranges, PreviewKind previewKind)
     {
-        super(desc);
+        super(Type.ASYMMETRIC_SYNC_REQUEST, desc);
         this.initiator = initiator;
         this.fetchingNode = fetchingNode;
         this.fetchFrom = fetchFrom;
@@ -61,7 +62,8 @@ public class AsymmetricSyncRequest extends RepairMessage
         if (!(o instanceof AsymmetricSyncRequest))
             return false;
         AsymmetricSyncRequest req = (AsymmetricSyncRequest)o;
-        return desc.equals(req.desc) &&
+        return messageType == req.messageType &&
+               desc.equals(req.desc) &&
                initiator.equals(req.initiator) &&
                fetchingNode.equals(req.fetchingNode) &&
                fetchFrom.equals(req.fetchFrom) &&
@@ -71,10 +73,10 @@ public class AsymmetricSyncRequest extends RepairMessage
     @Override
     public int hashCode()
     {
-        return Objects.hash(desc, initiator, fetchingNode, fetchFrom, ranges);
+        return Objects.hash(messageType, desc, initiator, fetchingNode, fetchFrom, ranges);
     }
 
-    public static final IVersionedSerializer<AsymmetricSyncRequest> serializer = new IVersionedSerializer<AsymmetricSyncRequest>()
+    public static class SyncRequestSerializer implements MessageSerializer<AsymmetricSyncRequest>
     {
         public void serialize(AsymmetricSyncRequest message, DataOutputPlus out, int version) throws IOException
         {
@@ -117,7 +119,7 @@ public class AsymmetricSyncRequest extends RepairMessage
             size += TypeSizes.sizeof(message.previewKind.getSerializationVal());
             return size;
         }
-    };
+    }
 
     public String toString()
     {
