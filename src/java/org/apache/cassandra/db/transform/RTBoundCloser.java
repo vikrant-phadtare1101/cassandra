@@ -17,16 +17,17 @@
  */
 package org.apache.cassandra.db.transform;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Clustering;
 import org.apache.cassandra.db.DeletionTime;
-import org.apache.cassandra.db.ReadExecutionController;
+import org.apache.cassandra.db.ReadOrderGroup;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.*;
 
 /**
  * A transformation that appends an RT bound marker to row iterators in case they don't have one.
  *
- * This used to happen, for example, in {@link org.apache.cassandra.db.ReadCommand#executeLocally(ReadExecutionController)}
+ * This used to happen, for example, in {@link org.apache.cassandra.db.ReadCommand#executeLocally(ReadOrderGroup)},
  * if {@link org.apache.cassandra.db.filter.DataLimits} stopped the iterator on a live row that was enclosed in an
  * older RT.
  *
@@ -102,7 +103,9 @@ public final class RTBoundCloser extends Transformation<UnfilteredRowIterator>
              */
             if (null == lastRowClustering)
             {
-                String message = String.format("UnfilteredRowIterator for %s has an open RT bound as its last item", partition.metadata());
+                CFMetaData metadata = partition.metadata();
+                String message =
+                    String.format("UnfilteredRowIterator for %s.%s has an open RT bound as its last item", metadata.ksName, metadata.cfName);
                 throw new IllegalStateException(message);
             }
 

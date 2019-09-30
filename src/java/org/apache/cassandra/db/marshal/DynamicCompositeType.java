@@ -17,24 +17,20 @@
  */
 package org.apache.cassandra.db.marshal;
 
-import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
-import com.google.common.collect.Maps;
+import org.apache.cassandra.cql3.Term;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TypeSerializer;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
-
-import static com.google.common.collect.Iterables.any;
 
 /*
  * The encoding of a DynamicCompositeType column name should be:
@@ -62,19 +58,22 @@ public class DynamicCompositeType extends AbstractCompositeType
     private final Map<Byte, AbstractType<?>> aliases;
 
     // interning instances
-    private static final ConcurrentHashMap<Map<Byte, AbstractType<?>>, DynamicCompositeType> instances = new ConcurrentHashMap<>();
+    private static final Map<Map<Byte, AbstractType<?>>, DynamicCompositeType> instances = new HashMap<Map<Byte, AbstractType<?>>, DynamicCompositeType>();
 
-    public static DynamicCompositeType getInstance(TypeParser parser)
+    public static synchronized DynamicCompositeType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
         return getInstance(parser.getAliasParameters());
     }
 
-    public static DynamicCompositeType getInstance(Map<Byte, AbstractType<?>> aliases)
+    public static synchronized DynamicCompositeType getInstance(Map<Byte, AbstractType<?>> aliases)
     {
         DynamicCompositeType dct = instances.get(aliases);
-        return null == dct
-             ? instances.computeIfAbsent(aliases, DynamicCompositeType::new)
-             : dct;
+        if (dct == null)
+        {
+            dct = new DynamicCompositeType(aliases);
+            instances.put(aliases, dct);
+        }
+        return dct;
     }
 
     private DynamicCompositeType(Map<Byte, AbstractType<?>> aliases)
@@ -124,8 +123,7 @@ public class DynamicCompositeType extends AbstractCompositeType
          * If both types are ReversedType(Type), we need to compare on the wrapped type (which may differ between the two types) to avoid
          * incompatible comparisons being made.
          */
-        if ((comp1 instanceof ReversedType) && (comp2 instanceof ReversedType))
-        {
+        if ((comp1 instanceof ReversedType) && (comp2 instanceof ReversedType)) {
             comp1 = ((ReversedType<?>) comp1).baseType;
             comp2 = ((ReversedType<?>) comp2).baseType;
         }
@@ -200,17 +198,19 @@ public class DynamicCompositeType extends AbstractCompositeType
                 valueStr = ByteBufferUtil.string(value);
                 comparator = TypeParser.parse(valueStr);
             }
-            catch (CharacterCodingException ce)
+            catch (CharacterCodingException ce) 
             {
-                // ByteBufferUtil.string failed.
+                // ByteBufferUtil.string failed. 
                 // Log it here and we'll further throw an exception below since comparator == null
-                logger.error("Failed when decoding the byte buffer in ByteBufferUtil.string()", ce);
+                logger.error("Failed with [{}] when decoding the byte buffer in ByteBufferUtil.string()", 
+                   ce.toString());
             }
             catch (Exception e)
             {
-                // parse failed.
+                // parse failed. 
                 // Log it here and we'll further throw an exception below since comparator == null
-                logger.error("Failed to parse value string \"{}\" with exception:", valueStr, e);
+                logger.error("Failed to parse value string \"{}\" with exception: [{}]", 
+                   valueStr, e.toString());
             }
         }
         else
@@ -254,29 +254,6 @@ public class DynamicCompositeType extends AbstractCompositeType
                 return false;
         }
         return true;
-    }
-
-    @Override
-    public boolean referencesUserType(ByteBuffer name)
-    {
-        return any(aliases.values(), t -> t.referencesUserType(name));
-    }
-
-    @Override
-    public DynamicCompositeType withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        instances.remove(aliases);
-
-        return getInstance(Maps.transformValues(aliases, v -> v.withUpdatedUserType(udt)));
-    }
-
-    @Override
-    public AbstractType<?> expandUserTypes()
-    {
-        return getInstance(Maps.transformValues(aliases, v -> v.expandUserTypes()));
     }
 
     private class DynamicParsedComparator implements ParsedComparator
@@ -404,7 +381,7 @@ public class DynamicCompositeType extends AbstractCompositeType
         }
 
         @Override
-        public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+        public String toJSONString(ByteBuffer buffer, int protocolVersion)
         {
             throw new UnsupportedOperationException();
         }

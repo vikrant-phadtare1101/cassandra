@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,76 +22,63 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import com.codahale.metrics.ExponentiallyDecayingReservoir;
 
 import com.codahale.metrics.Snapshot;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.gms.ApplicationState;
-import org.apache.cassandra.gms.EndpointState;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.gms.VersionedValue;
-import org.apache.cassandra.net.LatencySubscribers;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MBeanWrapper;
 
+
 /**
  * A dynamic snitch that sorts endpoints by latency with an adapted phi failure detector
  */
-public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements LatencySubscribers.Subscriber, DynamicEndpointSnitchMBean
+public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILatencySubscriber, DynamicEndpointSnitchMBean
 {
     private static final boolean USE_SEVERITY = !Boolean.getBoolean("cassandra.ignore_dynamic_snitch_severity");
 
     private static final double ALPHA = 0.75; // set to 0.75 to make EDS more biased to towards the newer values
     private static final int WINDOW_SIZE = 100;
 
-    private volatile int dynamicUpdateInterval = DatabaseDescriptor.getDynamicUpdateInterval();
-    private volatile int dynamicResetInterval = DatabaseDescriptor.getDynamicResetInterval();
-    private volatile double dynamicBadnessThreshold = DatabaseDescriptor.getDynamicBadnessThreshold();
+    private final int UPDATE_INTERVAL_IN_MS = DatabaseDescriptor.getDynamicUpdateInterval();
+    private final int RESET_INTERVAL_IN_MS = DatabaseDescriptor.getDynamicResetInterval();
+    private final double BADNESS_THRESHOLD = DatabaseDescriptor.getDynamicBadnessThreshold();
 
     // the score for a merged set of endpoints must be this much worse than the score for separate endpoints to
     // warrant not merging two ranges into a single range
-    private static final double RANGE_MERGING_PREFERENCE = 1.5;
+    private double RANGE_MERGING_PREFERENCE = 1.5;
 
     private String mbeanName;
     private boolean registered = false;
 
-    private volatile HashMap<InetAddressAndPort, Double> scores = new HashMap<>();
-    private final ConcurrentHashMap<InetAddressAndPort, ExponentiallyDecayingReservoir> samples = new ConcurrentHashMap<>();
+    private volatile HashMap<InetAddress, Double> scores = new HashMap<>();
+    private final ConcurrentHashMap<InetAddress, ExponentiallyDecayingReservoir> samples = new ConcurrentHashMap<>();
 
     public final IEndpointSnitch subsnitch;
-
-    private volatile ScheduledFuture<?> updateSchedular;
-    private volatile ScheduledFuture<?> resetSchedular;
-
-    private final Runnable update;
-    private final Runnable reset;
 
     public DynamicEndpointSnitch(IEndpointSnitch snitch)
     {
         this(snitch, null);
     }
-
     public DynamicEndpointSnitch(IEndpointSnitch snitch, String instance)
     {
         mbeanName = "org.apache.cassandra.db:type=DynamicEndpointSnitch";
         if (instance != null)
             mbeanName += ",instance=" + instance;
         subsnitch = snitch;
-        update = new Runnable()
+        Runnable update = new Runnable()
         {
             public void run()
             {
                 updateScores();
             }
         };
-        reset = new Runnable()
+        Runnable reset = new Runnable()
         {
             public void run()
             {
@@ -100,54 +87,18 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
                 reset();
             }
         };
-
-        if (DatabaseDescriptor.isDaemonInitialized())
-        {
-            updateSchedular = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(update, dynamicUpdateInterval, dynamicUpdateInterval, TimeUnit.MILLISECONDS);
-            resetSchedular = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(reset, dynamicResetInterval, dynamicResetInterval, TimeUnit.MILLISECONDS);
-            registerMBean();
-        }
-    }
-
-    /**
-     * Update configuration from {@link DatabaseDescriptor} and estart the update-scheduler and reset-scheduler tasks
-     * if the configured rates for these tasks have changed.
-     */
-    public void applyConfigChanges()
-    {
-        if (dynamicUpdateInterval != DatabaseDescriptor.getDynamicUpdateInterval())
-        {
-            dynamicUpdateInterval = DatabaseDescriptor.getDynamicUpdateInterval();
-            if (DatabaseDescriptor.isDaemonInitialized())
-            {
-                updateSchedular.cancel(false);
-                updateSchedular = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(update, dynamicUpdateInterval, dynamicUpdateInterval, TimeUnit.MILLISECONDS);
-            }
-        }
-
-        if (dynamicResetInterval != DatabaseDescriptor.getDynamicResetInterval())
-        {
-            dynamicResetInterval = DatabaseDescriptor.getDynamicResetInterval();
-            if (DatabaseDescriptor.isDaemonInitialized())
-            {
-                resetSchedular.cancel(false);
-                resetSchedular = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(reset, dynamicResetInterval, dynamicResetInterval, TimeUnit.MILLISECONDS);
-            }
-        }
-
-        dynamicBadnessThreshold = DatabaseDescriptor.getDynamicBadnessThreshold();
-    }
+        ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(update, UPDATE_INTERVAL_IN_MS, UPDATE_INTERVAL_IN_MS, TimeUnit.MILLISECONDS);
+        ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(reset, RESET_INTERVAL_IN_MS, RESET_INTERVAL_IN_MS, TimeUnit.MILLISECONDS);
+        registerMBean();
+   }
 
     private void registerMBean()
     {
         MBeanWrapper.instance.registerMBean(this, mbeanName);
     }
 
-    public void close()
+    public void unregisterMBean()
     {
-        updateSchedular.cancel(false);
-        resetSchedular.cancel(false);
-
         MBeanWrapper.instance.unregisterMBean(mbeanName);
     }
 
@@ -157,55 +108,72 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
         subsnitch.gossiperStarting();
     }
 
-    public String getRack(InetAddressAndPort endpoint)
+    public String getRack(InetAddress endpoint)
     {
         return subsnitch.getRack(endpoint);
     }
 
-    public String getDatacenter(InetAddressAndPort endpoint)
+    public String getDatacenter(InetAddress endpoint)
     {
         return subsnitch.getDatacenter(endpoint);
     }
 
-    @Override
-    public <C extends ReplicaCollection<? extends C>> C sortedByProximity(final InetAddressAndPort address, C unsortedAddresses)
+    public List<InetAddress> getSortedListByProximity(final InetAddress address, Collection<InetAddress> addresses)
     {
-        assert address.equals(FBUtilities.getBroadcastAddressAndPort()); // we only know about ourself
-        return dynamicBadnessThreshold == 0
-                ? sortedByProximityWithScore(address, unsortedAddresses)
-                : sortedByProximityWithBadness(address, unsortedAddresses);
+        List<InetAddress> list = new ArrayList<InetAddress>(addresses);
+        sortByProximity(address, list);
+        return list;
     }
 
-    private <C extends ReplicaCollection<? extends C>> C sortedByProximityWithScore(final InetAddressAndPort address, C unsortedAddresses)
+    @Override
+    public void sortByProximity(final InetAddress address, List<InetAddress> addresses)
+    {
+        assert address.equals(FBUtilities.getBroadcastAddress()); // we only know about ourself
+        if (BADNESS_THRESHOLD == 0)
+        {
+            sortByProximityWithScore(address, addresses);
+        }
+        else
+        {
+            sortByProximityWithBadness(address, addresses);
+        }
+    }
+
+    private void sortByProximityWithScore(final InetAddress address, List<InetAddress> addresses)
     {
         // Scores can change concurrently from a call to this method. But Collections.sort() expects
         // its comparator to be "stable", that is 2 endpoint should compare the same way for the duration
         // of the sort() call. As we copy the scores map on write, it is thus enough to alias the current
         // version of it during this call.
-        final HashMap<InetAddressAndPort, Double> scores = this.scores;
-        return unsortedAddresses.sorted((r1, r2) -> compareEndpoints(address, r1, r2, scores));
+        final HashMap<InetAddress, Double> scores = this.scores;
+        Collections.sort(addresses, new Comparator<InetAddress>()
+        {
+            public int compare(InetAddress a1, InetAddress a2)
+            {
+                return compareEndpoints(address, a1, a2, scores);
+            }
+        });
     }
 
-    private <C extends ReplicaCollection<? extends C>> C sortedByProximityWithBadness(final InetAddressAndPort address, C replicas)
+    private void sortByProximityWithBadness(final InetAddress address, List<InetAddress> addresses)
     {
-        if (replicas.size() < 2)
-            return replicas;
+        if (addresses.size() < 2)
+            return;
 
-        // TODO: avoid copy
-        replicas = subsnitch.sortedByProximity(address, replicas);
-        HashMap<InetAddressAndPort, Double> scores = this.scores; // Make sure the score don't change in the middle of the loop below
+        subsnitch.sortByProximity(address, addresses);
+        HashMap<InetAddress, Double> scores = this.scores; // Make sure the score don't change in the middle of the loop below
                                                            // (which wouldn't really matter here but its cleaner that way).
-        ArrayList<Double> subsnitchOrderedScores = new ArrayList<>(replicas.size());
-        for (Replica replica : replicas)
+        ArrayList<Double> subsnitchOrderedScores = new ArrayList<>(addresses.size());
+        for (InetAddress inet : addresses)
         {
-            Double score = scores.get(replica.endpoint());
+            Double score = scores.get(inet);
             if (score == null)
-                score = 0.0;
+                continue;
             subsnitchOrderedScores.add(score);
         }
 
         // Sort the scores and then compare them (positionally) to the scores in the subsnitch order.
-        // If any of the subsnitch-ordered scores exceed the optimal/sorted score by dynamicBadnessThreshold, use
+        // If any of the subsnitch-ordered scores exceed the optimal/sorted score by BADNESS_THRESHOLD, use
         // the score-sorted ordering instead of the subsnitch ordering.
         ArrayList<Double> sortedScores = new ArrayList<>(subsnitchOrderedScores);
         Collections.sort(sortedScores);
@@ -213,20 +181,19 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
         Iterator<Double> sortedScoreIterator = sortedScores.iterator();
         for (Double subsnitchScore : subsnitchOrderedScores)
         {
-            if (subsnitchScore > (sortedScoreIterator.next() * (1.0 + dynamicBadnessThreshold)))
+            if (subsnitchScore > (sortedScoreIterator.next() * (1.0 + BADNESS_THRESHOLD)))
             {
-                return sortedByProximityWithScore(address, replicas);
+                sortByProximityWithScore(address, addresses);
+                return;
             }
         }
-
-        return replicas;
     }
 
     // Compare endpoints given an immutable snapshot of the scores
-    private int compareEndpoints(InetAddressAndPort target, Replica a1, Replica a2, Map<InetAddressAndPort, Double> scores)
+    private int compareEndpoints(InetAddress target, InetAddress a1, InetAddress a2, Map<InetAddress, Double> scores)
     {
-        Double scored1 = scores.get(a1.endpoint());
-        Double scored2 = scores.get(a2.endpoint());
+        Double scored1 = scores.get(a1);
+        Double scored2 = scores.get(a2);
         
         if (scored1 == null)
         {
@@ -246,7 +213,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
             return 1;
     }
 
-    public int compareEndpoints(InetAddressAndPort target, Replica a1, Replica a2)
+    public int compareEndpoints(InetAddress target, InetAddress a1, InetAddress a2)
     {
         // That function is fundamentally unsafe because the scores can change at any time and so the result of that
         // method is not stable for identical arguments. This is why we don't rely on super.sortByProximity() in
@@ -254,7 +221,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
         throw new UnsupportedOperationException("You shouldn't wrap the DynamicEndpointSnitch (within itself or otherwise)");
     }
 
-    public void receiveTiming(InetAddressAndPort host, long latency, TimeUnit unit) // this is cheap
+    public void receiveTiming(InetAddress host, long latency) // this is cheap
     {
         ExponentiallyDecayingReservoir sample = samples.get(host);
         if (sample == null)
@@ -264,47 +231,47 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
             if (sample == null)
                 sample = maybeNewSample;
         }
-        sample.update(unit.toMillis(latency));
+        sample.update(latency);
     }
 
     private void updateScores() // this is expensive
     {
-        if (!StorageService.instance.isGossipActive())
+        if (!StorageService.instance.isInitialized()) 
             return;
         if (!registered)
         {
             if (MessagingService.instance() != null)
             {
-                MessagingService.instance().latencySubscribers.subscribe(this);
+                MessagingService.instance().register(this);
                 registered = true;
             }
 
         }
         double maxLatency = 1;
 
-        Map<InetAddressAndPort, Snapshot> snapshots = new HashMap<>(samples.size());
-        for (Map.Entry<InetAddressAndPort, ExponentiallyDecayingReservoir> entry : samples.entrySet())
+        Map<InetAddress, Snapshot> snapshots = new HashMap<>(samples.size());
+        for (Map.Entry<InetAddress, ExponentiallyDecayingReservoir> entry : samples.entrySet())
         {
             snapshots.put(entry.getKey(), entry.getValue().getSnapshot());
         }
 
         // We're going to weight the latency for each host against the worst one we see, to
         // arrive at sort of a 'badness percentage' for them. First, find the worst for each:
-        HashMap<InetAddressAndPort, Double> newScores = new HashMap<>();
-        for (Map.Entry<InetAddressAndPort, Snapshot> entry : snapshots.entrySet())
+        HashMap<InetAddress, Double> newScores = new HashMap<>();
+        for (Map.Entry<InetAddress, Snapshot> entry : snapshots.entrySet())
         {
             double mean = entry.getValue().getMedian();
             if (mean > maxLatency)
                 maxLatency = mean;
         }
         // now make another pass to do the weighting based on the maximums we found before
-        for (Map.Entry<InetAddressAndPort, Snapshot> entry : snapshots.entrySet())
+        for (Map.Entry<InetAddress, Snapshot> entry : snapshots.entrySet())
         {
             double score = entry.getValue().getMedian() / maxLatency;
             // finally, add the severity without any weighting, since hosts scale this relative to their own load and the size of the task causing the severity.
             // "Severity" is basically a measure of compaction activity (CASSANDRA-3722).
             if (USE_SEVERITY)
-                score += getSeverity(entry.getKey());
+                score += StorageService.instance.getSeverity(entry.getKey());
             // lowest score (least amount of badness) wins.
             newScores.put(entry.getKey(), score);
         }
@@ -318,25 +285,20 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
 
     public Map<InetAddress, Double> getScores()
     {
-        return scores.entrySet().stream().collect(Collectors.toMap(address -> address.getKey().address, Map.Entry::getValue));
-    }
-
-    public Map<InetAddressAndPort, Double> getScoresWithPort()
-    {
         return scores;
     }
 
     public int getUpdateInterval()
     {
-        return dynamicUpdateInterval;
+        return UPDATE_INTERVAL_IN_MS;
     }
     public int getResetInterval()
     {
-        return dynamicResetInterval;
+        return RESET_INTERVAL_IN_MS;
     }
     public double getBadnessThreshold()
     {
-        return dynamicBadnessThreshold;
+        return BADNESS_THRESHOLD;
     }
 
     public String getSubsnitchClassName()
@@ -346,7 +308,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
 
     public List<Double> dumpTimings(String hostname) throws UnknownHostException
     {
-        InetAddressAndPort host = InetAddressAndPort.getByName(hostname);
+        InetAddress host = InetAddress.getByName(hostname);
         ArrayList<Double> timings = new ArrayList<Double>();
         ExponentiallyDecayingReservoir sample = samples.get(host);
         if (sample != null)
@@ -359,28 +321,15 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
 
     public void setSeverity(double severity)
     {
-        Gossiper.instance.addLocalApplicationState(ApplicationState.SEVERITY, StorageService.instance.valueFactory.severity(severity));
-    }
-
-    private double getSeverity(InetAddressAndPort endpoint)
-    {
-        EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
-        if (state == null)
-            return 0.0;
-
-        VersionedValue event = state.getApplicationState(ApplicationState.SEVERITY);
-        if (event == null)
-            return 0.0;
-
-        return Double.parseDouble(event.value);
+        StorageService.instance.reportManualSeverity(severity);
     }
 
     public double getSeverity()
     {
-        return getSeverity(FBUtilities.getBroadcastAddressAndPort());
+        return StorageService.instance.getSeverity(FBUtilities.getBroadcastAddress());
     }
 
-    public boolean isWorthMergingForRangeQuery(ReplicaCollection<?> merged, ReplicaCollection<?> l1, ReplicaCollection<?> l2)
+    public boolean isWorthMergingForRangeQuery(List<InetAddress> merged, List<InetAddress> l1, List<InetAddress> l2)
     {
         if (!subsnitch.isWorthMergingForRangeQuery(merged, l1, l2))
             return false;
@@ -400,12 +349,12 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
     }
 
     // Return the max score for the endpoint in the provided list, or -1.0 if no node have a score.
-    private double maxScore(ReplicaCollection<?> endpoints)
+    private double maxScore(List<InetAddress> endpoints)
     {
         double maxScore = -1.0;
-        for (Replica replica : endpoints)
+        for (InetAddress endpoint : endpoints)
         {
-            Double score = scores.get(replica.endpoint());
+            Double score = scores.get(endpoint);
             if (score == null)
                 continue;
 
@@ -413,10 +362,5 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
                 maxScore = score;
         }
         return maxScore;
-    }
-
-    public boolean validate(Set<String> datacenters, Set<String> racks)
-    {
-        return subsnitch.validate(datacenters, racks);
     }
 }

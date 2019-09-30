@@ -25,7 +25,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
-import org.apache.cassandra.config.DatabaseDescriptor;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -54,7 +53,6 @@ public class CompactionExecutorTest
     @Before
     public void setup()
     {
-        DatabaseDescriptor.daemonInitialization();
         executor = new TestTaskExecutor();
     }
 

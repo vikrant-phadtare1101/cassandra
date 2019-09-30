@@ -68,6 +68,8 @@ public abstract class MemtablePool
         return cleaner == null ? null : new MemtableCleanerThread<>(this, cleaner);
     }
 
+    public abstract boolean needToCopyOnHeap();
+
     @VisibleForTesting
     public void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {

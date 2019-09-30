@@ -18,7 +18,6 @@
  */
 package org.apache.cassandra.db.marshal;
 
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import static org.junit.Assert.assertSame;
@@ -31,12 +30,6 @@ import org.apache.cassandra.exceptions.SyntaxException;
 
 public class TypeParserTest
 {
-    @BeforeClass
-    public static void initDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     @Test
     public void testParse() throws ConfigurationException, SyntaxException
     {

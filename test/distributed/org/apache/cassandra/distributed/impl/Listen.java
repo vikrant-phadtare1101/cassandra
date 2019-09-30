@@ -18,11 +18,11 @@
 
 package org.apache.cassandra.distributed.impl;
 
-import java.util.function.Consumer;
-
-import org.apache.cassandra.diag.DiagnosticEventService;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import org.apache.cassandra.distributed.api.IListen;
-import org.apache.cassandra.schema.SchemaEvent;
 
 public class Listen implements IListen
 {
@@ -34,8 +34,22 @@ public class Listen implements IListen
 
     public Cancel schema(Runnable onChange)
     {
-        Consumer<SchemaEvent> consumer = event -> onChange.run();
-        DiagnosticEventService.instance().subscribe(SchemaEvent.class, SchemaEvent.SchemaEventType.VERSION_UPDATED, consumer);
-        return () -> DiagnosticEventService.instance().unsubscribe(SchemaEvent.class, consumer);
+        final AtomicBoolean cancel = new AtomicBoolean();
+        instance.isolatedExecutor.execute(() -> {
+            UUID prev = instance.schemaVersion();
+            while (true)
+            {
+                if (cancel.get())
+                    return;
+
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10L));
+
+                UUID cur = instance.schemaVersion();
+                if (!prev.equals(cur))
+                    onChange.run();
+                prev = cur;
+            }
+        });
+        return () -> cancel.set(true);
     }
 }

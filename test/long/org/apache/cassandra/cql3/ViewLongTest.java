@@ -33,19 +33,17 @@ import org.junit.Test;
 import com.datastax.driver.core.Row;
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
 import com.datastax.driver.core.exceptions.WriteTimeoutException;
-import org.apache.cassandra.batchlog.BatchlogManager;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.concurrent.SEPExecutor;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.batchlog.BatchlogManager;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
 
 public class ViewLongTest extends CQLTester
 {
-    ProtocolVersion protocolVersion = ProtocolVersion.V4;
+    int protocolVersion = 4;
     private final List<String> views = new ArrayList<>();
 
     @BeforeClass
@@ -97,7 +95,7 @@ public class ViewLongTest extends CQLTester
         for (int i = 0; i < writers; i++)
         {
             final int writer = i;
-            Thread t = NamedThreadFactory.createThread(new WrappedRunnable()
+            Thread t = new Thread(new WrappedRunnable()
             {
                 public void runMayThrow()
                 {
@@ -135,7 +133,7 @@ public class ViewLongTest extends CQLTester
 
         for (int i = 0; i < writers * insertsPerWriter; i++)
         {
-            if (executeNet(protocolVersion, "SELECT COUNT(*) FROM system.batches").one().getLong(0) == 0)
+            if (executeNet(protocolVersion, "SELECT COUNT(*) FROM system.batchlog").one().getLong(0) == 0)
                 break;
             try
             {
@@ -407,8 +405,8 @@ public class ViewLongTest extends CQLTester
     private void updateViewWithFlush(String query, boolean flush, Object... params) throws Throwable
     {
         executeNet(protocolVersion, query, params);
-        while (!(((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getPendingTaskCount() == 0
-                && ((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getActiveTaskCount() == 0))
+        while (!(((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getPendingTasks() == 0
+                && ((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getActiveCount() == 0))
         {
             Thread.sleep(1);
         }

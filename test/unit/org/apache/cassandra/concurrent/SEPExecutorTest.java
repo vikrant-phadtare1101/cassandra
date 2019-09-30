@@ -29,8 +29,6 @@ import org.junit.Test;
 
 import org.apache.cassandra.utils.FBUtilities;
 
-import static java.util.concurrent.TimeUnit.MINUTES;
-
 public class SEPExecutorTest
 {
     @Test

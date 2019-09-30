@@ -98,16 +98,15 @@ public final class HeapUtils
      */
     private static void logProcessOutput(Process p) throws IOException
     {
-        try (BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream())))
+        BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream()));
+
+        StrBuilder builder = new StrBuilder();
+        String line;
+        while ((line = input.readLine()) != null)
         {
-            StrBuilder builder = new StrBuilder();
-            String line;
-            while ((line = input.readLine()) != null)
-            {
-                builder.appendln(line);
-            }
-            logger.info(builder.toString());
+            builder.appendln(line);
         }
+        logger.info(builder.toString());
     }
 
     /**
@@ -133,7 +132,7 @@ public final class HeapUtils
         String jvmName = ManagementFactory.getRuntimeMXBean().getName();
         try
         {
-            return Long.valueOf(jvmName.split("@")[0]);
+            return Long.parseLong(jvmName.split("@")[0]);
         }
         catch (NumberFormatException e)
         {

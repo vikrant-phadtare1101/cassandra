@@ -20,9 +20,8 @@
  */
 package org.apache.cassandra.db.transform;
 
-import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletionTime;
-import org.apache.cassandra.db.RegularAndStaticColumns;
+import org.apache.cassandra.db.PartitionColumns;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.*;
@@ -84,11 +83,6 @@ public abstract class Transformation<I extends BaseRowIterator<?>>
     }
 
     /**
-     * Applied to the partition key of any rows/unfiltered iterator we are applied to
-     */
-    protected DecoratedKey applyToPartitionKey(DecoratedKey key) { return key; }
-
-    /**
      * Applied to the static row of any rows iterator.
      *
      * NOTE that this is only applied to the first iterator in any sequence of iterators filled by a MoreContents;
@@ -108,17 +102,6 @@ public abstract class Transformation<I extends BaseRowIterator<?>>
     protected DeletionTime applyToDeletion(DeletionTime deletionTime)
     {
         return deletionTime;
-    }
-
-    /**
-     * Applied to the {@code PartitionColumns} of any rows iterator.
-     *
-     * NOTE: same remark than for applyToDeletion: it is only applied to the first iterator in a sequence of iterators
-     * filled by MoreContents.
-     */
-    protected RegularAndStaticColumns applyToPartitionColumns(RegularAndStaticColumns columns)
-    {
-        return columns;
     }
 
 
@@ -162,7 +145,6 @@ public abstract class Transformation<I extends BaseRowIterator<?>>
                ? (UnfilteredRows) iterator
                : new UnfilteredRows(iterator);
     }
-
     static FilteredRows mutable(RowIterator iterator)
     {
         return iterator instanceof FilteredRows
@@ -188,7 +170,7 @@ public abstract class Transformation<I extends BaseRowIterator<?>>
      * Using stacked transformations instead of wrapping would result into returning a single row, since the first
      * iterator will signal the iterator is stopped.
      */
-    static UnfilteredRows wrapIterator(UnfilteredRowIterator iterator, RegularAndStaticColumns columns)
+    static UnfilteredRows wrapIterator(UnfilteredRowIterator iterator, PartitionColumns columns)
     {
         return new UnfilteredRows(iterator, columns);
     }

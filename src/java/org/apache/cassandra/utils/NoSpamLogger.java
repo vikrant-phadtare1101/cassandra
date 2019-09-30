@@ -217,8 +217,7 @@ public class NoSpamLogger
         return NoSpamLogger.this.error(CLOCK.nanoTime(), s, objects);
     }
 
-    public boolean log(Level l, String s, long nowNanos, Object... objects)
-    {
+    public boolean log(Level l, String s, long nowNanos, Object... objects) {
         return NoSpamLogger.this.getStatement(s, minIntervalNanos).log(l, nowNanos, objects);
     }
 
@@ -232,8 +231,7 @@ public class NoSpamLogger
         return NoSpamLogger.this.getStatement(key, s, minIntervalNanos);
     }
 
-    public NoSpamLogStatement getStatement(String s, long minInterval, TimeUnit unit)
-    {
+    public NoSpamLogStatement getStatement(String s, long minInterval, TimeUnit unit) {
         return NoSpamLogger.this.getStatement(s, unit.toNanos(minInterval));
     }
 

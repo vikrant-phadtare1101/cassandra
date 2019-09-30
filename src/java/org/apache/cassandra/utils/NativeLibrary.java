@@ -50,7 +50,7 @@ public final class NativeLibrary
         OTHER;
     }
 
-    public static final OSType osType;
+    private static final OSType osType;
 
     private static final int MCL_CURRENT;
     private static final int MCL_FUTURE;
@@ -73,21 +73,8 @@ public final class NativeLibrary
     private static final NativeLibraryWrapper wrappedLibrary;
     private static boolean jnaLockable = false;
 
-    private static final Field FILE_DESCRIPTOR_FD_FIELD;
-    private static final Field FILE_CHANNEL_FD_FIELD;
-
     static
     {
-        FILE_DESCRIPTOR_FD_FIELD = FBUtilities.getProtectedField(FileDescriptor.class, "fd");
-        try
-        {
-            FILE_CHANNEL_FD_FIELD = FBUtilities.getProtectedField(Class.forName("sun.nio.ch.FileChannelImpl"), "fd");
-        }
-        catch (ClassNotFoundException e)
-        {
-            throw new RuntimeException(e);
-        }
-
         // detect the OS type the JVM is running on and then set the CLibraryWrapper
         // instance to a compatable implementation of CLibraryWrapper for that OS type
         osType = getOsType();
@@ -134,15 +121,11 @@ public final class NativeLibrary
     private static OSType getOsType()
     {
         String osName = System.getProperty("os.name").toLowerCase();
-        if  (osName.contains("linux"))
-            return LINUX;
-        else if (osName.contains("mac"))
+        if (osName.contains("mac"))
             return MAC;
         else if (osName.contains("windows"))
             return WINDOWS;
-
-        logger.warn("the current operating system, {}, is unsupported by cassandra", osName);
-        if (osName.contains("aix"))
+        else if (osName.contains("aix"))
             return AIX;
         else
             // fall back to the Linux impl for all unknown OS types until otherwise implicitly supported as needed
@@ -268,7 +251,7 @@ public final class NativeLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn("posix_fadvise({}, {}) failed, errno ({}).", fd, offset, errno(e));
+            logger.warn(String.format("posix_fadvise(%d, %d) failed, errno (%d).", fd, offset, errno(e)));
         }
     }
 
@@ -290,7 +273,7 @@ public final class NativeLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn("fcntl({}, {}, {}) failed, errno ({}).", fd, command, flags, errno(e));
+            logger.warn(String.format("fcntl(%d, %d, %d) failed, errno (%d).", fd, command, flags, errno(e)));
         }
 
         return result;
@@ -313,7 +296,7 @@ public final class NativeLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn("open({}, O_RDONLY) failed, errno ({}).", path, errno(e));
+            logger.warn(String.format("open(%s, O_RDONLY) failed, errno (%d).", path, errno(e)));
         }
 
         return fd;
@@ -337,7 +320,7 @@ public final class NativeLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            String errMsg = String.format("fsync(%s) failed, errno (%s) %s", fd, errno(e), e.getMessage());
+            String errMsg = String.format("fsync(%s) failed, errno %s", fd, errno(e));
             logger.warn(errMsg);
             throw new FSWriteError(e, errMsg);
         }
@@ -369,9 +352,11 @@ public final class NativeLibrary
 
     public static int getfd(FileChannel channel)
     {
+        Field field = FBUtilities.getProtectedField(channel.getClass(), "fd");
+
         try
         {
-            return getfd((FileDescriptor)FILE_CHANNEL_FD_FIELD.get(channel));
+            return getfd((FileDescriptor)field.get(channel));
         }
         catch (IllegalArgumentException|IllegalAccessException e)
         {
@@ -387,9 +372,11 @@ public final class NativeLibrary
      */
     public static int getfd(FileDescriptor descriptor)
     {
+        Field field = FBUtilities.getProtectedField(descriptor.getClass(), "fd");
+
         try
         {
-            return FILE_DESCRIPTOR_FD_FIELD.getInt(descriptor);
+            return field.getInt(descriptor);
         }
         catch (Exception e)
         {

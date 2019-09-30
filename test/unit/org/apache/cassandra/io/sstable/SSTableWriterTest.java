@@ -20,7 +20,6 @@ package org.apache.cassandra.io.sstable;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.UUID;
 
 import org.junit.Test;
 
@@ -33,12 +32,9 @@ import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
-import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static junit.framework.Assert.fail;
-import static org.apache.cassandra.service.ActiveRepairService.NO_PENDING_REPAIR;
-import static org.apache.cassandra.service.ActiveRepairService.UNREPAIRED_SSTABLE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -57,7 +53,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
         {
             for (int i = 0; i < 10000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer.append(builder.build().unfilteredIterator());
@@ -68,7 +64,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             assertFileCounts(dir.list());
             for (int i = 10000; i < 20000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer.append(builder.build().unfilteredIterator());
@@ -84,7 +80,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
 
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows)
+            if (!FBUtilities.isWindows())
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -112,7 +108,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
         {
             for (int i = 0; i < 10000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer.append(builder.build().unfilteredIterator());
@@ -121,7 +117,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             assertFileCounts(dir.list());
             for (int i = 10000; i < 20000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer.append(builder.build().unfilteredIterator());
@@ -133,7 +129,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             sstable.selfRef().release();
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows)
+            if (!FBUtilities.isWindows())
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -163,7 +159,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
         {
             for (int i = 0; i < 10000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer1.append(builder.build().unfilteredIterator());
@@ -172,7 +168,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             assertFileCounts(dir.list());
             for (int i = 10000; i < 20000; i++)
             {
-                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata(), random(i, 10)).withTimestamp(1);
+                UpdateBuilder builder = UpdateBuilder.create(cfs.metadata, random(i, 10)).withTimestamp(1);
                 for (int j = 0; j < 100; j++)
                     builder.newRow("" + j).add("val", ByteBuffer.allocate(1000));
                 writer2.append(builder.build().unfilteredIterator());
@@ -187,7 +183,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
 
             // These checks don't work on Windows because the writer has the channel still
             // open till .abort() is called (via the builder)
-            if (!FBUtilities.isWindows)
+            if (!FBUtilities.isWindows())
             {
                 LifecycleTransaction.waitForDeletions();
                 assertFileCounts(dir.list());
@@ -217,7 +213,7 @@ public class SSTableWriterTest extends SSTableWriterTestBase
 
         try (SSTableWriter writer1 = getWriter(cfs, dir, txn))
         {
-            UpdateBuilder largeValue = UpdateBuilder.create(cfs.metadata(), "large_value").withTimestamp(1);
+            UpdateBuilder largeValue = UpdateBuilder.create(cfs.metadata, "large_value").withTimestamp(1);
             largeValue.newRow("clustering").add("val", ByteBuffer.allocate(2 * 1024 * 1024));
             writer1.append(largeValue.build().unfilteredIterator());
 
@@ -229,8 +225,8 @@ public class SSTableWriterTest extends SSTableWriterTestBase
             {
                 DecoratedKey dk = Util.dk("large_value");
                 UnfilteredRowIterator rowIter = sstable.iterator(dk,
-                                                                 Slices.ALL,
-                                                                 ColumnFilter.all(cfs.metadata()),
+                                                                 ColumnFilter.all(cfs.metadata),
+                                                                 false,
                                                                  false,
                                                                  SSTableReadsListener.NOOP_LISTENER);
                 while (rowIter.hasNext())
@@ -249,60 +245,4 @@ public class SSTableWriterTest extends SSTableWriterTestBase
         }
     }
 
-    private static void assertValidRepairMetadata(long repairedAt, UUID pendingRepair, boolean isTransient)
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CF_SMALL_MAX_VALUE);
-        File dir = cfs.getDirectories().getDirectoryForNewSSTables();
-        LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.STREAM);
-
-        try (SSTableWriter writer = getWriter(cfs, dir, txn, repairedAt, pendingRepair, isTransient))
-        {
-            // expected
-        }
-        catch (IllegalArgumentException e)
-        {
-            throw new AssertionError("Unexpected IllegalArgumentException", e);
-        }
-
-        txn.abort();
-        LifecycleTransaction.waitForDeletions();
-    }
-
-    private static void assertInvalidRepairMetadata(long repairedAt, UUID pendingRepair, boolean isTransient)
-    {
-        Keyspace keyspace = Keyspace.open(KEYSPACE);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CF_SMALL_MAX_VALUE);
-        File dir = cfs.getDirectories().getDirectoryForNewSSTables();
-        LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.STREAM);
-
-        try (SSTableWriter writer = getWriter(cfs, dir, txn, repairedAt, pendingRepair, isTransient))
-        {
-            fail("Expected IllegalArgumentException");
-        }
-        catch (IllegalArgumentException e)
-        {
-            // expected
-        }
-
-        txn.abort();
-        LifecycleTransaction.waitForDeletions();
-    }
-
-    /**
-     * It should only be possible to create sstables marked transient that also have a pending repair
-     */
-    @Test
-    public void testRepairMetadataValidation()
-    {
-        assertValidRepairMetadata(UNREPAIRED_SSTABLE, NO_PENDING_REPAIR, false);
-        assertValidRepairMetadata(1, NO_PENDING_REPAIR, false);
-        assertValidRepairMetadata(UNREPAIRED_SSTABLE, UUID.randomUUID(), false);
-        assertValidRepairMetadata(UNREPAIRED_SSTABLE, UUID.randomUUID(), true);
-
-        assertInvalidRepairMetadata(UNREPAIRED_SSTABLE, NO_PENDING_REPAIR, true);
-        assertInvalidRepairMetadata(1, UUID.randomUUID(), false);
-        assertInvalidRepairMetadata(1, NO_PENDING_REPAIR, true);
-
-    }
 }

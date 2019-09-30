@@ -26,14 +26,15 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.generate.*;
 import org.apache.cassandra.stress.operations.PartitionOperation;
-import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.Command;
 import org.apache.cassandra.stress.settings.CqlVersion;
 import org.apache.cassandra.stress.settings.StressSettings;
+import org.apache.cassandra.stress.util.Timer;
+import org.apache.cassandra.thrift.SlicePredicate;
+import org.apache.cassandra.thrift.SliceRange;
 
 public abstract class PredefinedOperation extends PartitionOperation
 {
-    public static final byte[] EMPTY_BYTE_ARRAY = {};
     public final Command type;
     private final Distribution columnCount;
     private Object cqlCache;
@@ -97,6 +98,24 @@ public abstract class PredefinedOperation extends PartitionOperation
         int count()
         {
             return indices != null ? indices.length : ub - lb;
+        }
+
+        SlicePredicate predicate()
+        {
+            final SlicePredicate predicate = new SlicePredicate();
+            if (indices == null)
+            {
+                predicate.setSlice_range(new SliceRange()
+                                         .setStart(settings.columns.names.get(lb))
+                                         .setFinish(new byte[] {})
+                                         .setReversed(false)
+                                         .setCount(count())
+                );
+            }
+            else
+                predicate.setColumn_names(select(settings.columns.names));
+            return predicate;
+
         }
     }
 
@@ -165,14 +184,57 @@ public abstract class PredefinedOperation extends PartitionOperation
         switch (type)
         {
             case READ:
-                return new CqlReader(timer, generator, seedManager, settings);
+                switch(settings.mode.style)
+                {
+                    case THRIFT:
+                        return new ThriftReader(timer, generator, seedManager, settings);
+                    case CQL:
+                    case CQL_PREPARED:
+                        return new CqlReader(timer, generator, seedManager, settings);
+                    default:
+                        throw new UnsupportedOperationException();
+                }
+
+
             case COUNTER_READ:
-                return new CqlCounterGetter(timer, generator, seedManager, settings);
+                switch(settings.mode.style)
+                {
+                    case THRIFT:
+                        return new ThriftCounterGetter(timer, generator, seedManager, settings);
+                    case CQL:
+                    case CQL_PREPARED:
+                        return new CqlCounterGetter(timer, generator, seedManager, settings);
+                    default:
+                        throw new UnsupportedOperationException();
+                }
+
             case WRITE:
-                return new CqlInserter(timer, generator, seedManager, settings);
+
+                switch(settings.mode.style)
+                {
+                    case THRIFT:
+                        return new ThriftInserter(timer, generator, seedManager, settings);
+                    case CQL:
+                    case CQL_PREPARED:
+                        return new CqlInserter(timer, generator, seedManager, settings);
+                    default:
+                        throw new UnsupportedOperationException();
+                }
+
             case COUNTER_WRITE:
-                return new CqlCounterAdder(counteradd, timer, generator, seedManager, settings);
+                switch(settings.mode.style)
+                {
+                    case THRIFT:
+                        return new ThriftCounterAdder(counteradd, timer, generator, seedManager, settings);
+                    case CQL:
+                    case CQL_PREPARED:
+                        return new CqlCounterAdder(counteradd, timer, generator, seedManager, settings);
+                    default:
+                        throw new UnsupportedOperationException();
+                }
+
         }
+
         throw new UnsupportedOperationException();
     }
 

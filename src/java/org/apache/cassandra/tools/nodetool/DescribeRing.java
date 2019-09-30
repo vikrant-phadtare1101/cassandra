@@ -18,8 +18,8 @@
 package org.apache.cassandra.tools.nodetool;
 
 import static org.apache.commons.lang3.StringUtils.EMPTY;
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
 
 import java.io.IOException;
 
@@ -39,7 +39,7 @@ public class DescribeRing extends NodeToolCmd
         System.out.println("TokenRange: ");
         try
         {
-            for (String tokenRangeString : probe.describeRing(keyspace, printPort))
+            for (String tokenRangeString : probe.describeRing(keyspace))
             {
                 System.out.println("\t" + tokenRangeString);
             }

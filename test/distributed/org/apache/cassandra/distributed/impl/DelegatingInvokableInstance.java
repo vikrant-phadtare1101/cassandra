@@ -19,6 +19,7 @@
 package org.apache.cassandra.distributed.impl;
 
 import java.io.Serializable;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Future;
 import java.util.function.BiConsumer;

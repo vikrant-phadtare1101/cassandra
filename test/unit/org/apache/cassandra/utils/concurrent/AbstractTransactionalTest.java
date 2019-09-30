@@ -22,7 +22,7 @@ import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.config.DatabaseDescriptor;
 
 @Ignore
@@ -31,7 +31,7 @@ public abstract class AbstractTransactionalTest
     @BeforeClass
     public static void setupDD()
     {
-        DatabaseDescriptor.daemonInitialization();
+        DatabaseDescriptor.setDaemonInitialized();
     }
 
     protected abstract TestableTransaction newTest() throws Exception;

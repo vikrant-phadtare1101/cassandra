@@ -17,21 +17,18 @@
 package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.AbstractCollection;
+import java.util.Collection;
 import java.util.Objects;
-import java.util.function.Function;
-import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 import com.google.common.collect.Iterables;
-import com.google.common.hash.Hasher;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.CollectionType;
-import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Base abstract class for {@code Row} implementations.
@@ -61,19 +58,19 @@ public abstract class AbstractRow implements Row
         return clustering() == Clustering.STATIC_CLUSTERING;
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
-        HashingUtils.updateWithByte(hasher, kind().ordinal());
-        clustering().digest(hasher);
+        FBUtilities.updateWithByte(digest, kind().ordinal());
+        clustering().digest(digest);
 
-        deletion().digest(hasher);
-        primaryKeyLivenessInfo().digest(hasher);
+        deletion().digest(digest);
+        primaryKeyLivenessInfo().digest(digest);
 
         for (ColumnData cd : this)
-            cd.digest(hasher);
+            cd.digest(digest);
     }
 
-    public void validateData(TableMetadata metadata)
+    public void validateData(CFMetaData metadata)
     {
         Clustering clustering = clustering();
         for (int i = 0; i < clustering.size(); i++)
@@ -91,34 +88,22 @@ public abstract class AbstractRow implements Row
             cd.validate();
     }
 
-    public boolean hasInvalidDeletions()
-    {
-        if (primaryKeyLivenessInfo().isExpiring() && (primaryKeyLivenessInfo().ttl() < 0 || primaryKeyLivenessInfo().localExpirationTime() < 0))
-            return true;
-        if (!deletion().time().validate())
-            return true;
-        for (ColumnData cd : this)
-            if (cd.hasInvalidDeletions())
-                return true;
-        return false;
-    }
-
     public String toString()
     {
         return columnData().toString();
     }
 
-    public String toString(TableMetadata metadata)
+    public String toString(CFMetaData metadata)
     {
         return toString(metadata, false);
     }
 
-    public String toString(TableMetadata metadata, boolean fullDetails)
+    public String toString(CFMetaData metadata, boolean fullDetails)
     {
         return toString(metadata, true, fullDetails);
     }
 
-    public String toString(TableMetadata metadata, boolean includeClusterKeys, boolean fullDetails)
+    public String toString(CFMetaData metadata, boolean includeClusterKeys, boolean fullDetails)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("Row");
@@ -167,34 +152,16 @@ public abstract class AbstractRow implements Row
                 }
                 else
                 {
-                    sb.append(cd.column().name).append('=');
-                    ComplexColumnData complexData = (ComplexColumnData) cd;
-                    Function<Cell, String> transform = null;
-                    if (cd.column().type.isCollection())
+                    ComplexColumnData complexData = (ComplexColumnData)cd;
+                    CollectionType ct = (CollectionType)cd.column().type;
+                    sb.append(cd.column().name).append("={");
+                    int i = 0;
+                    for (Cell cell : complexData)
                     {
-                        CollectionType ct = (CollectionType) cd.column().type;
-                        transform = cell -> String.format("%s -> %s",
-                                                  ct.nameComparator().getString(cell.path().get(0)),
-                                                  ct.valueComparator().getString(cell.value()));
-
+                        sb.append(i++ == 0 ? "" : ", ");
+                        sb.append(ct.nameComparator().getString(cell.path().get(0))).append("->").append(ct.valueComparator().getString(cell.value()));
                     }
-                    else if (cd.column().type.isUDT())
-                    {
-                        UserType ut = (UserType)cd.column().type;
-                        transform = cell -> {
-                            Short fId = ut.nameComparator().getSerializer().deserialize(cell.path().get(0));
-                            return String.format("%s -> %s",
-                                                 ut.fieldNameAsString(fId),
-                                                 ut.fieldType(fId).getString(cell.value()));
-                        };
-                    }
-                    else
-                    {
-                        transform = cell -> "";
-                    }
-                    sb.append(StreamSupport.stream(complexData.spliterator(), false)
-                                           .map(transform)
-                                           .collect(Collectors.joining(", ", "{", "}")));
+                    sb.append('}');
                 }
             }
         }

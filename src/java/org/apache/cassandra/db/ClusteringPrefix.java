@@ -19,18 +19,15 @@ package org.apache.cassandra.db;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.*;
-
-import com.google.common.hash.Hasher;
 
 import org.apache.cassandra.cache.IMeasurableMemory;
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -40,10 +37,10 @@ import org.apache.cassandra.utils.ByteBufferUtil;
  * a "kind" that allows us to implement slices with inclusive and exclusive bounds.
  * <p>
  * In practice, {@code ClusteringPrefix} is just the common parts to its 3 main subtype: {@link Clustering} and
- * {@link ClusteringBound}/{@link ClusteringBoundary}, where:
+ * {@link Slice.Bound}/{@link RangeTombstone.Bound}, where:
  *   1) {@code Clustering} represents the clustering values for a row, i.e. the values for it's clustering columns.
- *   2) {@code ClusteringBound} represents a bound (start or end) of a slice (of rows) or a range tombstone.
- *   3) {@code ClusteringBoundary} represents the threshold between two adjacent range tombstones.
+ *   2) {@code Slice.Bound} represents a bound (start or end) of a slice (of rows).
+ *   3) {@code RangeTombstoneBoundMarker.Bound} represents a range tombstone marker "bound".
  * See those classes for more details.
  */
 public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
@@ -54,7 +51,7 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
      * The kind of clustering prefix this actually is.
      *
      * The kind {@code STATIC_CLUSTERING} is only implemented by {@link Clustering#STATIC_CLUSTERING} and {@code CLUSTERING} is
-     * implemented by the {@link Clustering} class. The rest is used by {@link ClusteringBound} and {@link ClusteringBoundary}.
+     * implemented by the {@link Clustering} class. The rest is used by {@link Slice.Bound} and {@link RangeTombstone.Bound}.
      */
     public enum Kind
     {
@@ -77,7 +74,7 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
          */
         public final int comparedToClustering;
 
-        Kind(int comparison, int comparedToClustering)
+        private Kind(int comparison, int comparedToClustering)
         {
             this.comparison = comparison;
             this.comparedToClustering = comparedToClustering;
@@ -125,9 +122,8 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
                 case EXCL_START_BOUND:
                 case EXCL_END_BOUND:
                     return true;
-                default:
-                    return false;
             }
+            return false;
         }
 
         public boolean isBoundary()
@@ -137,9 +133,8 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
                 case INCL_END_EXCL_START_BOUNDARY:
                 case EXCL_END_INCL_START_BOUNDARY:
                     return true;
-                default:
-                    return false;
             }
+            return false;
         }
 
         public boolean isStart()
@@ -218,11 +213,11 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
     public ByteBuffer get(int i);
 
     /**
-     * Adds the data of this clustering prefix to the provided Hasher instance.
+     * Adds the data of this clustering prefix to the provided digest.
      *
-     * @param hasher the Hasher instance to which to add this prefix.
+     * @param digest the digest to which to add this prefix.
      */
-    public void digest(Hasher hasher);
+    public void digest(MessageDigest digest);
 
     /**
      * The size of the data hold by this prefix.
@@ -238,24 +233,8 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
      * @param metadata the metadata for the table the clustering prefix is of.
      * @return a human-readable string representation fo this prefix.
      */
-    public String toString(TableMetadata metadata);
+    public String toString(CFMetaData metadata);
 
-    /*
-     * TODO: we should stop using Clustering for partition keys. Maybe we can add
-     * a few methods to DecoratedKey so we don't have to (note that while using a Clustering
-     * allows to use buildBound(), it's actually used for partition keys only when every restriction
-     * is an equal, so we could easily create a specific method for keys for that.
-     */
-    default ByteBuffer serializeAsPartitionKey()
-    {
-        if (size() == 1)
-            return get(0);
-
-        ByteBuffer[] values = new ByteBuffer[size()];
-        for (int i = 0; i < size(); i++)
-            values[i] = get(i);
-        return CompositeType.build(values);
-    }
     /**
      * The values of this prefix as an array.
      * <p>
@@ -280,19 +259,8 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
             }
             else
             {
-                ClusteringBoundOrBoundary.serializer.serialize((ClusteringBoundOrBoundary)clustering, out, version, types);
+                RangeTombstone.Bound.serializer.serialize((RangeTombstone.Bound)clustering, out, version, types);
             }
-        }
-
-        public void skip(DataInputPlus in, int version, List<AbstractType<?>> types) throws IOException
-        {
-            Kind kind = Kind.values()[in.readByte()];
-            // We shouldn't serialize static clusterings
-            assert kind != Kind.STATIC_CLUSTERING;
-            if (kind == Kind.CLUSTERING)
-                Clustering.serializer.skip(in, version, types);
-            else
-                ClusteringBoundOrBoundary.serializer.skipValues(in, kind, version, types);
         }
 
         public ClusteringPrefix deserialize(DataInputPlus in, int version, List<AbstractType<?>> types) throws IOException
@@ -303,7 +271,7 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
             if (kind == Kind.CLUSTERING)
                 return Clustering.serializer.deserialize(in, version, types);
             else
-                return ClusteringBoundOrBoundary.serializer.deserializeValues(in, kind, version, types);
+                return RangeTombstone.Bound.serializer.deserializeValues(in, kind, version, types);
         }
 
         public long serializedSize(ClusteringPrefix clustering, int version, List<AbstractType<?>> types)
@@ -313,7 +281,7 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
             if (clustering.kind() == Kind.CLUSTERING)
                 return 1 + Clustering.serializer.serializedSize((Clustering)clustering, version, types);
             else
-                return ClusteringBoundOrBoundary.serializer.serializedSize((ClusteringBoundOrBoundary)clustering, version, types);
+                return RangeTombstone.Bound.serializer.serializedSize((RangeTombstone.Bound)clustering, version, types);
         }
 
         void serializeValuesWithoutSize(ClusteringPrefix clustering, DataOutputPlus out, int version, List<AbstractType<?>> types) throws IOException
@@ -380,24 +348,6 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
                 }
             }
             return values;
-        }
-
-        void skipValuesWithoutSize(DataInputPlus in, int size, int version, List<AbstractType<?>> types) throws IOException
-        {
-            // Callers of this method should handle the case where size = 0 (in all case we want to return a special value anyway).
-            assert size > 0;
-            int offset = 0;
-            while (offset < size)
-            {
-                long header = in.readUnsignedVInt();
-                int limit = Math.min(size, offset + 32);
-                while (offset < limit)
-                {
-                    if (!isNull(header, offset) && !isEmpty(header, offset))
-                         types.get(offset).skipValue(in);
-                    offset++;
-                }
-            }
         }
 
         /**
@@ -485,9 +435,9 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
                 this.nextValues = new ByteBuffer[nextSize];
         }
 
-        public int compareNextTo(ClusteringBoundOrBoundary bound) throws IOException
+        public int compareNextTo(Slice.Bound bound) throws IOException
         {
-            if (bound == ClusteringBound.TOP)
+            if (bound == Slice.Bound.TOP)
                 return -1;
 
             for (int i = 0; i < bound.size(); i++)
@@ -539,11 +489,11 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
                 continue;
         }
 
-        public ClusteringBoundOrBoundary deserializeNextBound() throws IOException
+        public RangeTombstone.Bound deserializeNextBound() throws IOException
         {
             assert !nextIsRow;
             deserializeAll();
-            ClusteringBoundOrBoundary bound = ClusteringBoundOrBoundary.create(nextKind, nextValues);
+            RangeTombstone.Bound bound = new RangeTombstone.Bound(nextKind, nextValues);
             nextValues = null;
             return bound;
         }
@@ -552,7 +502,7 @@ public interface ClusteringPrefix extends IMeasurableMemory, Clusterable
         {
             assert nextIsRow;
             deserializeAll();
-            Clustering clustering = Clustering.make(nextValues);
+            Clustering clustering = new Clustering(nextValues);
             nextValues = null;
             return clustering;
         }
