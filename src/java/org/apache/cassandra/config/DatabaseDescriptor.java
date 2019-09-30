@@ -51,6 +51,8 @@ import org.apache.cassandra.auth.IRoleManager;
 import org.apache.cassandra.config.Config.CommitLogSync;
 import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions.InternodeEncryption;
 import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.db.commitlog.CommitLogSegmentManagerFactory;
+import org.apache.cassandra.db.commitlog.DefaultCommitLogSegmentMgrFactory;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.FSWriteError;
@@ -138,6 +140,8 @@ public class DatabaseDescriptor
     private static boolean clientInitialized;
     private static boolean toolInitialized;
     private static boolean daemonInitialized;
+
+    private static CommitLogSegmentManagerFactory commitLogSegmentMgrFactory = new DefaultCommitLogSegmentMgrFactory();
 
     private static final int searchConcurrencyFactor = Integer.parseInt(System.getProperty(Config.PROPERTY_PREFIX + "search_concurrency_factor", "1"));
 
@@ -1420,11 +1424,6 @@ public class DatabaseDescriptor
     public static String getAllocateTokensForKeyspace()
     {
         return System.getProperty(Config.PROPERTY_PREFIX + "allocate_tokens_for_keyspace", conf.allocate_tokens_for_keyspace);
-    }
-
-    public static Integer getAllocateTokensForLocalRf()
-    {
-        return conf.allocate_tokens_for_local_replication_factor;
     }
 
     public static Collection<String> tokensFromString(String tokenString)
@@ -2922,5 +2921,15 @@ public class DatabaseDescriptor
     {
         logger.info("Setting use_offheap_merkle_trees to {}", value);
         conf.use_offheap_merkle_trees = value;
+    }
+
+    public static CommitLogSegmentManagerFactory getCommitLogSegmentMgrFactory()
+    {
+        return commitLogSegmentMgrFactory;
+    }
+
+    public static void setCommitLogSegmentMgrFactory(CommitLogSegmentManagerFactory commitLogSegmentMgrFactory)
+    {
+        DatabaseDescriptor.commitLogSegmentMgrFactory = commitLogSegmentMgrFactory;
     }
 }
