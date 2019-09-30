@@ -16,35 +16,36 @@
  * limitations under the License.
  */
 
-package org.apache.cassandra.distributed.api;
+package org.apache.cassandra.db.compaction;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
+import java.util.function.LongPredicate;
 
-import java.util.function.BiConsumer;
+import org.apache.cassandra.db.AbstractCompactionController;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.schema.CompactionParams;
 
-public interface IMessageFilters
+public class PurgingCompactionController<T extends Compactable> extends AbstractCompactionController
 {
-    public interface Filter
+
+    public PurgingCompactionController(ColumnFamilyStore cfs, CompactionParams.TombstoneOption tombstoneOption)
     {
-        Filter restore();
-        Filter drop();
+        super(cfs, Integer.MAX_VALUE, tombstoneOption);
     }
 
-    public interface Builder
+    public boolean compactingRepaired()
     {
-        Builder from(int ... nums);
-        Builder to(int ... nums);
-        Filter ready();
-        Filter drop();
+        return false;
     }
 
-    Builder verbs(Verb ... verbs);
-    Builder allVerbs();
-    void reset();
+    public LongPredicate getPurgeEvaluator(DecoratedKey key)
+    {
+        // purge all tombstones
+        return (time) -> true;
+    }
 
-    // internal
-    boolean permit(IInstance from, IInstance to, int verb);
+    public void close() throws Exception
+    {
 
+    }
 }

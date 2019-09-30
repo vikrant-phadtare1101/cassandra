@@ -16,35 +16,22 @@
  * limitations under the License.
  */
 
-package org.apache.cassandra.distributed.api;
+package org.apache.cassandra.db.compaction;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 
-import java.util.function.BiConsumer;
-
-public interface IMessageFilters
+public interface Compactable
 {
-    public interface Filter
-    {
-        Filter restore();
-        Filter drop();
-    }
+    public boolean isRepaired();
 
-    public interface Builder
-    {
-        Builder from(int ... nums);
-        Builder to(int ... nums);
-        Filter ready();
-        Filter drop();
-    }
+    public DecoratedKey first();
 
-    Builder verbs(Verb ... verbs);
-    Builder allVerbs();
-    void reset();
+    public DecoratedKey last();
 
-    // internal
-    boolean permit(IInstance from, IInstance to, int verb);
+    public long getMinTimestamp();
 
+    public long getMaxTimestamp();
+
+    public StatsMetadata getSSTableMetadata();
 }

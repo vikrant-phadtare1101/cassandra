@@ -77,6 +77,7 @@ import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.concurrent.Ref;
 import org.apache.cassandra.utils.concurrent.SelfRefCounted;
 import org.apache.cassandra.utils.BloomFilterSerializer;
+import org.apache.cassandra.db.compaction.Compactable;
 
 import static org.apache.cassandra.db.Directories.SECONDARY_INDEX_NAME_SEPARATOR;
 
@@ -139,7 +140,7 @@ import static org.apache.cassandra.db.Directories.SECONDARY_INDEX_NAME_SEPARATOR
  *
  * TODO: fill in details about Tracker and lifecycle interactions for tools, and for compaction strategies
  */
-public abstract class SSTableReader extends SSTable implements SelfRefCounted<SSTableReader>
+public abstract class SSTableReader extends SSTable implements SelfRefCounted<SSTableReader>, Compactable
 {
     private static final Logger logger = LoggerFactory.getLogger(SSTableReader.class);
 
@@ -1231,6 +1232,14 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         }
     }
 
+    public DecoratedKey first() {
+        return this.first;
+    }
+
+    public DecoratedKey last() {
+        return this.last;
+    }
+
     public RestorableMeter getReadMeter()
     {
         return readMeter;
@@ -1943,9 +1952,9 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         return sstableMetadata.estimatedPartitionSize;
     }
 
-    public EstimatedHistogram getEstimatedCellPerPartitionCount()
+    public EstimatedHistogram getEstimatedColumnCount()
     {
-        return sstableMetadata.estimatedCellPerPartitionCount;
+        return sstableMetadata.estimatedColumnCount;
     }
 
     public double getEstimatedDroppableTombstoneRatio(int gcBefore)
@@ -2496,8 +2505,13 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public static void shutdownBlocking(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {
-
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, syncExecutor);
+        if (syncExecutor != null)
+        {
+            syncExecutor.shutdownNow();
+            syncExecutor.awaitTermination(timeout, unit);
+            if (!syncExecutor.isTerminated())
+                throw new TimeoutException();
+        }
         resetTidying();
     }
 }
