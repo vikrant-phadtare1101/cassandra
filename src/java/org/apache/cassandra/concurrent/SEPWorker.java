@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.concurrent;
 
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -103,7 +102,6 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
                 // if we do have tasks assigned, nobody will change our state so we can simply set it to WORKING
                 // (which is also a state that will never be interrupted externally)
                 set(Work.WORKING);
-                boolean shutdown;
                 while (true)
                 {
                     // before we process any task, we maybe schedule a new worker _to our executor only_; this
@@ -116,19 +114,13 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
                     task = null;
 
                     // if we're shutting down, or we fail to take a permit, we don't perform any more work
-                    if ((shutdown = assigned.shuttingDown) || !assigned.takeTaskPermit())
+                    if (!assigned.takeTaskPermit())
                         break;
                     task = assigned.tasks.poll();
                 }
 
                 // return our work permit, and maybe signal shutdown
                 assigned.returnWorkPermit();
-                if (shutdown)
-                {
-                    if (assigned.getActiveTaskCount() == 0)
-                        assigned.shutdown.signalAll();
-                    return;
-                }
                 assigned = null;
 
                 // try to immediately reassign ourselves some work; if we fail, start spinning
@@ -139,22 +131,24 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
         catch (Throwable t)
         {
             JVMStabilityInspector.inspectThrowable(t);
-            while (true)
+            if (task != null)
+                logger.error("Failed to execute task, unexpected exception killed worker: {}", t);
+            else
+                logger.error("Unexpected exception killed worker: {}", t);
+        }
+        finally
+        {
+            if (assigned != null)
+                assigned.returnWorkPermit();
+
+            do
             {
                 if (get().assigned != null)
                 {
-                    assigned = get().assigned;
+                    get().assigned.returnWorkPermit();
                     set(Work.WORKING);
                 }
-                if (assign(Work.STOPPED, true))
-                    break;
-            }
-            if (assigned != null)
-                assigned.returnWorkPermit();
-            if (task != null)
-                logger.error("Failed to execute task, unexpected exception killed worker", t);
-            else
-                logger.error("Unexpected exception killed worker", t);
+            } while (!assign(Work.STOPPED, true));
         }
     }
 
@@ -244,7 +238,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
         // we should always have a thread about to wake up, but most threads are sleeping
         long sleep = 10000L * pool.spinningCount.get();
         sleep = Math.min(1000000, sleep);
-        sleep *= ThreadLocalRandom.current().nextDouble();
+        sleep *= Math.random();
         sleep = Math.max(10000, sleep);
 
         long start = System.nanoTime();

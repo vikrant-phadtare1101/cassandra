@@ -20,10 +20,9 @@ package org.apache.cassandra.cql3;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.Term.Raw;
 import org.apache.cassandra.cql3.restrictions.Restriction;
 import org.apache.cassandra.cql3.restrictions.SingleColumnRestriction;
@@ -42,14 +41,14 @@ import static org.apache.cassandra.cql3.statements.RequestValidations.invalidReq
  * a value (term). For example, {@code <key> > "start" or "colname1" = "somevalue"}.
  *
  */
-public final class SingleColumnRelation extends Relation
+public class SingleColumnRelation extends Relation
 {
-    private final ColumnMetadata.Raw entity;
+    private final ColumnDefinition.Raw entity;
     private final Term.Raw mapKey;
     private final Term.Raw value;
     private final List<Term.Raw> inValues;
 
-    private SingleColumnRelation(ColumnMetadata.Raw entity, Term.Raw mapKey, Operator type, Term.Raw value, List<Term.Raw> inValues)
+    private SingleColumnRelation(ColumnDefinition.Raw entity, Term.Raw mapKey, Operator type, Term.Raw value, List<Term.Raw> inValues)
     {
         this.entity = entity;
         this.mapKey = mapKey;
@@ -69,7 +68,7 @@ public final class SingleColumnRelation extends Relation
      * @param type the type that describes how this entity relates to the value.
      * @param value the value being compared.
      */
-    public SingleColumnRelation(ColumnMetadata.Raw entity, Term.Raw mapKey, Operator type, Term.Raw value)
+    public SingleColumnRelation(ColumnDefinition.Raw entity, Term.Raw mapKey, Operator type, Term.Raw value)
     {
         this(entity, mapKey, type, value, null);
     }
@@ -81,7 +80,7 @@ public final class SingleColumnRelation extends Relation
      * @param type the type that describes how this entity relates to the value.
      * @param value the value being compared.
      */
-    public SingleColumnRelation(ColumnMetadata.Raw entity, Operator type, Term.Raw value)
+    public SingleColumnRelation(ColumnDefinition.Raw entity, Operator type, Term.Raw value)
     {
         this(entity, null, type, value);
     }
@@ -96,12 +95,12 @@ public final class SingleColumnRelation extends Relation
         return inValues;
     }
 
-    public static SingleColumnRelation createInRelation(ColumnMetadata.Raw entity, List<Term.Raw> inValues)
+    public static SingleColumnRelation createInRelation(ColumnDefinition.Raw entity, List<Term.Raw> inValues)
     {
         return new SingleColumnRelation(entity, null, Operator.IN, null, inValues);
     }
 
-    public ColumnMetadata.Raw getEntity()
+    public ColumnDefinition.Raw getEntity()
     {
         return entity;
     }
@@ -135,7 +134,7 @@ public final class SingleColumnRelation extends Relation
         }
     }
 
-    public Relation renameIdentifier(ColumnMetadata.Raw from, ColumnMetadata.Raw to)
+    public Relation renameIdentifier(ColumnDefinition.Raw from, ColumnDefinition.Raw to)
     {
         return entity.equals(from)
                ? new SingleColumnRelation(to, mapKey, operator(), value, inValues)
@@ -150,57 +149,37 @@ public final class SingleColumnRelation extends Relation
             entityAsString = String.format("%s[%s]", entityAsString, mapKey);
 
         if (isIN())
-            return String.format("%s IN %s", entityAsString, Tuples.tupleToString(inValues));
+            return String.format("%s IN %s", entityAsString, inValues);
 
         return String.format("%s %s %s", entityAsString, relationType, value);
     }
 
     @Override
-    public int hashCode()
+    protected Restriction newEQRestriction(CFMetaData cfm,
+                                           VariableSpecifications boundNames) throws InvalidRequestException
     {
-        return Objects.hash(relationType, entity, mapKey, value, inValues);
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o)
-            return true;
-
-        if (!(o instanceof SingleColumnRelation))
-            return false;
-
-        SingleColumnRelation scr = (SingleColumnRelation) o;
-        return Objects.equals(entity, scr.entity)
-            && Objects.equals(mapKey, scr.mapKey)
-            && Objects.equals(value, scr.value)
-            && Objects.equals(inValues, scr.inValues);
-    }
-
-    @Override
-    protected Restriction newEQRestriction(TableMetadata table, VariableSpecifications boundNames)
-    {
-        ColumnMetadata columnDef = entity.prepare(table);
+        ColumnDefinition columnDef = entity.prepare(cfm);
         if (mapKey == null)
         {
-            Term term = toTerm(toReceivers(columnDef), value, table.keyspace, boundNames);
+            Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
             return new SingleColumnRestriction.EQRestriction(columnDef, term);
         }
         List<? extends ColumnSpecification> receivers = toReceivers(columnDef);
-        Term entryKey = toTerm(Collections.singletonList(receivers.get(0)), mapKey, table.keyspace, boundNames);
-        Term entryValue = toTerm(Collections.singletonList(receivers.get(1)), value, table.keyspace, boundNames);
+        Term entryKey = toTerm(Collections.singletonList(receivers.get(0)), mapKey, cfm.ksName, boundNames);
+        Term entryValue = toTerm(Collections.singletonList(receivers.get(1)), value, cfm.ksName, boundNames);
         return new SingleColumnRestriction.ContainsRestriction(columnDef, entryKey, entryValue);
     }
 
     @Override
-    protected Restriction newINRestriction(TableMetadata table, VariableSpecifications boundNames)
+    protected Restriction newINRestriction(CFMetaData cfm,
+                                           VariableSpecifications boundNames) throws InvalidRequestException
     {
-        ColumnMetadata columnDef = entity.prepare(table);
+        ColumnDefinition columnDef = entity.prepare(cfm);
         List<? extends ColumnSpecification> receivers = toReceivers(columnDef);
-        List<Term> terms = toTerms(receivers, inValues, table.keyspace, boundNames);
+        List<Term> terms = toTerms(receivers, inValues, cfm.ksName, boundNames);
         if (terms == null)
         {
-            Term term = toTerm(receivers, value, table.keyspace, boundNames);
+            Term term = toTerm(receivers, value, cfm.ksName, boundNames);
             return new SingleColumnRestriction.InRestrictionWithMarker(columnDef, (Lists.Marker) term);
         }
 
@@ -212,12 +191,12 @@ public final class SingleColumnRelation extends Relation
     }
 
     @Override
-    protected Restriction newSliceRestriction(TableMetadata table,
+    protected Restriction newSliceRestriction(CFMetaData cfm,
                                               VariableSpecifications boundNames,
                                               Bound bound,
-                                              boolean inclusive)
+                                              boolean inclusive) throws InvalidRequestException
     {
-        ColumnMetadata columnDef = entity.prepare(table);
+        ColumnDefinition columnDef = entity.prepare(cfm);
 
         if (columnDef.type.referencesDuration())
         {
@@ -227,38 +206,38 @@ public final class SingleColumnRelation extends Relation
             throw invalidRequest("Slice restrictions are not supported on duration columns");
         }
 
-        Term term = toTerm(toReceivers(columnDef), value, table.keyspace, boundNames);
+        Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
         return new SingleColumnRestriction.SliceRestriction(columnDef, bound, inclusive, term);
     }
 
     @Override
-    protected Restriction newContainsRestriction(TableMetadata table,
+    protected Restriction newContainsRestriction(CFMetaData cfm,
                                                  VariableSpecifications boundNames,
                                                  boolean isKey) throws InvalidRequestException
     {
-        ColumnMetadata columnDef = entity.prepare(table);
-        Term term = toTerm(toReceivers(columnDef), value, table.keyspace, boundNames);
+        ColumnDefinition columnDef = entity.prepare(cfm);
+        Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
         return new SingleColumnRestriction.ContainsRestriction(columnDef, term, isKey);
     }
 
     @Override
-    protected Restriction newIsNotRestriction(TableMetadata table,
+    protected Restriction newIsNotRestriction(CFMetaData cfm,
                                               VariableSpecifications boundNames) throws InvalidRequestException
     {
-        ColumnMetadata columnDef = entity.prepare(table);
+        ColumnDefinition columnDef = entity.prepare(cfm);
         // currently enforced by the grammar
         assert value == Constants.NULL_LITERAL : "Expected null literal for IS NOT relation: " + this.toString();
         return new SingleColumnRestriction.IsNotNullRestriction(columnDef);
     }
 
     @Override
-    protected Restriction newLikeRestriction(TableMetadata table, VariableSpecifications boundNames, Operator operator)
+    protected Restriction newLikeRestriction(CFMetaData cfm, VariableSpecifications boundNames, Operator operator) throws InvalidRequestException
     {
         if (mapKey != null)
             throw invalidRequest("%s can't be used with collections.", operator());
 
-        ColumnMetadata columnDef = entity.prepare(table);
-        Term term = toTerm(toReceivers(columnDef), value, table.keyspace, boundNames);
+        ColumnDefinition columnDef = entity.prepare(cfm);
+        Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
 
         return new SingleColumnRestriction.LikeRestriction(columnDef, operator, term);
     }
@@ -269,7 +248,7 @@ public final class SingleColumnRelation extends Relation
      * @return the receivers for the specified relation.
      * @throws InvalidRequestException if the relation is invalid
      */
-    private List<? extends ColumnSpecification> toReceivers(ColumnMetadata columnDef) throws InvalidRequestException
+    private List<? extends ColumnSpecification> toReceivers(ColumnDefinition columnDef) throws InvalidRequestException
     {
         ColumnSpecification receiver = columnDef;
 
@@ -343,5 +322,79 @@ public final class SingleColumnRelation extends Relation
     private boolean canHaveOnlyOneValue()
     {
         return isEQ() || isLIKE() || (isIN() && inValues != null && inValues.size() == 1);
+    }
+
+    @Override
+    public Relation toSuperColumnAdapter()
+    {
+        return new SuperColumnSingleColumnRelation(entity, mapKey, relationType, value);
+    }
+
+    /**
+     * Required for SuperColumn compatibility, in order to map the SuperColumn key restrictions from the regular
+     * column to the collection key one.
+     */
+    private class SuperColumnSingleColumnRelation extends SingleColumnRelation
+    {
+        SuperColumnSingleColumnRelation(ColumnDefinition.Raw entity, Raw mapKey, Operator type, Raw value)
+        {
+            super(entity, mapKey, type, value, inValues);
+        }
+
+        @Override
+        public Restriction newSliceRestriction(CFMetaData cfm,
+                                               VariableSpecifications boundNames,
+                                               Bound bound,
+                                               boolean inclusive) throws InvalidRequestException
+        {
+            ColumnDefinition columnDef = entity.prepare(cfm);
+            if (cfm.isSuperColumnKeyColumn(columnDef))
+            {
+                Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
+                return new SingleColumnRestriction.SuperColumnKeySliceRestriction(cfm.superColumnKeyColumn(), bound, inclusive, term);
+            }
+            else
+            {
+                return super.newSliceRestriction(cfm, boundNames, bound, inclusive);
+            }
+        }
+
+        @Override
+        protected Restriction newEQRestriction(CFMetaData cfm,
+                                               VariableSpecifications boundNames) throws InvalidRequestException
+        {
+            ColumnDefinition columnDef = entity.prepare(cfm);
+            if (cfm.isSuperColumnKeyColumn(columnDef))
+            {
+                Term term = toTerm(toReceivers(columnDef), value, cfm.ksName, boundNames);
+                return new SingleColumnRestriction.SuperColumnKeyEQRestriction(cfm.superColumnKeyColumn(), term);
+            }
+            else
+            {
+                return super.newEQRestriction(cfm, boundNames);
+            }
+        }
+
+        @Override
+        protected Restriction newINRestriction(CFMetaData cfm,
+                                               VariableSpecifications boundNames) throws InvalidRequestException
+        {
+            ColumnDefinition columnDef = entity.prepare(cfm);
+            if (cfm.isSuperColumnKeyColumn(columnDef))
+            {
+                List<? extends ColumnSpecification> receivers = Collections.singletonList(cfm.superColumnKeyColumn());
+                List<Term> terms = toTerms(receivers, inValues, cfm.ksName, boundNames);
+                if (terms == null)
+                {
+                    Term term = toTerm(receivers, value, cfm.ksName, boundNames);
+                    return new SingleColumnRestriction.SuperColumnKeyINRestrictionWithMarkers(cfm.superColumnKeyColumn(), (Lists.Marker) term);
+                }
+                return new SingleColumnRestriction.SuperColumnKeyINRestrictionWithValues(cfm.superColumnKeyColumn(), terms);
+            }
+            else
+            {
+                return super.newINRestriction(cfm, boundNames);
+            }
+        }
     }
 }

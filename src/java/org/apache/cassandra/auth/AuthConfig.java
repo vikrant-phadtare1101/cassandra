@@ -94,16 +94,13 @@ public final class AuthConfig
 
         // authenticator
 
+        IInternodeAuthenticator internodeAuthenticator;
         if (conf.internode_authenticator != null)
-            DatabaseDescriptor.setInternodeAuthenticator(FBUtilities.construct(conf.internode_authenticator, "internode_authenticator"));
+            internodeAuthenticator = FBUtilities.construct(conf.internode_authenticator, "internode_authenticator");
+        else
+            internodeAuthenticator = new AllowAllInternodeAuthenticator();
 
-        // network authorizer
-        INetworkAuthorizer networkAuthorizer = FBUtilities.newNetworkAuthorizer(conf.network_authorizer);
-        DatabaseDescriptor.setNetworkAuthorizer(networkAuthorizer);
-        if (networkAuthorizer.requireAuthorization() && !authenticator.requireAuthentication())
-        {
-            throw new ConfigurationException(conf.network_authorizer + " can't be used with " + conf.authenticator, false);
-        }
+        DatabaseDescriptor.setInternodeAuthenticator(internodeAuthenticator);
 
         // Validate at last to have authenticator, authorizer, role-manager and internode-auth setup
         // in case these rely on each other.
@@ -111,7 +108,6 @@ public final class AuthConfig
         authenticator.validateConfiguration();
         authorizer.validateConfiguration();
         roleManager.validateConfiguration();
-        networkAuthorizer.validateConfiguration();
-        DatabaseDescriptor.getInternodeAuthenticator().validateConfiguration();
+        internodeAuthenticator.validateConfiguration();
     }
 }

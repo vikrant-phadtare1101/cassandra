@@ -26,21 +26,16 @@ import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.distributed.Cluster;
 import org.apache.cassandra.distributed.impl.IInvokableInstance;
 
-import static org.apache.cassandra.distributed.api.Feature.NETWORK;
 import static org.junit.Assert.assertEquals;
-
-import static org.apache.cassandra.net.Verb.READ_REPAIR_REQ;
-import static org.apache.cassandra.net.OutboundConnections.LARGE_MESSAGE_THRESHOLD;
 
 public class DistributedReadWritePathTest extends DistributedTestBase
 {
-
     @Test
     public void coordinatorReadTest() throws Throwable
     {
         try (Cluster cluster = init(Cluster.create(3)))
         {
-            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck)) WITH read_repair='none'");
+            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
             cluster.get(1).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
             cluster.get(2).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 2, 2)");
@@ -56,31 +51,11 @@ public class DistributedReadWritePathTest extends DistributedTestBase
     }
 
     @Test
-    public void largeMessageTest() throws Throwable
-    {
-        try (Cluster cluster = init(Cluster.create(2)))
-        {
-            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v text, PRIMARY KEY (pk, ck))");
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < LARGE_MESSAGE_THRESHOLD ; i++)
-                builder.append('a');
-            String s = builder.toString();
-            cluster.coordinator(1).execute("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, ?)",
-                                           ConsistencyLevel.ALL,
-                                           s);
-            assertRows(cluster.coordinator(1).execute("SELECT * FROM " + KEYSPACE + ".tbl WHERE pk = ?",
-                                                      ConsistencyLevel.ALL,
-                                                      1),
-                       row(1, 1, s));
-        }
-    }
-
-    @Test
     public void coordinatorWriteTest() throws Throwable
     {
         try (Cluster cluster = init(Cluster.create(3)))
         {
-            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck)) WITH read_repair='none'");
+            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
             cluster.coordinator(1).execute("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)",
                                           ConsistencyLevel.QUORUM);
@@ -102,7 +77,7 @@ public class DistributedReadWritePathTest extends DistributedTestBase
     {
         try (Cluster cluster = init(Cluster.create(3)))
         {
-            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck)) WITH read_repair='blocking'");
+            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
             cluster.get(1).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
             cluster.get(2).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
@@ -120,31 +95,9 @@ public class DistributedReadWritePathTest extends DistributedTestBase
     }
 
     @Test
-    public void failingReadRepairTest() throws Throwable
-    {
-        try (Cluster cluster = init(Cluster.create(3)))
-        {
-            cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck)) WITH read_repair='blocking'");
-
-            cluster.get(1).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
-            cluster.get(2).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
-
-            assertRows(cluster.get(3).executeInternal("SELECT * FROM " + KEYSPACE + ".tbl WHERE pk = 1"));
-
-            cluster.verbs(READ_REPAIR_REQ).to(3).drop();
-            assertRows(cluster.coordinator(1).execute("SELECT * FROM " + KEYSPACE + ".tbl WHERE pk = 1",
-                                                     ConsistencyLevel.QUORUM),
-                       row(1, 1, 1));
-
-            // Data was not repaired
-            assertRows(cluster.get(3).executeInternal("SELECT * FROM " + KEYSPACE + ".tbl WHERE pk = 1"));
-        }
-    }
-
-    @Test
     public void writeWithSchemaDisagreement() throws Throwable
     {
-        try (Cluster cluster = init(Cluster.build(3).withConfig(config -> config.with(NETWORK)).start()))
+        try (Cluster cluster = init(Cluster.create(3)))
         {
             cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v1 int, PRIMARY KEY (pk, ck))");
 
@@ -166,15 +119,15 @@ public class DistributedReadWritePathTest extends DistributedTestBase
                 thrown = e;
             }
 
-            Assert.assertTrue(thrown.getMessage().contains("INCOMPATIBLE_SCHEMA from 127.0.0.2"));
-            Assert.assertTrue(thrown.getMessage().contains("INCOMPATIBLE_SCHEMA from 127.0.0.3"));
+            Assert.assertTrue(thrown.getMessage().contains("Exception occurred on node"));
+            Assert.assertTrue(thrown.getCause().getCause().getCause().getMessage().contains("Unknown column v2 during deserialization"));
         }
     }
 
     @Test
     public void readWithSchemaDisagreement() throws Throwable
     {
-        try (Cluster cluster = init(Cluster.create(3, config -> config.with(NETWORK))))
+        try (Cluster cluster = init(Cluster.create(3)))
         {
             cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v1 int, PRIMARY KEY (pk, ck))");
 
@@ -196,12 +149,10 @@ public class DistributedReadWritePathTest extends DistributedTestBase
             {
                 thrown = e;
             }
-
-            Assert.assertTrue(thrown.getMessage().contains("INCOMPATIBLE_SCHEMA from 127.0.0.2"));
-            Assert.assertTrue(thrown.getMessage().contains("INCOMPATIBLE_SCHEMA from 127.0.0.3"));
+            Assert.assertTrue(thrown.getMessage().contains("Exception occurred on node"));
+            Assert.assertTrue(thrown.getCause().getCause().getCause().getMessage().contains("Unknown column v2 during deserialization"));
         }
     }
-
     @Test
     public void simplePagedReadsTest() throws Throwable
     {
@@ -218,6 +169,10 @@ public class DistributedReadWritePathTest extends DistributedTestBase
                                                i, i);
                 results[i] = new Object[] { 1, i, i};
             }
+
+            // First, make sure that non-paged reads are able to fetch the results
+            assertRows(cluster.coordinator(1).execute("SELECT * FROM " + KEYSPACE + ".tbl", ConsistencyLevel.QUORUM),
+                       results);
 
             // Make sure paged read returns same results with different page sizes
             for (int pageSize : new int[] { 1, 2, 3, 5, 10, 20, 50})
@@ -266,7 +221,7 @@ public class DistributedReadWritePathTest extends DistributedTestBase
     public void pagingTests() throws Throwable
     {
         try (Cluster cluster = init(Cluster.create(3));
-             Cluster singleNode = init(Cluster.build(1).withSubnet(1).start()))
+             Cluster singleNode = init(Cluster.create(1)))
         {
             cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
             singleNode.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");

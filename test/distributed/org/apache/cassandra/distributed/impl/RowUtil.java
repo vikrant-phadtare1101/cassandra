@@ -66,7 +66,6 @@ public class RowUtil
 
                                            if (bb != null)
                                                objectRow[i] = columnSpec.type.getSerializer().deserialize(bb);
-
                                        }
                                        return objectRow;
                                    });

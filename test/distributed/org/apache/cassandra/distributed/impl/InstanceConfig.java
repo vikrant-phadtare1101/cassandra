@@ -101,12 +101,10 @@ public class InstanceConfig implements IInstanceConfig
                 .set("concurrent_compactors", 1)
                 .set("memtable_heap_space_in_mb", 10)
                 .set("commitlog_sync", "batch")
-                .set("storage_port", 7012)
+                .set("storage_port", 7010)
                 .set("endpoint_snitch", SimpleSnitch.class.getName())
                 .set("seed_provider", new ParameterizedClass(SimpleSeedProvider.class.getName(),
-                        Collections.singletonMap("seeds", "127.0.0.1:7012")))
-                // required settings for dtest functionality
-                .set("diagnostic_events_enabled", true)
+                        Collections.singletonMap("seeds", "127.0.0.1")))
                 // legacy parameters
                 .forceSet("commitlog_sync_batch_window_in_ms", 1.0);
         this.featureFlags = EnumSet.noneOf(Feature.class);

@@ -25,8 +25,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.Clustering;
 import org.apache.cassandra.db.DecoratedKey;
@@ -45,14 +45,13 @@ import org.apache.cassandra.io.sstable.format.big.BigTableWriter;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
 
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -71,13 +70,12 @@ public class SSTableFlushObserverTest
     @Test
     public void testFlushObserver()
     {
-        TableMetadata cfm =
-            TableMetadata.builder(KS_NAME, CF_NAME)
-                         .addPartitionKeyColumn("id", UTF8Type.instance)
-                         .addRegularColumn("first_name", UTF8Type.instance)
-                         .addRegularColumn("age", Int32Type.instance)
-                         .addRegularColumn("height", LongType.instance)
-                         .build();
+        CFMetaData cfm = CFMetaData.Builder.create(KS_NAME, CF_NAME)
+                                           .addPartitionKey("id", UTF8Type.instance)
+                                           .addRegularColumn("first_name", UTF8Type.instance)
+                                           .addRegularColumn("age", Int32Type.instance)
+                                           .addRegularColumn("height", LongType.instance)
+                                           .build();
 
         LifecycleTransaction transaction = LifecycleTransaction.offline(OperationType.COMPACTION);
         FlushObserver observer = new FlushObserver();
@@ -91,14 +89,14 @@ public class SSTableFlushObserverTest
 
         SSTableFormat.Type sstableFormat = SSTableFormat.Type.current();
 
-        BigTableWriter writer = new BigTableWriter(new Descriptor(sstableFormat.info.getLatestVersion(),
+        BigTableWriter writer = new BigTableWriter(new Descriptor(sstableFormat.info.getLatestVersion().version,
                                                                   directory,
                                                                   KS_NAME, CF_NAME,
                                                                   0,
                                                                   sstableFormat),
-                                                   10L, 0L, null, false, TableMetadataRef.forOfflineTools(cfm),
+                                                   10L, 0L, cfm,
                                                    new MetadataCollector(cfm.comparator).sstableLevel(0),
-                                                   new SerializationHeader(true, cfm, cfm.regularAndStaticColumns(), EncodingStats.NO_STATS),
+                                                   new SerializationHeader(true, cfm, cfm.partitionColumns(), EncodingStats.NO_STATS),
                                                    Collections.singletonList(observer),
                                                    transaction);
 
@@ -163,12 +161,12 @@ public class SSTableFlushObserverTest
     {
         private final Iterator<Unfiltered> rows;
 
-        public RowIterator(TableMetadata cfm, ByteBuffer key, Collection<Unfiltered> content)
+        public RowIterator(CFMetaData cfm, ByteBuffer key, Collection<Unfiltered> content)
         {
             super(cfm,
                   DatabaseDescriptor.getPartitioner().decorateKey(key),
                   DeletionTime.LIVE,
-                  cfm.regularAndStaticColumns(),
+                  cfm.partitionColumns(),
                   BTreeRow.emptyRow(Clustering.STATIC_CLUSTERING),
                   false,
                   EncodingStats.NO_STATS);
@@ -221,8 +219,8 @@ public class SSTableFlushObserverTest
         return rowBuilder.build();
     }
 
-    private static ColumnMetadata getColumn(TableMetadata cfm, String name)
+    private static ColumnDefinition getColumn(CFMetaData cfm, String name)
     {
-        return cfm.getColumn(UTF8Type.instance.fromString(name));
+        return cfm.getColumnDefinition(UTF8Type.instance.fromString(name));
     }
 }

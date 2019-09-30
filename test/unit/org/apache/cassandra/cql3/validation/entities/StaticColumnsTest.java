@@ -125,8 +125,7 @@ public class StaticColumnsTest extends CQLTester
         assertRows(execute("SELECT p, s FROM %s WHERE v = 1"), row(0, 42), row(1, 42));
         assertRows(execute("SELECT p FROM %s WHERE v = 1"), row(0), row(1));
         // We don't support that
-        assertInvalidMessage("Queries using 2ndary indexes don't support selecting only static columns",
-                             "SELECT s FROM %s WHERE v = 1");
+        assertInvalid("SELECT s FROM %s WHERE v = 1");
     }
 
     /**

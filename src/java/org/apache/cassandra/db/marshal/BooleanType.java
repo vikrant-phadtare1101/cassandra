@@ -97,7 +97,7 @@ public class BooleanType extends AbstractType<Boolean>
     }
 
     @Override
-    public int valueLengthIfFixed()
+    protected int valueLengthIfFixed()
     {
         return 1;
     }
