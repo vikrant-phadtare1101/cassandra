@@ -44,7 +44,6 @@ import org.apache.cassandra.net.NoPayload;
 import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.utils.CassandraVersion;
 import io.netty.util.concurrent.FastThreadLocal;
-import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.MBeanWrapper;
 import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.Pair;
@@ -63,8 +62,6 @@ import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
 
 import static org.apache.cassandra.net.NoPayload.noPayload;
 import static org.apache.cassandra.net.Verb.ECHO_REQ;
@@ -2044,12 +2041,5 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         }
 
         return true;
-    }
-
-    @VisibleForTesting
-    public void stopShutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        stop();
-        ExecutorUtils.shutdownAndWait(timeout, unit, executor);
     }
 }
