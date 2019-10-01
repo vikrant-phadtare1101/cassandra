@@ -19,7 +19,6 @@ package org.apache.cassandra.audit;
 
 import java.nio.file.Paths;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.primitives.Ints;
 
 import net.openhft.chronicle.wire.WireOut;
@@ -30,10 +29,6 @@ import org.apache.cassandra.utils.concurrent.WeightedQueue;
 
 public class BinAuditLogger extends BinLogAuditLogger implements IAuditLogger
 {
-    public static final String TYPE = "type";
-    public static final String AUDITLOG_TYPE = "AuditLog";
-    public static final String AUDITLOG_MESSAGE = "message";
-
     public BinAuditLogger()
     {
         // due to the way that IAuditLogger instance are created in AuditLogManager, via reflection, we can't assume
@@ -44,9 +39,7 @@ public class BinAuditLogger extends BinLogAuditLogger implements IAuditLogger
                   auditLoggingOptions.block,
                   auditLoggingOptions.max_queue_weight,
                   auditLoggingOptions.max_log_size,
-                  false,
-                  auditLoggingOptions.archive_command,
-                  auditLoggingOptions.max_archive_retries);
+                  false);
     }
 
     @Override
@@ -58,15 +51,14 @@ public class BinAuditLogger extends BinLogAuditLogger implements IAuditLogger
             return;
         }
 
-        super.logRecord(new Message(auditLogEntry.getLogString()), binLog);
+        super.logRecord(new WeighableMarshallableMessage(auditLogEntry.getLogString()), binLog);
     }
 
-    @VisibleForTesting
-    public static class Message extends BinLog.ReleaseableWriteMarshallable implements WeightedQueue.Weighable
+    static class WeighableMarshallableMessage extends BinLog.ReleaseableWriteMarshallable implements WeightedQueue.Weighable
     {
         private final String message;
 
-        public Message(String message)
+        WeighableMarshallableMessage(String message)
         {
             this.message = message;
         }
@@ -74,8 +66,8 @@ public class BinAuditLogger extends BinLogAuditLogger implements IAuditLogger
         @Override
         public void writeMarshallable(WireOut wire)
         {
-            wire.write(TYPE).text(AUDITLOG_TYPE);
-            wire.write(AUDITLOG_MESSAGE).text(message);
+            wire.write("type").text("AuditLog");
+            wire.write("message").text(message);
         }
 
         @Override

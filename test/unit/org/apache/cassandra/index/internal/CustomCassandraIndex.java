@@ -28,8 +28,6 @@ import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
-import com.google.common.collect.ImmutableSet;
-
 import org.apache.cassandra.index.TargetParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +36,7 @@ import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.cql3.Operator;
-import org.apache.cassandra.cql3.statements.schema.IndexTarget;
+import org.apache.cassandra.cql3.statements.IndexTarget;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.filter.RowFilter;
@@ -59,6 +57,7 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.concurrent.Refs;
 
 import static org.apache.cassandra.index.internal.CassandraIndex.getFunctions;
@@ -206,7 +205,7 @@ public class CustomCassandraIndex implements Index
 
     public long getEstimatedResultRows()
     {
-        return indexCfs.getMeanEstimatedCellPerPartitionCount();
+        return indexCfs.getMeanColumns();
     }
 
     /**
@@ -594,8 +593,8 @@ public class CustomCassandraIndex implements Index
     {
         // interrupt in-progress compactions
         Collection<ColumnFamilyStore> cfss = Collections.singleton(indexCfs);
-        CompactionManager.instance.interruptCompactionForCFs(cfss, (sstable) -> true, true);
-        CompactionManager.instance.waitForCessation(cfss, (sstable) -> true);
+        CompactionManager.instance.interruptCompactionForCFs(cfss, true);
+        CompactionManager.instance.waitForCessation(cfss);
         indexCfs.keyspace.writeOrder.awaitNewBarrier();
         indexCfs.forceBlockingFlush();
         indexCfs.readOrdering.awaitNewBarrier();
@@ -642,8 +641,7 @@ public class CustomCassandraIndex implements Index
 
             SecondaryIndexBuilder builder = new CollatedViewIndexBuilder(baseCfs,
                                                                          Collections.singleton(this),
-                                                                         new ReducingKeyIterator(sstables),
-                                                                         ImmutableSet.copyOf(sstables));
+                                                                         new ReducingKeyIterator(sstables));
             Future<?> future = CompactionManager.instance.submitIndexBuild(builder);
             FBUtilities.waitOnFuture(future);
             indexCfs.forceBlockingFlush();
