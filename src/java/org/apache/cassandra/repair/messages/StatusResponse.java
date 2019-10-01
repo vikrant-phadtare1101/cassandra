@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.util.UUID;
 
 import org.apache.cassandra.db.TypeSizes;
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.repair.consistent.ConsistentSession;
@@ -35,7 +34,7 @@ public class StatusResponse extends RepairMessage
 
     public StatusResponse(UUID sessionID, ConsistentSession.State state)
     {
-        super(null);
+        super(Type.STATUS_RESPONSE, null);
         assert sessionID != null;
         assert state != null;
         this.sessionID = sessionID;
@@ -68,7 +67,7 @@ public class StatusResponse extends RepairMessage
                '}';
     }
 
-    public static final IVersionedSerializer<StatusResponse> serializer = new IVersionedSerializer<StatusResponse>()
+    public static final MessageSerializer serializer = new MessageSerializer<StatusResponse>()
     {
         public void serialize(StatusResponse msg, DataOutputPlus out, int version) throws IOException
         {

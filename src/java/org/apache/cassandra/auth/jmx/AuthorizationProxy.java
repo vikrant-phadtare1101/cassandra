@@ -33,6 +33,7 @@ import javax.management.ObjectName;
 import javax.security.auth.Subject;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -489,6 +490,11 @@ public class AuthorizationProxy implements InvocationHandler
                   DatabaseDescriptor::getPermissionsCacheMaxEntries,
                   AuthorizationProxy::loadPermissions,
                   () -> true);
+        }
+
+        public Set<PermissionDetails> get(RoleResource roleResource)
+        {
+            return super.get(roleResource);
         }
     }
 }
