@@ -142,8 +142,8 @@ public class Client extends SimpleClient
                    case "adler32": {
                        if (options.containsKey(StartupMessage.CHECKSUM))
                            throw new RuntimeException("Multiple checksum types supplied");
-                       options.put(StartupMessage.CHECKSUM, ChecksumType.ADLER32.name());
-                       checksumType = ChecksumType.ADLER32;
+                       options.put(StartupMessage.CHECKSUM, ChecksumType.Adler32.name());
+                       checksumType = ChecksumType.Adler32;
                        break;
                    }
                }
@@ -292,7 +292,7 @@ public class Client extends SimpleClient
         // Parse options.
         String host = args[0];
         int port = Integer.parseInt(args[1]);
-        ProtocolVersion version = args.length == 3 ? ProtocolVersion.decode(Integer.parseInt(args[2]), DatabaseDescriptor.getNativeTransportAllowOlderProtocols()) : ProtocolVersion.CURRENT;
+        ProtocolVersion version = args.length == 3 ? ProtocolVersion.decode(Integer.parseInt(args[2])) : ProtocolVersion.CURRENT;
 
         EncryptionOptions encryptionOptions = new EncryptionOptions();
         System.out.println("CQL binary protocol console " + host + "@" + port + " using native protocol version " + version);

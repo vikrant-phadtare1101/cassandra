@@ -39,7 +39,7 @@ import org.apache.cassandra.locator.EndpointsForRange;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaUtils;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.service.reads.ReadCallback;
 
 public class BlockingReadRepairTest extends AbstractReadRepairTest
@@ -55,7 +55,7 @@ public class BlockingReadRepairTest extends AbstractReadRepairTest
 
         Map<InetAddressAndPort, Mutation> mutationsSent = new HashMap<>();
 
-        protected void sendRR(Message<Mutation> message, InetAddressAndPort endpoint)
+        protected void sendRR(MessageOut<Mutation> message, InetAddressAndPort endpoint)
         {
             mutationsSent.put(endpoint, message.payload);
         }
@@ -91,7 +91,7 @@ public class BlockingReadRepairTest extends AbstractReadRepairTest
         ReadCallback readCallback = null;
 
         @Override
-        void sendReadCommand(Replica to, ReadCallback callback, boolean speculative)
+        void sendReadCommand(Replica to, ReadCallback callback)
         {
             assert readCallback == null || readCallback == callback;
             readCommandRecipients.add(to.endpoint());

@@ -21,8 +21,13 @@ package org.apache.cassandra.locator;
 import com.google.common.base.Preconditions;
 import org.apache.cassandra.dht.Token;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * A ReplicaCollection where all Replica are required to cover a range that fully contains the token() defined in the builder().
@@ -32,10 +37,14 @@ import java.util.Collection;
 public class EndpointsForToken extends Endpoints<EndpointsForToken>
 {
     private final Token token;
-
-    EndpointsForToken(Token token, ReplicaList list, ReplicaMap<InetAddressAndPort> byEndpoint)
+    private EndpointsForToken(Token token, List<Replica> list, boolean isSnapshot)
     {
-        super(list, byEndpoint);
+        this(token, list, isSnapshot, null);
+    }
+
+    EndpointsForToken(Token token, List<Replica> list, boolean isSnapshot, Map<InetAddressAndPort, Replica> byEndpoint)
+    {
+        super(list, isSnapshot, byEndpoint);
         this.token = token;
         assert token != null;
     }
@@ -46,71 +55,85 @@ public class EndpointsForToken extends Endpoints<EndpointsForToken>
     }
 
     @Override
-    public Builder newBuilder(int initialCapacity)
+    public Mutable newMutable(int initialCapacity)
     {
-        return new Builder(token, initialCapacity);
+        return new Mutable(token, initialCapacity);
     }
 
     @Override
-    public EndpointsForToken snapshot()
+    public EndpointsForToken self()
     {
         return this;
     }
 
     @Override
-    protected EndpointsForToken snapshot(ReplicaList newList)
+    protected EndpointsForToken snapshot(List<Replica> subList)
     {
-        if (newList.isEmpty()) return empty(token);
-        ReplicaMap<InetAddressAndPort> byEndpoint = null;
-        if (this.byEndpoint != null && list.isSubList(newList))
-            byEndpoint = this.byEndpoint.forSubList(newList);
-        return new EndpointsForToken(token, newList, byEndpoint);
+        if (subList.isEmpty()) return empty(token);
+        return new EndpointsForToken(token, subList, true);
     }
 
-    public static class Builder extends EndpointsForToken implements ReplicaCollection.Builder<EndpointsForToken>
+    public static class Mutable extends EndpointsForToken implements ReplicaCollection.Mutable<EndpointsForToken>
     {
-        boolean built;
-        public Builder(Token token) { this(token, 0); }
-        public Builder(Token token, int capacity) { this(token, new ReplicaList(capacity)); }
-        private Builder(Token token, ReplicaList list) { super(token, list, endpointMap(list)); }
+        boolean hasSnapshot;
+        public Mutable(Token token) { this(token, 0); }
+        public Mutable(Token token, int capacity) { super(token, new ArrayList<>(capacity), false, new LinkedHashMap<>(capacity)); }
 
-        public EndpointsForToken.Builder add(Replica replica, Conflict ignoreConflict)
+        public void add(Replica replica, Conflict ignoreConflict)
         {
-            if (built) throw new IllegalStateException();
+            if (hasSnapshot) throw new IllegalStateException();
             Preconditions.checkNotNull(replica);
             if (!replica.range().contains(super.token))
                 throw new IllegalArgumentException("Replica " + replica + " does not contain " + super.token);
 
-            if (!super.byEndpoint.internalPutIfAbsent(replica, list.size()))
+            Replica prev = super.byEndpoint.put(replica.endpoint(), replica);
+            if (prev != null)
             {
+                super.byEndpoint.put(replica.endpoint(), prev); // restore prev
                 switch (ignoreConflict)
                 {
                     case DUPLICATE:
-                        if (byEndpoint().get(replica.endpoint()).equals(replica))
+                        if (prev.equals(replica))
                             break;
                     case NONE:
-                        throw new IllegalArgumentException("Conflicting replica added (expected unique endpoints): "
-                                + replica + "; existing: " + byEndpoint().get(replica.endpoint()));
+                        throw new IllegalArgumentException("Conflicting replica added (expected unique endpoints): " + replica + "; existing: " + prev);
                     case ALL:
                 }
-                return this;
+                return;
             }
 
             list.add(replica);
-            return this;
         }
 
         @Override
-        public EndpointsForToken snapshot()
+        public Map<InetAddressAndPort, Replica> byEndpoint()
         {
-            return snapshot(list.subList(0, list.size()));
+            // our internal map is modifiable, but it is unsafe to modify the map externally
+            // it would be possible to implement a safe modifiable map, but it is probably not valuable
+            return Collections.unmodifiableMap(super.byEndpoint());
         }
 
-        public EndpointsForToken build()
+        private EndpointsForToken get(boolean isSnapshot)
         {
-            built = true;
-            return new EndpointsForToken(super.token, super.list, super.byEndpoint);
+            return new EndpointsForToken(super.token, super.list, isSnapshot, Collections.unmodifiableMap(super.byEndpoint));
         }
+
+        public EndpointsForToken asImmutableView()
+        {
+            return get(false);
+        }
+
+        public EndpointsForToken asSnapshot()
+        {
+            hasSnapshot = true;
+            return get(true);
+        }
+    }
+
+    public static class Builder extends ReplicaCollection.Builder<EndpointsForToken, Mutable, EndpointsForToken.Builder>
+    {
+        public Builder(Token token) { this(token, 0); }
+        public Builder(Token token, int capacity) { super (new Mutable(token, capacity)); }
     }
 
     public static Builder builder(Token token)
@@ -124,16 +147,16 @@ public class EndpointsForToken extends Endpoints<EndpointsForToken>
 
     public static EndpointsForToken empty(Token token)
     {
-        return new EndpointsForToken(token, EMPTY_LIST, EMPTY_MAP);
+        return new EndpointsForToken(token, EMPTY_LIST, true, EMPTY_MAP);
     }
 
     public static EndpointsForToken of(Token token, Replica replica)
     {
         // we only use ArrayList or ArrayList.SubList, to ensure callsites are bimorphic
-        ReplicaList one = new ReplicaList(1);
+        ArrayList<Replica> one = new ArrayList<>(1);
         one.add(replica);
         // we can safely use singletonMap, as we only otherwise use LinkedHashMap
-        return new EndpointsForToken(token, one, endpointMap(one));
+        return new EndpointsForToken(token, one, true, Collections.unmodifiableMap(Collections.singletonMap(replica.endpoint(), replica)));
     }
 
     public static EndpointsForToken of(Token token, Replica ... replicas)

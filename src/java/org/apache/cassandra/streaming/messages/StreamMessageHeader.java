@@ -24,12 +24,11 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.net.CompactEndpointSerializationHelper;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.streaming.StreamSession;
 import org.apache.cassandra.utils.UUIDSerializer;
-
-import static org.apache.cassandra.locator.InetAddressAndPort.Serializer.inetAddressAndPortSerializer;
 
 /**
  * StreamingFileHeader is appended before sending actual data to describe what it's sending.
@@ -103,7 +102,7 @@ public class StreamMessageHeader
         public void serialize(StreamMessageHeader header, DataOutputPlus out, int version) throws IOException
         {
             header.tableId.serialize(out);
-            inetAddressAndPortSerializer.serialize(header.sender, out, version);
+            CompactEndpointSerializationHelper.streamingInstance.serialize(header.sender, out, version);
             UUIDSerializer.serializer.serialize(header.planId, out, version);
             out.writeInt(header.sessionIndex);
             out.writeInt(header.sequenceNumber);
@@ -118,7 +117,7 @@ public class StreamMessageHeader
         public StreamMessageHeader deserialize(DataInputPlus in, int version) throws IOException
         {
             TableId tableId = TableId.deserialize(in);
-            InetAddressAndPort sender = inetAddressAndPortSerializer.deserialize(in, version);
+            InetAddressAndPort sender = CompactEndpointSerializationHelper.streamingInstance.deserialize(in, version);
             UUID planId = UUIDSerializer.serializer.deserialize(in, MessagingService.current_version);
             int sessionIndex = in.readInt();
             int sequenceNumber = in.readInt();
@@ -131,7 +130,7 @@ public class StreamMessageHeader
         public long serializedSize(StreamMessageHeader header, int version)
         {
             long size = header.tableId.serializedSize();
-            size += inetAddressAndPortSerializer.serializedSize(header.sender, version);
+            size += CompactEndpointSerializationHelper.streamingInstance.serializedSize(header.sender, version);
             size += UUIDSerializer.serializer.serializedSize(header.planId, version);
             size += TypeSizes.sizeof(header.sessionIndex);
             size += TypeSizes.sizeof(header.sequenceNumber);

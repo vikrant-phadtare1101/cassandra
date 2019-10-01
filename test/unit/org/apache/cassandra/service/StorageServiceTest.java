@@ -149,12 +149,12 @@ public class StorageServiceTest
 
         EndpointsByReplica result = StorageService.getChangedReplicasForLeaving("StorageServiceTest", aAddress, tmd, strat);
         System.out.println(result);
-        EndpointsByReplica.Builder expectedResult = new EndpointsByReplica.Builder();
+        EndpointsByReplica.Mutable expectedResult = new EndpointsByReplica.Mutable();
         expectedResult.put(new Replica(aAddress, aRange, true), new Replica(cAddress, new Range<>(oneToken, sixToken), true));
         expectedResult.put(new Replica(aAddress, aRange, true), new Replica(dAddress, new Range<>(oneToken, sixToken), false));
         expectedResult.put(new Replica(aAddress, eRange, true), new Replica(bAddress, eRange, true));
         expectedResult.put(new Replica(aAddress, eRange, true), new Replica(cAddress, eRange, false));
         expectedResult.put(new Replica(aAddress, dRange, false), new Replica(bAddress, dRange, false));
-        assertMultimapEqualsIgnoreOrder(result, expectedResult.build());
+        assertMultimapEqualsIgnoreOrder(result, expectedResult.asImmutableView());
     }
 }

@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.service.reads;
 
+import java.util.concurrent.TimeUnit;
+
 import com.google.common.base.Preconditions;
 
 import com.google.common.base.Predicates;
@@ -41,7 +43,7 @@ import org.apache.cassandra.locator.EndpointsForToken;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaCollection;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.reads.repair.ReadRepair;
 import org.apache.cassandra.service.StorageProxy.LocalReadRunnable;
@@ -49,7 +51,6 @@ import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.tracing.Tracing;
 
 import static com.google.common.collect.Iterables.all;
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 /**
  * Sends a read request to the replicas needed to satisfy a given ConsistencyLevel.
@@ -94,7 +95,7 @@ public abstract class AbstractReadExecutor
         // we stop being compatible with pre-3.0 nodes.
         int digestVersion = MessagingService.current_version;
         for (Replica replica : replicaPlan.contacts())
-            digestVersion = Math.min(digestVersion, MessagingService.instance().versions.get(replica.endpoint()));
+            digestVersion = Math.min(digestVersion, MessagingService.instance().getVersion(replica.endpoint()));
         command.setDigestVersion(digestVersion);
     }
 
@@ -116,27 +117,26 @@ public abstract class AbstractReadExecutor
         makeRequests(command, replicas);
     }
 
-    protected void makeTransientDataRequests(Iterable<Replica> replicas)
+    protected void makeTransientDataRequests(ReplicaCollection<?> replicas)
     {
         makeRequests(command.copyAsTransientQuery(replicas), replicas);
     }
 
-    protected void makeDigestRequests(Iterable<Replica> replicas)
+    protected void makeDigestRequests(ReplicaCollection<?> replicas)
     {
         assert all(replicas, Replica::isFull);
         // only send digest requests to full replicas, send data requests instead to the transient replicas
         makeRequests(command.copyAsDigestQuery(replicas), replicas);
     }
 
-    private void makeRequests(ReadCommand readCommand, Iterable<Replica> replicas)
+    private void makeRequests(ReadCommand readCommand, ReplicaCollection<?> replicas)
     {
         boolean hasLocalEndpoint = false;
-        Message<ReadCommand> message = null;
 
+        Preconditions.checkArgument(replicas.stream().allMatch(replica -> replica.isFull() || !readCommand.isDigestQuery()),
+                                    "Can not send digest requests to transient replicas");
         for (Replica replica: replicas)
         {
-            assert replica.isFull() || readCommand.acceptsTransient();
-
             InetAddressAndPort endpoint = replica.endpoint();
             if (replica.isSelf())
             {
@@ -146,11 +146,8 @@ public abstract class AbstractReadExecutor
 
             if (traceState != null)
                 traceState.trace("reading {} from {}", readCommand.isDigestQuery() ? "digest" : "data", endpoint);
-
-            if (null == message)
-                message = readCommand.createMessage(false);
-
-            MessagingService.instance().sendWithCallback(message, endpoint, handler);
+            MessageOut<ReadCommand> message = readCommand.createMessage();
+            MessagingService.instance().sendRRWithFailure(message, endpoint, handler);
         }
 
         // We delay the local (potentially blocking) read till the end to avoid stalling remote requests.
@@ -175,8 +172,8 @@ public abstract class AbstractReadExecutor
         EndpointsForToken selected = replicaPlan().contacts();
         EndpointsForToken fullDataRequests = selected.filter(Replica::isFull, initialDataRequestCount);
         makeFullDataRequests(fullDataRequests);
-        makeTransientDataRequests(selected.filterLazily(Replica::isTransient));
-        makeDigestRequests(selected.filterLazily(r -> r.isFull() && !fullDataRequests.contains(r)));
+        makeTransientDataRequests(selected.filter(Replica::isTransient));
+        makeDigestRequests(selected.filter(r -> r.isFull() && !fullDataRequests.contains(r)));
     }
 
     /**
@@ -216,10 +213,10 @@ public abstract class AbstractReadExecutor
     boolean shouldSpeculateAndMaybeWait()
     {
         // no latency information, or we're overloaded
-        if (cfs.sampleReadLatencyNanos > command.getTimeout(NANOSECONDS))
+        if (cfs.sampleReadLatencyNanos > TimeUnit.MILLISECONDS.toNanos(command.getTimeout()))
             return false;
 
-        return !handler.await(cfs.sampleReadLatencyNanos, NANOSECONDS);
+        return !handler.await(cfs.sampleReadLatencyNanos, TimeUnit.NANOSECONDS);
     }
 
     ReplicaPlan.ForTokenRead replicaPlan()
@@ -264,7 +261,7 @@ public abstract class AbstractReadExecutor
         {
             // We're hitting additional targets for read repair (??).  Since our "extra" replica is the least-
             // preferred by the snitch, we do an extra data read to start with against a replica more
-            // likely to respond; better to let RR fail than the entire query.
+            // likely to reply; better to let RR fail than the entire query.
             super(cfs, command, replicaPlan, replicaPlan.blockFor() < replicaPlan.contacts().size() ? 2 : 1, queryStartNanoTime);
         }
 
@@ -277,7 +274,7 @@ public abstract class AbstractReadExecutor
                 speculated = true;
 
                 ReplicaPlan.ForTokenRead replicaPlan = replicaPlan();
-                ReadCommand retryCommand;
+                ReadCommand retryCommand = command;
                 Replica extraReplica;
                 if (handler.resolver.isDataPresent())
                 {
@@ -293,7 +290,6 @@ public abstract class AbstractReadExecutor
                 else
                 {
                     extraReplica = replicaPlan.firstUncontactedCandidate(Replica::isFull);
-                    retryCommand = command;
                     if (extraReplica == null)
                     {
                         cfs.metric.speculativeInsufficientReplicas.inc();
@@ -311,7 +307,7 @@ public abstract class AbstractReadExecutor
                 if (traceState != null)
                     traceState.trace("speculating read retry on {}", extraReplica);
                 logger.trace("speculating read retry on {}", extraReplica);
-                MessagingService.instance().sendWithCallback(retryCommand.createMessage(false), extraReplica.endpoint(), handler);
+                MessagingService.instance().sendRRWithFailure(retryCommand.createMessage(), extraReplica.endpoint(), handler);
             }
         }
 
