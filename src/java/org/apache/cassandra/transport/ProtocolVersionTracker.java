@@ -15,69 +15,97 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.cassandra.transport;
 
 import java.net.InetAddress;
-import java.util.ArrayList;
 import java.util.EnumMap;
-import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-import com.github.benmanes.caffeine.cache.Cache;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
+
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
+import org.apache.cassandra.utils.Clock;
 
 /**
  * This class tracks the last 100 connections per protocol version
  */
 public class ProtocolVersionTracker
 {
-    private static final int DEFAULT_MAX_CAPACITY = 100;
+    public static final int DEFAULT_MAX_CAPACITY = 100;
 
-    private final EnumMap<ProtocolVersion, LoadingCache<InetAddress, Long>> clientsByProtocolVersion;
+    @VisibleForTesting
+    final EnumMap<ProtocolVersion, LoadingCache<InetAddress, Long>> clientsByProtocolVersion;
 
-    ProtocolVersionTracker()
+    public ProtocolVersionTracker()
     {
         this(DEFAULT_MAX_CAPACITY);
     }
 
-    private ProtocolVersionTracker(int capacity)
+    public ProtocolVersionTracker(final int capacity)
     {
         clientsByProtocolVersion = new EnumMap<>(ProtocolVersion.class);
 
         for (ProtocolVersion version : ProtocolVersion.values())
         {
             clientsByProtocolVersion.put(version, Caffeine.newBuilder().maximumSize(capacity)
-                                                          .build(key -> System.currentTimeMillis()));
+                                                          .build(key -> Clock.instance.currentTimeMillis()));
         }
     }
 
-    void addConnection(InetAddress addr, ProtocolVersion version)
+    void addConnection(final InetAddress addr, final ProtocolVersion version)
     {
-        clientsByProtocolVersion.get(version).put(addr, System.currentTimeMillis());
+        if (addr == null || version == null) return;
+
+        LoadingCache<InetAddress, Long> clients = clientsByProtocolVersion.get(version);
+        clients.put(addr, Clock.instance.currentTimeMillis());
     }
 
-    List<ClientStat> getAll()
+    public LinkedHashMap<ProtocolVersion, ImmutableSet<ClientIPAndTime>> getAll()
     {
-        List<ClientStat> result = new ArrayList<>();
-
-        clientsByProtocolVersion.forEach((version, cache) ->
-            cache.asMap().forEach((address, lastSeenTime) -> result.add(new ClientStat(address, version, lastSeenTime))));
-
-        return result;
-    }
-
-    List<ClientStat> getAll(ProtocolVersion version)
-    {
-        List<ClientStat> result = new ArrayList<>();
-
-        clientsByProtocolVersion.get(version).asMap().forEach((address, lastSeenTime) ->
-            result.add(new ClientStat(address, version, lastSeenTime)));
-
+        LinkedHashMap<ProtocolVersion, ImmutableSet<ClientIPAndTime>> result = new LinkedHashMap<>();
+        for (ProtocolVersion version : ProtocolVersion.values())
+        {
+            ImmutableSet.Builder<ClientIPAndTime> ips = ImmutableSet.builder();
+            for (Map.Entry<InetAddress, Long> e : clientsByProtocolVersion.get(version).asMap().entrySet())
+                ips.add(new ClientIPAndTime(e.getKey(), e.getValue()));
+            result.put(version, ips.build());
+        }
         return result;
     }
 
     public void clear()
     {
-        clientsByProtocolVersion.values().forEach(Cache::invalidateAll);
+        for (Map.Entry<ProtocolVersion, LoadingCache<InetAddress, Long>> entry : clientsByProtocolVersion.entrySet())
+        {
+            entry.getValue().invalidateAll();
+        }
+    }
+
+    public static class ClientIPAndTime
+    {
+        final InetAddress inetAddress;
+        final long lastSeen;
+
+        public ClientIPAndTime(final InetAddress inetAddress, final long lastSeen)
+        {
+            Preconditions.checkNotNull(inetAddress);
+            this.inetAddress = inetAddress;
+            this.lastSeen = lastSeen;
+        }
+
+        @Override
+        public String toString()
+        {
+            return "ClientIPAndTime{" +
+                   "inetAddress=" + inetAddress +
+                   ", lastSeen=" + lastSeen +
+                   '}';
+        }
     }
 }

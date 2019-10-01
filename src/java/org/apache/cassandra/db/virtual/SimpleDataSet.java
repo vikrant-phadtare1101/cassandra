@@ -73,8 +73,6 @@ public class SimpleDataSet extends AbstractVirtualTable.AbstractDataSet
     {
         if (null == currentRow)
             throw new IllegalStateException();
-        if (null == columnName)
-            throw new IllegalStateException(String.format("Invalid column: %s=%s for %s", columnName, value, currentRow));
         currentRow.add(columnName, value);
         return this;
     }
@@ -171,7 +169,7 @@ public class SimpleDataSet extends AbstractVirtualTable.AbstractDataSet
 
         private org.apache.cassandra.db.rows.Row toTableRow(RegularAndStaticColumns columns, long now)
         {
-            org.apache.cassandra.db.rows.Row.Builder builder = BTreeRow.unsortedBuilder();
+            org.apache.cassandra.db.rows.Row.Builder builder = BTreeRow.unsortedBuilder((int) TimeUnit.MILLISECONDS.toSeconds(now));
             builder.newRow(clustering);
 
             columns.forEach(c ->
@@ -182,11 +180,6 @@ public class SimpleDataSet extends AbstractVirtualTable.AbstractDataSet
             });
 
             return builder.build();
-        }
-
-        public String toString()
-        {
-            return "Row[...:" + clustering.toString(metadata)+']';
         }
     }
 

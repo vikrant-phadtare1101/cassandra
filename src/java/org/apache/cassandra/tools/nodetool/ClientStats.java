@@ -23,13 +23,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import io.airlift.airline.Command;
-import io.airlift.airline.Option;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 import org.apache.cassandra.tools.nodetool.formatter.TableBuilder;
-import org.apache.cassandra.transport.ClientStat;
-import org.apache.cassandra.transport.ConnectedClient;
+
+import io.airlift.airline.Command;
+import io.airlift.airline.Option;
 
 @Command(name = "clientstats", description = "Print information about connected clients")
 public class ClientStats extends NodeToolCmd
@@ -69,9 +68,7 @@ public class ClientStats extends NodeToolCmd
 
                 for (Map<String, String> client : clients)
                 {
-                    table.add(client.get(ClientStat.PROTOCOL_VERSION),
-                              client.get(ClientStat.INET_ADDRESS),
-                              sdf.format(new Date(Long.valueOf(client.get(ClientStat.LAST_SEEN_TIME)))));
+                    table.add(client.get("protocolVersion"), client.get("inetAddress"), sdf.format(new Date(Long.valueOf(client.get("lastSeenTime")))));
                 }
 
                 table.printTo(System.out);
@@ -90,16 +87,8 @@ public class ClientStats extends NodeToolCmd
                 table.add("Address", "SSL", "Cipher", "Protocol", "Version", "User", "Keyspace", "Requests", "Driver-Name", "Driver-Version");
                 for (Map<String, String> conn : clients)
                 {
-                    table.add(conn.get(ConnectedClient.ADDRESS),
-                              conn.get(ConnectedClient.SSL),
-                              conn.get(ConnectedClient.CIPHER),
-                              conn.get(ConnectedClient.PROTOCOL),
-                              conn.get(ConnectedClient.VERSION),
-                              conn.get(ConnectedClient.USER),
-                              conn.get(ConnectedClient.KEYSPACE),
-                              conn.get(ConnectedClient.REQUESTS),
-                              conn.get(ConnectedClient.DRIVER_NAME),
-                              conn.get(ConnectedClient.DRIVER_VERSION));
+                    table.add(conn.get("address"), conn.get("ssl"), conn.get("cipher"), conn.get("protocol"), conn.get("version"),
+                              conn.get("user"), conn.get("keyspace"), conn.get("requests"), conn.get("driverName"), conn.get("driverVersion"));
                 }
                 table.printTo(System.out);
                 System.out.println();

@@ -20,7 +20,7 @@ package org.apache.cassandra.auth;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 
-public class NetworkAuthCache extends AuthCache<RoleResource, DCPermissions>
+public class NetworkAuthCache extends AuthCache<RoleResource, DCPermissions> implements AuthCacheMBean
 {
     public NetworkAuthCache(INetworkAuthorizer authorizer)
     {
@@ -34,4 +34,5 @@ public class NetworkAuthCache extends AuthCache<RoleResource, DCPermissions>
               authorizer::authorize,
               () -> DatabaseDescriptor.getAuthenticator().requireAuthentication());
     }
+
 }

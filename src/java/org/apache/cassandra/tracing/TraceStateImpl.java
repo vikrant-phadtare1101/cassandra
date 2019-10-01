@@ -35,7 +35,6 @@ import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.exceptions.OverloadedException;
-import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.utils.JVMStabilityInspector;

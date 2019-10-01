@@ -72,7 +72,7 @@ class LimitedLocalNodeFirstLocalBalancingPolicy implements LoadBalancingPolicy
             }
         }
         if (logger.isTraceEnabled())
-            logger.trace("Created instance with the following replicas: {}", Arrays.asList(replicas));
+        	logger.trace("Created instance with the following replicas: {}", Arrays.asList(replicas));
     }
 
     @Override

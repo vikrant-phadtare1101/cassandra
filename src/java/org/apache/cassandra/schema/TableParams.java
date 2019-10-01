@@ -28,7 +28,6 @@ import org.apache.cassandra.cql3.Attributes;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.service.reads.PercentileSpeculativeRetryPolicy;
 import org.apache.cassandra.service.reads.SpeculativeRetryPolicy;
-import org.apache.cassandra.service.reads.repair.ReadRepairStrategy;
 import org.apache.cassandra.utils.BloomCalculations;
 
 import static java.lang.String.format;
@@ -51,10 +50,8 @@ public final class TableParams
         MEMTABLE_FLUSH_PERIOD_IN_MS,
         MIN_INDEX_INTERVAL,
         SPECULATIVE_RETRY,
-        ADDITIONAL_WRITE_POLICY,
         CRC_CHECK_CHANCE,
-        CDC,
-        READ_REPAIR;
+        CDC;
 
         @Override
         public String toString()
@@ -72,13 +69,11 @@ public final class TableParams
     public final int minIndexInterval;
     public final int maxIndexInterval;
     public final SpeculativeRetryPolicy speculativeRetry;
-    public final SpeculativeRetryPolicy additionalWritePolicy;
     public final CachingParams caching;
     public final CompactionParams compaction;
     public final CompressionParams compression;
     public final ImmutableMap<String, ByteBuffer> extensions;
     public final boolean cdc;
-    public final ReadRepairStrategy readRepair;
 
     private TableParams(Builder builder)
     {
@@ -93,13 +88,11 @@ public final class TableParams
         minIndexInterval = builder.minIndexInterval;
         maxIndexInterval = builder.maxIndexInterval;
         speculativeRetry = builder.speculativeRetry;
-        additionalWritePolicy = builder.additionalWritePolicy;
         caching = builder.caching;
         compaction = builder.compaction;
         compression = builder.compression;
         extensions = builder.extensions;
         cdc = builder.cdc;
-        readRepair = builder.readRepair;
     }
 
     public static Builder builder()
@@ -121,10 +114,8 @@ public final class TableParams
                             .memtableFlushPeriodInMs(params.memtableFlushPeriodInMs)
                             .minIndexInterval(params.minIndexInterval)
                             .speculativeRetry(params.speculativeRetry)
-                            .additionalWritePolicy(params.additionalWritePolicy)
                             .extensions(params.extensions)
-                            .cdc(params.cdc)
-                            .readRepair(params.readRepair);
+                            .cdc(params.cdc);
     }
 
     public Builder unbuild()
@@ -207,8 +198,7 @@ public final class TableParams
             && compaction.equals(p.compaction)
             && compression.equals(p.compression)
             && extensions.equals(p.extensions)
-            && cdc == p.cdc
-            && readRepair == p.readRepair;
+            && cdc == p.cdc;
     }
 
     @Override
@@ -227,8 +217,7 @@ public final class TableParams
                                 compaction,
                                 compression,
                                 extensions,
-                                cdc,
-                                readRepair);
+                                cdc);
     }
 
     @Override
@@ -249,7 +238,6 @@ public final class TableParams
                           .add(Option.COMPRESSION.toString(), compression)
                           .add(Option.EXTENSIONS.toString(), extensions)
                           .add(Option.CDC.toString(), cdc)
-                          .add(Option.READ_REPAIR.toString(), readRepair)
                           .toString();
     }
 
@@ -257,20 +245,18 @@ public final class TableParams
     {
         private String comment = "";
         private Double bloomFilterFpChance;
-        private double crcCheckChance = 1.0;
+        public Double crcCheckChance = 1.0;
         private int gcGraceSeconds = 864000; // 10 days
         private int defaultTimeToLive = 0;
         private int memtableFlushPeriodInMs = 0;
         private int minIndexInterval = 128;
         private int maxIndexInterval = 2048;
         private SpeculativeRetryPolicy speculativeRetry = PercentileSpeculativeRetryPolicy.NINETY_NINE_P;
-        private SpeculativeRetryPolicy additionalWritePolicy = PercentileSpeculativeRetryPolicy.NINETY_NINE_P;
         private CachingParams caching = CachingParams.DEFAULT;
         private CompactionParams compaction = CompactionParams.DEFAULT;
         private CompressionParams compression = CompressionParams.DEFAULT;
         private ImmutableMap<String, ByteBuffer> extensions = ImmutableMap.of();
         private boolean cdc;
-        private ReadRepairStrategy readRepair = ReadRepairStrategy.BLOCKING;
 
         public Builder()
         {
@@ -335,12 +321,6 @@ public final class TableParams
             return this;
         }
 
-        public Builder additionalWritePolicy(SpeculativeRetryPolicy val)
-        {
-            additionalWritePolicy = val;
-            return this;
-        }
-
         public Builder caching(CachingParams val)
         {
             caching = val;
@@ -362,12 +342,6 @@ public final class TableParams
         public Builder cdc(boolean val)
         {
             cdc = val;
-            return this;
-        }
-
-        public Builder readRepair(ReadRepairStrategy val)
-        {
-            readRepair = val;
             return this;
         }
 
