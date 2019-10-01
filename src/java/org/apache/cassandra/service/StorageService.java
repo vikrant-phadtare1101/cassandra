@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import javax.annotation.Nullable;
@@ -61,7 +62,6 @@ import org.apache.cassandra.concurrent.ExecutorLocals;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
@@ -107,10 +107,11 @@ import org.apache.cassandra.utils.progress.jmx.JMXProgressSupport;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Iterables.tryFind;
 import static java.util.Arrays.asList;
-import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.Arrays.stream;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toMap;
 import static org.apache.cassandra.index.SecondaryIndexManager.getIndexName;
 import static org.apache.cassandra.index.SecondaryIndexManager.isIndexColumnFamily;
 import static org.apache.cassandra.net.NoPayload.noPayload;
@@ -424,7 +425,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         MessagingService.instance().shutdown();
         // give it a second so that task accepted before the MessagingService shutdown gets submitted to the stage (to avoid RejectedExecutionException)
         Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
-        StageManager.shutdownNow();
+        Stage.shutdownAllNow();
     }
 
     public boolean isInitialized()
@@ -1678,6 +1679,21 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.info("Resuming bootstrap is requested, but the node is already bootstrapped.");
             return false;
         }
+    }
+
+    public Map<String,List<Integer>> getConcurrency(List<String> filter)
+    {
+        Stream<Stage> stageStream = filter.isEmpty() ? stream(Stage.values()) : filter.stream().map(Stage::fromPoolName);
+        return stageStream.collect(toMap(s -> s.jmxName,
+                                         s -> Arrays.asList(s.getCorePoolSize(), s.getMaximumPoolSize())));
+    }
+
+    public void setConcurrency(String threadPoolName, int newCorePoolSize, int newMaximumPoolSize)
+    {
+        Stage stage = Stage.fromPoolName(threadPoolName);
+        if (newCorePoolSize >= 0)
+            stage.setCorePoolSize(newCorePoolSize);
+        stage.setMaximumPoolSize(newMaximumPoolSize);
     }
 
     public boolean isBootstrapMode()
@@ -4181,7 +4197,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     {
                         logger.info("failed to shutdown message service: {}", ioe);
                     }
-                    StageManager.shutdownNow();
+                    Stage.shutdownAllNow();
                     SystemKeyspace.setBootstrapState(SystemKeyspace.BootstrapState.DECOMMISSIONED);
                     setMode(Mode.DECOMMISSIONED, true);
                     // let op be responsible for killing the process
@@ -4574,9 +4590,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     protected synchronized void drain(boolean isFinalShutdown) throws IOException, InterruptedException, ExecutionException
     {
-        ExecutorService counterMutationStage = StageManager.getStage(Stage.COUNTER_MUTATION);
-        ExecutorService viewMutationStage = StageManager.getStage(Stage.VIEW_MUTATION);
-        ExecutorService mutationStage = StageManager.getStage(Stage.MUTATION);
+        ExecutorService counterMutationStage = Stage.COUNTER_MUTATION.executor;
+        ExecutorService viewMutationStage = Stage.VIEW_MUTATION.executor;
+        ExecutorService mutationStage = Stage.MUTATION.executor;
 
         if (mutationStage.isTerminated()
             && counterMutationStage.isTerminated()
@@ -4598,16 +4614,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             setMode(Mode.DRAINING, "starting drain process", !isFinalShutdown);
 
-            try
-            {
-                /* not clear this is reasonable time, but propagated from prior embedded behaviour */
-                BatchlogManager.instance.shutdownAndWait(1L, MINUTES);
-            }
-            catch (TimeoutException t)
-            {
-                logger.error("Batchlog manager timed out shutting down", t);
-            }
-
+            BatchlogManager.instance.shutdown();
             HintsService.instance.pauseDispatch();
 
             if (daemon != null)
@@ -4700,7 +4707,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
             // wait for miscellaneous tasks like sstable and commitlog segment deletion
             ScheduledExecutors.nonPeriodicTasks.shutdown();
-            if (!ScheduledExecutors.nonPeriodicTasks.awaitTermination(1, MINUTES))
+            if (!ScheduledExecutors.nonPeriodicTasks.awaitTermination(1, TimeUnit.MINUTES))
                 logger.warn("Failed to wait for non periodic tasks to shutdown");
 
             ColumnFamilyStore.shutdownPostFlushExecutor();
@@ -5458,14 +5465,5 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         DatabaseDescriptor.setCorruptedTombstoneStrategy(Config.CorruptedTombstoneStrategy.valueOf(strategy));
         logger.info("Setting corrupted tombstone strategy to {}", strategy);
-    }
-
-    @VisibleForTesting
-    public void shutdownServer()
-    {
-        if (drainOnShutdown != null)
-        {
-            Runtime.getRuntime().removeShutdownHook(drainOnShutdown);
-        }
     }
 }
