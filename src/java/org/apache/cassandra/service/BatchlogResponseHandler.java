@@ -24,7 +24,7 @@ import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.exceptions.WriteFailureException;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 
 public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
 {
@@ -47,21 +47,21 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         return wrapped.ackCount();
     }
 
-    public void onResponse(Message<T> msg)
+    public void response(MessageIn<T> msg)
     {
-        wrapped.onResponse(msg);
+        wrapped.response(msg);
         if (requiredBeforeFinishUpdater.decrementAndGet(this) == 0)
             cleanup.ackMutation();
+    }
+
+    public boolean isLatencyForSnitch()
+    {
+        return wrapped.isLatencyForSnitch();
     }
 
     public void onFailure(InetAddressAndPort from, RequestFailureReason failureReason)
     {
         wrapped.onFailure(from, failureReason);
-    }
-
-    public boolean invokeOnFailure()
-    {
-        return wrapped.invokeOnFailure();
     }
 
     public void get() throws WriteTimeoutException, WriteFailureException

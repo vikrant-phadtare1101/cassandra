@@ -38,12 +38,10 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.Keyspaces.KeyspacesDiff;
 import org.apache.cassandra.utils.FBUtilities;
-
-import static org.apache.cassandra.net.Verb.SCHEMA_PUSH_REQ;
 
 public class MigrationManager
 {
@@ -154,8 +152,8 @@ public class MigrationManager
          * Don't request schema from nodes with a differnt or unknonw major version (may have incompatible schema)
          * Don't request schema from fat clients
          */
-        return MessagingService.instance().versions.knows(endpoint)
-                && MessagingService.instance().versions.getRaw(endpoint) == MessagingService.current_version
+        return MessagingService.instance().knowsVersion(endpoint)
+                && MessagingService.instance().getRawVersion(endpoint) == MessagingService.current_version
                 && !Gossiper.instance.isGossipOnlyMember(endpoint);
     }
 
@@ -163,8 +161,8 @@ public class MigrationManager
     {
         // only push schema to nodes with known and equal versions
         return !endpoint.equals(FBUtilities.getBroadcastAddressAndPort())
-               && MessagingService.instance().versions.knows(endpoint)
-               && MessagingService.instance().versions.getRaw(endpoint) == MessagingService.current_version;
+               && MessagingService.instance().knowsVersion(endpoint)
+               && MessagingService.instance().getRawVersion(endpoint) == MessagingService.current_version;
     }
 
     public static boolean isReadyForBootstrap()
@@ -317,6 +315,14 @@ public class MigrationManager
             announce(mutations);
     }
 
+    private static void pushSchemaMutation(InetAddressAndPort endpoint, Collection<Mutation> schema)
+    {
+        MessageOut<Collection<Mutation>> msg = new MessageOut<>(MessagingService.Verb.DEFINITIONS_UPDATE,
+                                                                schema,
+                                                                MigrationsSerializer.instance);
+        MessagingService.instance().sendOneWay(msg, endpoint);
+    }
+
     // Returns a future on the local application of the schema
     private static void announce(Collection<Mutation> schema)
     {
@@ -324,12 +330,11 @@ public class MigrationManager
 
         Set<InetAddressAndPort> schemaDestinationEndpoints = new HashSet<>();
         Set<InetAddressAndPort> schemaEndpointsIgnored = new HashSet<>();
-        Message<Collection<Mutation>> message = Message.out(SCHEMA_PUSH_REQ, schema);
         for (InetAddressAndPort endpoint : Gossiper.instance.getLiveMembers())
         {
             if (shouldPushSchemaTo(endpoint))
             {
-                MessagingService.instance().send(message, endpoint);
+                pushSchemaMutation(endpoint, schema);
                 schemaDestinationEndpoints.add(endpoint);
             }
             else
@@ -358,12 +363,11 @@ public class MigrationManager
 
         Set<InetAddressAndPort> schemaDestinationEndpoints = new HashSet<>();
         Set<InetAddressAndPort> schemaEndpointsIgnored = new HashSet<>();
-        Message<Collection<Mutation>> message = Message.out(SCHEMA_PUSH_REQ, result.mutations);
         for (InetAddressAndPort endpoint : Gossiper.instance.getLiveMembers())
         {
             if (shouldPushSchemaTo(endpoint))
             {
-                MessagingService.instance().send(message, endpoint);
+                pushSchemaMutation(endpoint, result.mutations);
                 schemaDestinationEndpoints.add(endpoint);
             }
             else
