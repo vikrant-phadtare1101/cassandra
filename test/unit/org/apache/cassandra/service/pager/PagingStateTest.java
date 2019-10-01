@@ -1,3 +1,4 @@
+
 /*
 * Licensed to the Apache Software Foundation (ASF) under one
 * or more contributor license agreements.  See the NOTICE file
@@ -18,7 +19,6 @@
 */
 package org.apache.cassandra.service.pager;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 
 import org.junit.BeforeClass;
@@ -65,7 +65,7 @@ public class PagingStateTest
     }
 
     @Test
-    public void testSerializeV3DeserializeV3()
+    public void testSerializeDeserializeV3()
     {
         PagingState state = Util.makeSomePagingState(ProtocolVersion.V3);
         ByteBuffer serialized = state.serialize(ProtocolVersion.V3);
@@ -74,47 +74,11 @@ public class PagingStateTest
     }
 
     @Test
-    public void testSerializeV4DeserializeV4()
+    public void testSerializeDeserializeV4()
     {
         PagingState state = Util.makeSomePagingState(ProtocolVersion.V4);
         ByteBuffer serialized = state.serialize(ProtocolVersion.V4);
         assertEquals(serialized.remaining(), state.serializedSize(ProtocolVersion.V4));
-        assertEquals(state, PagingState.deserialize(serialized, ProtocolVersion.V4));
-    }
-
-    @Test
-    public void testSerializeV3DeserializeV4()
-    {
-        PagingState state = Util.makeSomePagingState(ProtocolVersion.V3);
-        ByteBuffer serialized = state.serialize(ProtocolVersion.V3);
-        assertEquals(serialized.remaining(), state.serializedSize(ProtocolVersion.V3));
-        assertEquals(state, PagingState.deserialize(serialized, ProtocolVersion.V4));
-    }
-
-    @Test
-    public void testSerializeV4DeserializeV3()
-    {
-        PagingState state = Util.makeSomePagingState(ProtocolVersion.V4);
-        ByteBuffer serialized = state.serialize(ProtocolVersion.V4);
-        assertEquals(serialized.remaining(), state.serializedSize(ProtocolVersion.V4));
-        assertEquals(state, PagingState.deserialize(serialized, ProtocolVersion.V3));
-    }
-
-    @Test
-    public void testSerializeV3WithoutRemainingInPartitionDeserializeV3() throws IOException
-    {
-        PagingState state = Util.makeSomePagingState(ProtocolVersion.V3, Integer.MAX_VALUE);
-        ByteBuffer serialized = state.legacySerialize(false);
-        assertEquals(serialized.remaining(), state.legacySerializedSize(false));
-        assertEquals(state, PagingState.deserialize(serialized, ProtocolVersion.V3));
-    }
-
-    @Test
-    public void testSerializeV3WithoutRemainingInPartitionDeserializeV4() throws IOException
-    {
-        PagingState state = Util.makeSomePagingState(ProtocolVersion.V3, Integer.MAX_VALUE);
-        ByteBuffer serialized = state.legacySerialize(false);
-        assertEquals(serialized.remaining(), state.legacySerializedSize(false));
         assertEquals(state, PagingState.deserialize(serialized, ProtocolVersion.V4));
     }
 }
