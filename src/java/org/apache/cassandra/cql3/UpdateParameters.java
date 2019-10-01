@@ -28,6 +28,7 @@ import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Groups the parameters of an update query, and make building updates easier.
@@ -57,7 +58,6 @@ public class UpdateParameters
                             RegularAndStaticColumns updatedColumns,
                             QueryOptions options,
                             long timestamp,
-                            int nowInSec,
                             int ttl,
                             Map<DecoratedKey, Partition> prefetchedRows)
     throws InvalidRequestException
@@ -66,7 +66,7 @@ public class UpdateParameters
         this.updatedColumns = updatedColumns;
         this.options = options;
 
-        this.nowInSec = nowInSec;
+        this.nowInSec = FBUtilities.nowInSeconds();
         this.timestamp = timestamp;
         this.ttl = ttl;
 
@@ -95,13 +95,13 @@ public class UpdateParameters
         if (clustering == Clustering.STATIC_CLUSTERING)
         {
             if (staticBuilder == null)
-                staticBuilder = BTreeRow.unsortedBuilder();
+                staticBuilder = BTreeRow.unsortedBuilder(nowInSec);
             builder = staticBuilder;
         }
         else
         {
             if (regularBuilder == null)
-                regularBuilder = BTreeRow.unsortedBuilder();
+                regularBuilder = BTreeRow.unsortedBuilder(nowInSec);
             builder = regularBuilder;
         }
 
@@ -230,7 +230,7 @@ public class UpdateParameters
         if (prefetchedRow == null)
             return pendingMutations;
 
-        return Rows.merge(prefetchedRow, pendingMutations)
+        return Rows.merge(prefetchedRow, pendingMutations, nowInSec)
                    .purge(DeletionPurger.PURGE_ALL, nowInSec, metadata.enforceStrictLiveness());
     }
 }

@@ -1414,8 +1414,10 @@ public class InsertUpdateIfConditionTest extends CQLTester
     {
         String tableName = createTable("CREATE TABLE %s (id text PRIMARY KEY, value1 blob, value2 blob)with comment = 'foo'");
 
+        execute("use " + KEYSPACE);
+
         // try dropping when doesn't exist
-        schemaChange(format("DROP INDEX IF EXISTS %s.myindex", KEYSPACE));
+        schemaChange("DROP INDEX IF EXISTS myindex");
 
         // create and confirm
         createIndex("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
@@ -1426,7 +1428,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
         execute("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
 
         // drop and confirm
-        execute(format("DROP INDEX IF EXISTS %s.myindex", KEYSPACE));
+        execute("DROP INDEX IF EXISTS myindex");
 
         Object[][] rows = getRows(execute("select index_name from system.\"IndexInfo\" where table_name = ?", tableName));
         assertEquals(0, rows.length);
