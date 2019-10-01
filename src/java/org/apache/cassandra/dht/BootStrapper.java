@@ -17,27 +17,28 @@
  */
 package org.apache.cassandra.dht;
 
+import java.io.DataInput;
+import java.io.IOException;
+import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.util.concurrent.ListenableFuture;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.dht.tokenallocator.TokenAllocation;
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.gms.FailureDetector;
+import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.NetworkTopologyStrategy;
 import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.*;
-import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.progress.ProgressEvent;
 import org.apache.cassandra.utils.progress.ProgressEventNotifierSupport;
 import org.apache.cassandra.utils.progress.ProgressEventType;
@@ -47,12 +48,12 @@ public class BootStrapper extends ProgressEventNotifierSupport
     private static final Logger logger = LoggerFactory.getLogger(BootStrapper.class);
 
     /* endpoint that needs to be bootstrapped */
-    protected final InetAddressAndPort address;
+    protected final InetAddress address;
     /* token of the node being bootstrapped. */
     protected final Collection<Token> tokens;
     protected final TokenMetadata tokenMetadata;
 
-    public BootStrapper(InetAddressAndPort address, Collection<Token> tokens, TokenMetadata tmd)
+    public BootStrapper(InetAddress address, Collection<Token> tokens, TokenMetadata tmd)
     {
         assert address != null;
         assert tokens != null && !tokens.isEmpty();
@@ -69,13 +70,14 @@ public class BootStrapper extends ProgressEventNotifierSupport
         RangeStreamer streamer = new RangeStreamer(tokenMetadata,
                                                    tokens,
                                                    address,
-                                                   StreamOperation.BOOTSTRAP,
+                                                   "Bootstrap",
                                                    useStrictConsistency,
                                                    DatabaseDescriptor.getEndpointSnitch(),
-                                                   stateStore,
-                                                   true,
-                                                   DatabaseDescriptor.getStreamingConnectionsPerHost());
-        for (String keyspaceName : Schema.instance.getNonLocalStrategyKeyspaces())
+                                                   stateStore);
+        streamer.addSourceFilter(new RangeStreamer.FailureDetectorSourceFilter(FailureDetector.instance));
+        streamer.addSourceFilter(new RangeStreamer.ExcludeLocalNodeFilter());
+
+        for (String keyspaceName : Schema.instance.getNonSystemKeyspaces())
         {
             AbstractReplicationStrategy strategy = Keyspace.open(keyspaceName).getReplicationStrategy();
             streamer.addRanges(keyspaceName, strategy.getPendingAddressRanges(tokenMetadata, tokens, address));
@@ -149,22 +151,24 @@ public class BootStrapper extends ProgressEventNotifierSupport
 
     /**
      * if initialtoken was specified, use that (split on comma).
-     * otherwise, if allocationKeyspace is specified use the token allocation algorithm to generate suitable tokens
+     * otherwise, if num_tokens == 1, pick a token to assume half the load of the most-loaded node.
      * else choose num_tokens tokens at random
      */
-    public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata, InetAddressAndPort address, int schemaWaitDelay) throws ConfigurationException
+    public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata) throws ConfigurationException
     {
-        String allocationKeyspace = DatabaseDescriptor.getAllocateTokensForKeyspace();
-        Integer allocationLocalRf = DatabaseDescriptor.getAllocateTokensForLocalRf();
         Collection<String> initialTokens = DatabaseDescriptor.getInitialTokens();
-        if (initialTokens.size() > 0 && allocationKeyspace != null)
-            logger.warn("manually specified tokens override automatic allocation");
-
         // if user specified tokens, use those
         if (initialTokens.size() > 0)
         {
-            Collection<Token> tokens = getSpecifiedTokens(metadata, initialTokens);
-            BootstrapDiagnostics.useSpecifiedTokens(address, allocationKeyspace, tokens, DatabaseDescriptor.getNumTokens());
+            logger.trace("tokens manually specified as {}",  initialTokens);
+            List<Token> tokens = new ArrayList<>(initialTokens.size());
+            for (String tokenString : initialTokens)
+            {
+                Token token = StorageService.getPartitioner().getTokenFactory().fromString(tokenString);
+                if (metadata.getEndpoint(token) != null)
+                    throw new ConfigurationException("Bootstrapping to existing token " + tokenString + " is not allowed (decommission/removenode the old node first).");
+                tokens.add(token);
+            }
             return tokens;
         }
 
@@ -172,69 +176,10 @@ public class BootStrapper extends ProgressEventNotifierSupport
         if (numTokens < 1)
             throw new ConfigurationException("num_tokens must be >= 1");
 
-        if (allocationKeyspace != null)
-            return allocateTokens(metadata, address, allocationKeyspace, numTokens, schemaWaitDelay);
-
-        if (allocationLocalRf != null)
-            return allocateTokens(metadata, address, allocationLocalRf, numTokens, schemaWaitDelay);
-
         if (numTokens == 1)
-            logger.warn("Picking random token for a single vnode.  You should probably add more vnodes and/or use the automatic token allocation mechanism.");
+            logger.warn("Picking random token for a single vnode.  You should probably add more vnodes; failing that, you should probably specify the token manually");
 
-        Collection<Token> tokens = getRandomTokens(metadata, numTokens);
-        BootstrapDiagnostics.useRandomTokens(address, metadata, numTokens, tokens);
-        return tokens;
-    }
-
-    private static Collection<Token> getSpecifiedTokens(final TokenMetadata metadata,
-                                                        Collection<String> initialTokens)
-    {
-        logger.info("tokens manually specified as {}",  initialTokens);
-        List<Token> tokens = new ArrayList<>(initialTokens.size());
-        for (String tokenString : initialTokens)
-        {
-            Token token = metadata.partitioner.getTokenFactory().fromString(tokenString);
-            if (metadata.getEndpoint(token) != null)
-                throw new ConfigurationException("Bootstrapping to existing token " + tokenString + " is not allowed (decommission/removenode the old node first).");
-            tokens.add(token);
-        }
-        return tokens;
-    }
-
-    static Collection<Token> allocateTokens(final TokenMetadata metadata,
-                                            InetAddressAndPort address,
-                                            String allocationKeyspace,
-                                            int numTokens,
-                                            int schemaWaitDelay)
-    {
-        StorageService.instance.waitForSchema(schemaWaitDelay);
-        if (!FBUtilities.getBroadcastAddressAndPort().equals(InetAddressAndPort.getLoopbackAddress()))
-            Gossiper.waitToSettle();
-
-        Keyspace ks = Keyspace.open(allocationKeyspace);
-        if (ks == null)
-            throw new ConfigurationException("Problem opening token allocation keyspace " + allocationKeyspace);
-        AbstractReplicationStrategy rs = ks.getReplicationStrategy();
-
-        Collection<Token> tokens = TokenAllocation.allocateTokens(metadata, rs, address, numTokens);
-        BootstrapDiagnostics.tokensAllocated(address, metadata, allocationKeyspace, numTokens, tokens);
-        return tokens;
-    }
-
-
-    static Collection<Token> allocateTokens(final TokenMetadata metadata,
-                                            InetAddressAndPort address,
-                                            int rf,
-                                            int numTokens,
-                                            int schemaWaitDelay)
-    {
-        StorageService.instance.waitForSchema(schemaWaitDelay);
-        if (!FBUtilities.getBroadcastAddressAndPort().equals(InetAddressAndPort.getLoopbackAddress()))
-            Gossiper.waitToSettle();
-
-        Collection<Token> tokens = TokenAllocation.allocateTokens(metadata, rf, address, numTokens);
-        BootstrapDiagnostics.tokensAllocated(address, metadata, rf, numTokens, tokens);
-        return tokens;
+        return getRandomTokens(metadata, numTokens);
     }
 
     public static Collection<Token> getRandomTokens(TokenMetadata metadata, int numTokens)
@@ -242,12 +187,30 @@ public class BootStrapper extends ProgressEventNotifierSupport
         Set<Token> tokens = new HashSet<>(numTokens);
         while (tokens.size() < numTokens)
         {
-            Token token = metadata.partitioner.getRandomToken();
+            Token token = StorageService.getPartitioner().getRandomToken();
             if (metadata.getEndpoint(token) == null)
                 tokens.add(token);
         }
-
-        logger.info("Generated random tokens. tokens are {}", tokens);
         return tokens;
+    }
+
+    public static class StringSerializer implements IVersionedSerializer<String>
+    {
+        public static final StringSerializer instance = new StringSerializer();
+
+        public void serialize(String s, DataOutputPlus out, int version) throws IOException
+        {
+            out.writeUTF(s);
+        }
+
+        public String deserialize(DataInput in, int version) throws IOException
+        {
+            return in.readUTF();
+        }
+
+        public long serializedSize(String s, int version)
+        {
+            return TypeSizes.NATIVE.sizeof(s);
+        }
     }
 }

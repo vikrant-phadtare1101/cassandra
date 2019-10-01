@@ -17,44 +17,29 @@
  */
 package org.apache.cassandra.repair.messages;
 
+import java.io.DataInput;
 import java.io.IOException;
-import java.util.Objects;
 
-import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.repair.RepairJobDesc;
 
 public class SnapshotMessage extends RepairMessage
 {
+    public final static MessageSerializer serializer = new SnapshotMessageSerializer();
+
     public SnapshotMessage(RepairJobDesc desc)
     {
-        super(desc);
+        super(Type.SNAPSHOT, desc);
     }
 
-    @Override
-    public boolean equals(Object o)
-    {
-        if (!(o instanceof SnapshotMessage))
-            return false;
-        SnapshotMessage other = (SnapshotMessage) o;
-        return desc.equals(other.desc);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(desc);
-    }
-
-    public static final IVersionedSerializer<SnapshotMessage> serializer = new IVersionedSerializer<SnapshotMessage>()
+    public static class SnapshotMessageSerializer implements MessageSerializer<SnapshotMessage>
     {
         public void serialize(SnapshotMessage message, DataOutputPlus out, int version) throws IOException
         {
             RepairJobDesc.serializer.serialize(message.desc, out, version);
         }
 
-        public SnapshotMessage deserialize(DataInputPlus in, int version) throws IOException
+        public SnapshotMessage deserialize(DataInput in, int version) throws IOException
         {
             RepairJobDesc desc = RepairJobDesc.serializer.deserialize(in, version);
             return new SnapshotMessage(desc);
@@ -64,5 +49,5 @@ public class SnapshotMessage extends RepairMessage
         {
             return RepairJobDesc.serializer.serializedSize(message.desc, version);
         }
-    };
+    }
 }

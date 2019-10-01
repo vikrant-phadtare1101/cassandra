@@ -17,14 +17,11 @@
  */
 package org.apache.cassandra.service.pager;
 
-import org.apache.cassandra.db.ConsistencyLevel;
-import org.apache.cassandra.db.ReadExecutionController;
-import org.apache.cassandra.db.filter.DataLimits;
-import org.apache.cassandra.db.EmptyIterators;
-import org.apache.cassandra.db.partitions.PartitionIterator;
+import java.util.List;
+
+import org.apache.cassandra.db.Row;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.exceptions.RequestValidationException;
-import org.apache.cassandra.service.ClientState;
 
 /**
  * Perform a query, paging it by page of a given size.
@@ -47,74 +44,13 @@ import org.apache.cassandra.service.ClientState;
  */
 public interface QueryPager
 {
-    QueryPager EMPTY = new QueryPager()
-    {
-        public ReadExecutionController executionController()
-        {
-            return ReadExecutionController.empty();
-        }
-
-        public PartitionIterator fetchPage(int pageSize, ConsistencyLevel consistency, ClientState clientState, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException
-        {
-            return EmptyIterators.partition();
-        }
-
-        public PartitionIterator fetchPageInternal(int pageSize, ReadExecutionController executionController) throws RequestValidationException, RequestExecutionException
-        {
-            return EmptyIterators.partition();
-        }
-
-        public boolean isExhausted()
-        {
-            return true;
-        }
-
-        public int maxRemaining()
-        {
-            return 0;
-        }
-
-        public PagingState state()
-        {
-            return null;
-        }
-
-        public QueryPager withUpdatedLimit(DataLimits newLimits)
-        {
-            throw new UnsupportedOperationException();
-        }
-    };
-
     /**
      * Fetches the next page.
      *
      * @param pageSize the maximum number of elements to return in the next page.
-     * @param consistency the consistency level to achieve for the query.
-     * @param clientState the {@code ClientState} for the query. In practice, this can be null unless
-     * {@code consistency} is a serial consistency.
      * @return the page of result.
      */
-    public PartitionIterator fetchPage(int pageSize, ConsistencyLevel consistency, ClientState clientState, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException;
-
-    /**
-     * Starts a new read operation.
-     * <p>
-     * This must be called before {@link fetchPageInternal} and passed to it to protect the read.
-     * The returned object <b>must</b> be closed on all path and it is thus strongly advised to
-     * use it in a try-with-ressource construction.
-     *
-     * @return a newly started order group for this {@code QueryPager}.
-     */
-    public ReadExecutionController executionController();
-
-    /**
-     * Fetches the next page internally (in other, this does a local query).
-     *
-     * @param pageSize the maximum number of elements to return in the next page.
-     * @param executionController the {@code ReadExecutionController} protecting the read.
-     * @return the page of result.
-     */
-    public PartitionIterator fetchPageInternal(int pageSize, ReadExecutionController executionController) throws RequestValidationException, RequestExecutionException;
+    public List<Row> fetchPage(int pageSize) throws RequestValidationException, RequestExecutionException;
 
     /**
      * Whether or not this pager is exhausted, i.e. whether or not a call to
@@ -140,12 +76,4 @@ public interface QueryPager
      * beginning. If the pager is exhausted, the result is undefined.
      */
     public PagingState state();
-
-    /**
-     * Creates a new <code>QueryPager</code> that use the new limits.
-     *
-     * @param newLimits the new limits
-     * @return a new <code>QueryPager</code> that use the new limits
-     */
-    public QueryPager withUpdatedLimit(DataLimits newLimits);
 }

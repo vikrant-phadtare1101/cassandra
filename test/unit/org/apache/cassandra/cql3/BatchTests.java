@@ -30,16 +30,16 @@ import org.junit.Test;
 
 import java.io.IOException;
 
-public class BatchTests extends  CQLTester
+public class BatchTests
 {
     private static EmbeddedCassandraService cassandra;
 
     private static Cluster cluster;
     private static Session session;
 
+
     private static PreparedStatement counter;
     private static PreparedStatement noncounter;
-    private static PreparedStatement clustering;
 
     @BeforeClass()
     public static void setup() throws ConfigurationException, IOException
@@ -60,92 +60,65 @@ public class BatchTests extends  CQLTester
                 "  id int PRIMARY KEY,\n" +
                 "  val counter,\n" +
                 ");");
-        session.execute("CREATE TABLE junit.clustering (\n" +
-                "  id int,\n" +
-                "  clustering1 int,\n" +
-                "  clustering2 int,\n" +
-                "  clustering3 int,\n" +
-                "  val text, \n" +
-                " PRIMARY KEY(id, clustering1, clustering2, clustering3)" +
-                ");");
 
 
         noncounter = session.prepare("insert into junit.noncounter(id, val)values(?,?)");
         counter = session.prepare("update junit.counter set val = val + ? where id = ?");
-        clustering = session.prepare("insert into junit.clustering(id, clustering1, clustering2, clustering3, val) values(?,?,?,?,?)");
     }
 
     @Test(expected = InvalidQueryException.class)
     public void testMixedInCounterBatch()
     {
-       sendBatch(BatchStatement.Type.COUNTER, true, true, false);
+       sendBatch(BatchStatement.Type.COUNTER, true, true);
     }
 
     @Test(expected = InvalidQueryException.class)
     public void testMixedInLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.LOGGED, true, true, false);
+        sendBatch(BatchStatement.Type.LOGGED, true, true);
     }
 
     @Test(expected = InvalidQueryException.class)
     public void testMixedInUnLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.UNLOGGED, true, true, false);
+        sendBatch(BatchStatement.Type.UNLOGGED, true, true);
     }
 
     @Test(expected = InvalidQueryException.class)
     public void testNonCounterInCounterBatch()
     {
-        sendBatch(BatchStatement.Type.COUNTER, false, true, false);
+        sendBatch(BatchStatement.Type.COUNTER, false, true);
     }
 
     @Test
     public void testNonCounterInLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.LOGGED, false, true, false);
+        sendBatch(BatchStatement.Type.LOGGED, false, true);
     }
 
     @Test
     public void testNonCounterInUnLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.UNLOGGED, false, true, false);
+        sendBatch(BatchStatement.Type.UNLOGGED, false, true);
     }
 
     @Test
     public void testCounterInCounterBatch()
     {
-        sendBatch(BatchStatement.Type.COUNTER, true, false, false);
+        sendBatch(BatchStatement.Type.COUNTER, true, false);
     }
 
     @Test
     public void testCounterInUnLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.UNLOGGED, true, false, false);
+        sendBatch(BatchStatement.Type.UNLOGGED, true, false);
     }
 
-    @Test
-    public void testTableWithClusteringInLoggedBatch()
-    {
-        sendBatch(BatchStatement.Type.LOGGED, false, false, true);
-    }
-
-    @Test
-    public void testTableWithClusteringInUnLoggedBatch()
-    {
-        sendBatch(BatchStatement.Type.UNLOGGED, false, false, true);
-    }
-
-    @Test
-    public void testEmptyBatch()
-    {
-        session.execute("BEGIN BATCH APPLY BATCH");
-        session.execute("BEGIN UNLOGGED BATCH APPLY BATCH");
-    }
 
     @Test(expected = InvalidQueryException.class)
     public void testCounterInLoggedBatch()
     {
-        sendBatch(BatchStatement.Type.LOGGED, true, false, false);
+        sendBatch(BatchStatement.Type.LOGGED, true, false);
     }
 
     @Test(expected = InvalidQueryException.class)
@@ -160,10 +133,12 @@ public class BatchTests extends  CQLTester
         session.execute(b);
     }
 
-    public void sendBatch(BatchStatement.Type type, boolean addCounter, boolean addNonCounter, boolean addClustering)
+
+
+    public void sendBatch(BatchStatement.Type type, boolean addCounter, boolean addNonCounter)
     {
 
-        assert addCounter || addNonCounter || addClustering;
+        assert addCounter || addNonCounter;
         BatchStatement b = new BatchStatement(type);
 
         for (int i = 0; i < 10; i++)
@@ -173,11 +148,6 @@ public class BatchTests extends  CQLTester
 
             if (addCounter)
                 b.add(counter.bind((long)i, i));
-
-            if (addClustering)
-            {
-                b.add(clustering.bind(i, i, i, i, "foo"));
-            }
         }
 
         session.execute(b);

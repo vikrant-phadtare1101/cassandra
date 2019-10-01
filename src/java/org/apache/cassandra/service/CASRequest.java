@@ -17,9 +17,8 @@
  */
 package org.apache.cassandra.service;
 
-import org.apache.cassandra.db.SinglePartitionReadQuery;
-import org.apache.cassandra.db.partitions.FilteredPartition;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
 /**
@@ -28,19 +27,19 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 public interface CASRequest
 {
     /**
-     * The command to use to fetch the value to compare for the CAS.
+     * The filter to use to fetch the value to compare for the CAS.
      */
-    public SinglePartitionReadQuery readCommand(int nowInSec);
+    public IDiskAtomFilter readFilter();
 
     /**
      * Returns whether the provided CF, that represents the values fetched using the
      * readFilter(), match the CAS conditions this object stands for.
      */
-    public boolean appliesTo(FilteredPartition current) throws InvalidRequestException;
+    public boolean appliesTo(ColumnFamily current) throws InvalidRequestException;
 
     /**
      * The updates to perform of a CAS success. The values fetched using the readFilter()
      * are passed as argument.
      */
-    public PartitionUpdate makeUpdates(FilteredPartition current) throws InvalidRequestException;
+    public ColumnFamily makeUpdates(ColumnFamily current) throws InvalidRequestException;
 }

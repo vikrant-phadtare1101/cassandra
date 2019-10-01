@@ -32,17 +32,10 @@ import java.io.UTFDataFormatException;
 import java.lang.reflect.Field;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.channels.WritableByteChannel;
-import java.util.Arrays;
 import java.util.Random;
 
-import org.apache.cassandra.utils.vint.VIntCoding;
 import org.junit.Test;
-
-import com.google.common.primitives.UnsignedBytes;
-import com.google.common.primitives.UnsignedInteger;
-import com.google.common.primitives.UnsignedLong;
 
 import static org.junit.Assert.*;
 
@@ -187,14 +180,12 @@ public class BufferedDataOutputStreamTest
     private ByteArrayOutputStream canonical;
     private DataOutputStreamPlus dosp;
 
-    void setUp() throws Exception
+    void setUp()
     {
 
         generated = new ByteArrayOutputStream();
         canonical = new ByteArrayOutputStream();
         dosp = new WrappedDataOutputStreamPlus(canonical);
-        if (ndosp != null)
-            ndosp.close();
         ndosp = new BufferedDataOutputStreamPlus(adapter, 4096);
     }
 
@@ -219,7 +210,7 @@ public class BufferedDataOutputStreamTest
         int action = 0;
         while (generated.size() < 1024 * 1024 * 8)
         {
-            action = r.nextInt(21);
+            action = r.nextInt(19);
 
             //System.out.println("Action " + action + " iteration " + iteration);
             iteration++;
@@ -396,20 +387,6 @@ public class BufferedDataOutputStreamTest
                 }
                 break;
             }
-            case 19:
-            {
-                long val = r.nextLong();
-                VIntCoding.writeVInt(val, dosp);
-                ndosp.writeVInt(val);
-                break;
-            }
-            case 20:
-            {
-                long val = r.nextLong();
-                VIntCoding.writeUnsignedVInt(val, dosp);
-                ndosp.writeUnsignedVInt(val);
-                break;
-            }
             default:
                 fail("Shouldn't reach here");
             }
@@ -529,85 +506,4 @@ public class BufferedDataOutputStreamTest
                 sb.append(twoByte);
         }
     }
-
-    /*
-     * Add values to the array with a bit set in every position
-     */
-    public static long[] enrich(long vals[])
-    {
-        long retval[] = Arrays.copyOf(vals, vals.length + 64);
-        for (int ii = 0; ii < 64; ii++)
-            retval[vals.length + ii] = 1L << ii;
-        return retval;
-   }
-
-    @Test
-    public void testVInt() throws Exception
-    {
-        setUp();
-        long testValues[] = new long[] {
-                0, 1, -1
-                ,Long.MIN_VALUE, Long.MIN_VALUE + 1, Long.MAX_VALUE, Long.MAX_VALUE - 1
-                ,Integer.MIN_VALUE, Integer.MIN_VALUE + 1, Integer.MAX_VALUE, Integer.MAX_VALUE - 1
-                ,Short.MIN_VALUE, Short.MIN_VALUE + 1, Short.MAX_VALUE, Short.MAX_VALUE - 1
-                ,Byte.MIN_VALUE, Byte.MIN_VALUE + 1, Byte.MAX_VALUE, Byte.MAX_VALUE - 1 };
-        testValues = enrich(testValues);
-
-        int expectedSize = 0;
-        for (long v : testValues)
-        {
-            expectedSize += VIntCoding.computeVIntSize(v);
-            ndosp.writeVInt(v);
-        }
-
-        ndosp.flush();
-
-        DataInputBuffer in = new DataInputBuffer(generated.toByteArray());
-        assertEquals(expectedSize, generated.toByteArray().length);
-
-        for (long v : testValues)
-        {
-            assertEquals(v, in.readVInt());
-        }
-    }
-
-    @Test
-    public void testUnsignedVInt() throws Exception
-    {
-        setUp();
-        long testValues[] = new long[] { //-1 };
-                0, 1
-                , UnsignedLong.MAX_VALUE.longValue(), UnsignedLong.MAX_VALUE.longValue() - 1, UnsignedLong.MAX_VALUE.longValue() + 1
-                , UnsignedInteger.MAX_VALUE.longValue(), UnsignedInteger.MAX_VALUE.longValue() - 1, UnsignedInteger.MAX_VALUE.longValue() + 1
-                , UnsignedBytes.MAX_VALUE, UnsignedBytes.MAX_VALUE - 1, UnsignedBytes.MAX_VALUE + 1
-                , 65536, 65536 - 1, 65536 + 1 };
-        testValues = enrich(testValues);
-
-        int expectedSize = 0;
-        for (long v : testValues)
-        {
-            expectedSize += VIntCoding.computeUnsignedVIntSize(v);
-            ndosp.writeUnsignedVInt(v);
-        }
-
-        ndosp.flush();
-
-        DataInputBuffer in = new DataInputBuffer(generated.toByteArray());
-        assertEquals(expectedSize, generated.toByteArray().length);
-
-        for (long v : testValues)
-            assertEquals(v, in.readUnsignedVInt());
-    }
-
-    @Test
-    public void testWriteSlowByteOrder() throws Exception
-    {
-        try (DataOutputBuffer dob = new DataOutputBuffer(4))
-        {
-            dob.order(ByteOrder.LITTLE_ENDIAN);
-            dob.writeLong(42);
-            assertEquals(42, ByteBuffer.wrap(dob.toByteArray()).order(ByteOrder.LITTLE_ENDIAN).getLong());
-        }
-    }
-
 }

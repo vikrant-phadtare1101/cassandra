@@ -30,8 +30,7 @@ import org.apache.cassandra.stress.generate.SeedManager;
 import org.apache.cassandra.stress.operations.OpDistributionFactory;
 import org.apache.cassandra.stress.operations.SampledOpDistributionFactory;
 import org.apache.cassandra.stress.operations.predefined.PredefinedOperation;
-import org.apache.cassandra.stress.report.Timer;
-import org.apache.cassandra.stress.util.ResultLogger;
+import org.apache.cassandra.stress.util.Timer;
 
 // Settings unique to the mixed command type
 public class SettingsCommandPreDefinedMixed extends SettingsCommandPreDefined
@@ -40,7 +39,6 @@ public class SettingsCommandPreDefinedMixed extends SettingsCommandPreDefined
     // Ratios for selecting commands - index for each Command, NaN indicates the command is not requested
     private final Map<Command, Double> ratios;
     private final DistributionFactory clustering;
-    private final Options options;
 
     public SettingsCommandPreDefinedMixed(Options options)
     {
@@ -48,7 +46,6 @@ public class SettingsCommandPreDefinedMixed extends SettingsCommandPreDefined
 
         clustering = options.clustering.get();
         ratios = options.probabilities.ratios();
-        this.options = options;
         if (ratios.size() == 0)
             throw new IllegalArgumentException("Must specify at least one command with a non-zero ratio");
     }
@@ -58,9 +55,14 @@ public class SettingsCommandPreDefinedMixed extends SettingsCommandPreDefined
         final SeedManager seeds = new SeedManager(settings);
         return new SampledOpDistributionFactory<Command>(ratios, clustering)
         {
-            protected List<? extends Operation> get(Timer timer, Command key, boolean isWarmup)
+            protected List<? extends Operation> get(Timer timer, PartitionGenerator generator, Command key)
             {
-                return Collections.singletonList(PredefinedOperation.operation(key, timer, SettingsCommandPreDefinedMixed.this.newGenerator(settings), seeds, settings, add));
+                return Collections.singletonList(PredefinedOperation.operation(key, timer, generator, seeds, settings, add));
+            }
+
+            protected PartitionGenerator newGenerator()
+            {
+                return SettingsCommandPreDefinedMixed.this.newGenerator(settings);
             }
         };
     }
@@ -105,13 +107,6 @@ public class SettingsCommandPreDefinedMixed extends SettingsCommandPreDefined
             return merge(Arrays.asList(clustering, probabilities), super.options());
         }
 
-    }
-
-    public void printSettings(ResultLogger out)
-    {
-        super.printSettings(out);
-        out.printf("  Command Ratios: %s%n", ratios);
-        out.printf("  Command Clustering Distribution: %s%n", options.clustering.getOptionAsString());
     }
 
     // CLI utility methods

@@ -19,24 +19,28 @@ package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.cassandra.cql3.Json;
 import org.apache.cassandra.cql3.Lists;
 import org.apache.cassandra.cql3.Term;
-import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.Cell;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.CollectionSerializer;
-import org.apache.cassandra.serializers.ListSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.serializers.ListSerializer;
+
+import org.apache.cassandra.transport.Server;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ListType<T> extends CollectionType<List<T>>
 {
+    private static final Logger logger = LoggerFactory.getLogger(ListType.class);
+
     // interning instances
-    private static final ConcurrentHashMap<AbstractType<?>, ListType> instances = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<AbstractType<?>, ListType> frozenInstances = new ConcurrentHashMap<>();
+    private static final Map<AbstractType<?>, ListType> instances = new HashMap<>();
+    private static final Map<AbstractType<?>, ListType> frozenInstances = new HashMap<>();
 
     private final AbstractType<T> elements;
     public final ListSerializer<T> serializer;
@@ -51,50 +55,30 @@ public class ListType<T> extends CollectionType<List<T>>
         return getInstance(l.get(0), true);
     }
 
-    public static <T> ListType<T> getInstance(AbstractType<T> elements, boolean isMultiCell)
+    public static synchronized <T> ListType<T> getInstance(AbstractType<T> elements, boolean isMultiCell)
     {
-        ConcurrentHashMap<AbstractType<?>, ListType> internMap = isMultiCell ? instances : frozenInstances;
+        Map<AbstractType<?>, ListType> internMap = isMultiCell ? instances : frozenInstances;
         ListType<T> t = internMap.get(elements);
-        return null == t
-             ? internMap.computeIfAbsent(elements, k -> new ListType<>(k, isMultiCell))
-             : t;
+        if (t == null)
+        {
+            t = new ListType<T>(elements, isMultiCell);
+            internMap.put(elements, t);
+        }
+        return t;
     }
 
     private ListType(AbstractType<T> elements, boolean isMultiCell)
     {
-        super(ComparisonType.CUSTOM, Kind.LIST);
+        super(Kind.LIST);
         this.elements = elements;
         this.serializer = ListSerializer.getInstance(elements.getSerializer());
         this.isMultiCell = isMultiCell;
     }
 
     @Override
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean references(AbstractType<?> check)
     {
-        return elements.referencesUserType(name);
-    }
-
-    @Override
-    public ListType<?> withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        (isMultiCell ? instances : frozenInstances).remove(elements);
-
-        return getInstance(elements.withUpdatedUserType(udt), isMultiCell);
-    }
-
-    @Override
-    public AbstractType<?> expandUserTypes()
-    {
-        return getInstance(elements.expandUserTypes(), isMultiCell);
-    }
-
-    @Override
-    public boolean referencesDuration()
-    {
-        return getElementsType().referencesDuration();
+        return super.references(check) || elements.references(check);
     }
 
     public AbstractType<T> getElementsType()
@@ -127,18 +111,6 @@ public class ListType<T> extends CollectionType<List<T>>
     }
 
     @Override
-    public AbstractType<?> freezeNestedMulticellTypes()
-    {
-        if (!isMultiCell())
-            return this;
-
-        if (elements.isFreezable() && elements.isMultiCell())
-            return getInstance(elements.freeze(), isMultiCell);
-
-        return getInstance(elements.freezeNestedMulticellTypes(), isMultiCell);
-    }
-
-    @Override
     public boolean isMultiCell()
     {
         return isMultiCell;
@@ -159,7 +131,7 @@ public class ListType<T> extends CollectionType<List<T>>
     }
 
     @Override
-    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
+    public int compare(ByteBuffer o1, ByteBuffer o2)
     {
         return compareListOrSet(elements, o1, o2);
     }
@@ -173,13 +145,13 @@ public class ListType<T> extends CollectionType<List<T>>
         ByteBuffer bb1 = o1.duplicate();
         ByteBuffer bb2 = o2.duplicate();
 
-        int size1 = CollectionSerializer.readCollectionSize(bb1, ProtocolVersion.V3);
-        int size2 = CollectionSerializer.readCollectionSize(bb2, ProtocolVersion.V3);
+        int size1 = CollectionSerializer.readCollectionSize(bb1, 3);
+        int size2 = CollectionSerializer.readCollectionSize(bb2, 3);
 
         for (int i = 0; i < Math.min(size1, size2); i++)
         {
-            ByteBuffer v1 = CollectionSerializer.readValue(bb1, ProtocolVersion.V3);
-            ByteBuffer v2 = CollectionSerializer.readValue(bb2, ProtocolVersion.V3);
+            ByteBuffer v1 = CollectionSerializer.readValue(bb1, 3);
+            ByteBuffer v2 = CollectionSerializer.readValue(bb2, 3);
             int cmp = elementsComparator.compare(v1, v2);
             if (cmp != 0)
                 return cmp;
@@ -203,12 +175,12 @@ public class ListType<T> extends CollectionType<List<T>>
         return sb.toString();
     }
 
-    public List<ByteBuffer> serializedValues(Iterator<Cell> cells)
+    public List<ByteBuffer> serializedValues(List<Cell> cells)
     {
         assert isMultiCell;
-        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>();
-        while (cells.hasNext())
-            bbs.add(cells.next().value());
+        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(cells.size());
+        for (Cell c : cells)
+            bbs.add(c.value());
         return bbs;
     }
 
@@ -234,7 +206,7 @@ public class ListType<T> extends CollectionType<List<T>>
         return new Lists.DelayedValue(terms);
     }
 
-    public static String setOrListToJsonString(ByteBuffer buffer, AbstractType elementsType, ProtocolVersion protocolVersion)
+    public static String setOrListToJsonString(ByteBuffer buffer, AbstractType elementsType, int protocolVersion)
     {
         ByteBuffer value = buffer.duplicate();
         StringBuilder sb = new StringBuilder("[");
@@ -248,14 +220,8 @@ public class ListType<T> extends CollectionType<List<T>>
         return sb.append("]").toString();
     }
 
-    public ByteBuffer getSliceFromSerialized(ByteBuffer collection, ByteBuffer from, ByteBuffer to)
-    {
-        // We don't support slicing on lists so we don't need that function
-        throw new UnsupportedOperationException();
-    }
-
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         return setOrListToJsonString(buffer, elements, protocolVersion);
     }

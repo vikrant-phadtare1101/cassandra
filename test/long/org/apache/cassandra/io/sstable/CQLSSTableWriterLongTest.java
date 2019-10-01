@@ -25,9 +25,14 @@ import java.util.Random;
 
 import com.google.common.io.Files;
 
+import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.service.StorageService;
 
 public class CQLSSTableWriterLongTest
@@ -35,8 +40,16 @@ public class CQLSSTableWriterLongTest
     @BeforeClass
     public static void setup() throws Exception
     {
-        SchemaLoader.prepareServer();
+        DatabaseDescriptor.setDaemonInitialized();
+        SchemaLoader.cleanupAndLeaveDirs();
+        Keyspace.setInitialized();
         StorageService.instance.initServer();
+    }
+
+    @AfterClass
+    public static void tearDown()
+    {
+        Config.setClientMode(false);
     }
 
     @Test
@@ -75,6 +88,7 @@ public class CQLSSTableWriterLongTest
         CQLSSTableWriter writer = CQLSSTableWriter.builder()
                                                   .inDirectory(dataDir)
                                                   .forTable(schema)
+                                                  .withPartitioner(StorageService.instance.getPartitioner())
                                                   .using(insert)
                                                   .withBufferSizeInMB(1)
                                                   .build();

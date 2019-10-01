@@ -29,6 +29,8 @@ import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.tracing.TraceState;
+import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
@@ -164,7 +166,7 @@ public abstract class AbstractLocalAwareExecutorService implements LocalAwareExe
             catch (Throwable t)
             {
                 JVMStabilityInspector.inspectThrowable(t);
-                logger.error(String.format("Uncaught exception on thread %s", Thread.currentThread()), t);
+                logger.warn("Uncaught exception on thread {}: {}", Thread.currentThread(), t);
                 result = t;
                 failure = true;
             }
@@ -201,8 +203,7 @@ public abstract class AbstractLocalAwareExecutorService implements LocalAwareExe
 
         public T get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException
         {
-            if (!await(timeout, unit))
-                throw new TimeoutException();
+            await(timeout, unit);
             Object result = this.result;
             if (failure)
                 throw new ExecutionException((Throwable) result);

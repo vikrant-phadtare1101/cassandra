@@ -21,17 +21,20 @@ package org.apache.cassandra.io.sstable;
 import java.io.File;
 import java.io.IOException;
 
+import org.junit.After;
 import org.junit.BeforeClass;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.UpdateBuilder;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.ArrayBackedSortedColumns;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.marshal.*;
-import org.apache.cassandra.db.rows.EncodingStats;
-import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
+import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.concurrent.AbstractTransactionalTest;
 
 public class BigTableWriterTest extends AbstractTransactionalTest
@@ -46,8 +49,9 @@ public class BigTableWriterTest extends AbstractTransactionalTest
     {
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    KeyspaceParams.simple(1),
-                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD, 0, Int32Type.instance, AsciiType.instance, Int32Type.instance));
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD));
         cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD);
     }
 
@@ -60,52 +64,49 @@ public class BigTableWriterTest extends AbstractTransactionalTest
     {
         final File file;
         final Descriptor descriptor;
-        final SSTableTxnWriter writer;
+        final SSTableWriter writer;
 
-        private TestableBTW()
+        private TestableBTW() throws IOException
         {
-            this(cfs.newSSTableDescriptor(cfs.getDirectories().getDirectoryForNewSSTables()));
+            this(cfs.getTempSSTablePath(cfs.directories.getDirectoryForNewSSTables()));
         }
 
-        private TestableBTW(Descriptor desc)
+        private TestableBTW(String file) throws IOException
         {
-            this(desc, SSTableTxnWriter.create(cfs, desc, 0, 0, null, false,
-                                               new SerializationHeader(true, cfs.metadata(),
-                                                                       cfs.metadata().regularAndStaticColumns(),
-                                                                       EncodingStats.NO_STATS)));
+            this(file, SSTableWriter.create(file, 0, 0));
         }
 
-        private TestableBTW(Descriptor desc, SSTableTxnWriter sw)
+        private TestableBTW(String file, SSTableWriter sw) throws IOException
         {
             super(sw);
-            this.file = new File(desc.filenameFor(Component.DATA));
-            this.descriptor = desc;
+            this.file = new File(file);
+            this.descriptor = Descriptor.fromFilename(file);
             this.writer = sw;
-
+            ArrayBackedSortedColumns cf = ArrayBackedSortedColumns.factory.create(cfs.metadata);
+            for (int i = 0; i < 10; i++)
+                cf.addColumn(Util.cellname(i), SSTableRewriterTest.random(0, 1000), 1);
             for (int i = 0; i < 100; i++)
-            {
-                UpdateBuilder update = UpdateBuilder.create(cfs.metadata(), i);
-                for (int j = 0; j < 10; j++)
-                    update.newRow(j).add("val", SSTableRewriterTest.random(0, 1000));
-                writer.append(update.build().unfilteredIterator());
-            }
+                writer.append(StorageService.getPartitioner().decorateKey(ByteBufferUtil.bytes(i)), cf);
         }
 
         protected void assertInProgress() throws Exception
         {
-            assertExists(Component.DATA, Component.PRIMARY_INDEX);
-            assertNotExists(Component.FILTER, Component.SUMMARY);
+            assertExists(Descriptor.Type.TEMP, Component.DATA, Component.PRIMARY_INDEX);
+            assertNotExists(Descriptor.Type.TEMP, Component.FILTER, Component.SUMMARY);
+            assertNotExists(Descriptor.Type.FINAL, Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
             Assert.assertTrue(file.length() > 0);
         }
 
         protected void assertPrepared() throws Exception
         {
-            assertExists(Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
+            assertNotExists(Descriptor.Type.TEMP, Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
+            assertExists(Descriptor.Type.FINAL, Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
         }
 
         protected void assertAborted() throws Exception
         {
-            assertNotExists(Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
+            assertNotExists(Descriptor.Type.TEMP, Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
+            assertNotExists(Descriptor.Type.FINAL, Component.DATA, Component.PRIMARY_INDEX, Component.FILTER, Component.SUMMARY);
             Assert.assertFalse(file.exists());
         }
 
@@ -114,22 +115,15 @@ public class BigTableWriterTest extends AbstractTransactionalTest
             assertPrepared();
         }
 
-        @Override
-        protected boolean commitCanThrow()
-        {
-            return true;
-        }
-
-        private void assertExists(Component ... components)
+        private void assertExists(Descriptor.Type type, Component ... components)
         {
             for (Component component : components)
-                Assert.assertTrue(new File(descriptor.filenameFor(component)).exists());
+                Assert.assertTrue(new File(descriptor.asType(type).filenameFor(component)).exists());
         }
-
-        private void assertNotExists(Component ... components)
+        private void assertNotExists(Descriptor.Type type, Component ... components)
         {
             for (Component component : components)
-                Assert.assertFalse(component.toString(), new File(descriptor.filenameFor(component)).exists());
+                Assert.assertFalse(type.toString() + " " + component.toString(), new File(descriptor.asType(type).filenameFor(component)).exists());
         }
     }
 
