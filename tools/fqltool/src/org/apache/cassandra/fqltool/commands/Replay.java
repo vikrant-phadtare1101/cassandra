@@ -49,7 +49,7 @@ public class Replay implements Runnable
     @Arguments(usage = "<path1> [<path2>...<pathN>]", description = "Paths containing the full query logs to replay.", required = true)
     private List<String> arguments = new ArrayList<>();
 
-    @Option(title = "target", name = {"--target"}, description = "Hosts to replay the logs to, can be repeated to replay to more hosts.", required = true)
+    @Option(title = "target", name = {"--target"}, description = "Hosts to replay the logs to, can be repeated to replay to more hosts.")
     private List<String> targetHosts;
 
     @Option(title = "results", name = { "--results"}, description = "Where to store the results of the queries, this should be a directory. Leave this option out to avoid storing results.")
@@ -57,6 +57,9 @@ public class Replay implements Runnable
 
     @Option(title = "keyspace", name = { "--keyspace"}, description = "Only replay queries against this keyspace and queries without keyspace set.")
     private String keyspace;
+
+    @Option(title = "debug", name = {"--debug"}, description = "Debug mode, print all queries executed.")
+    private boolean debug;
 
     @Option(title = "store_queries", name = {"--store-queries"}, description = "Path to store the queries executed. Stores queries in the same order as the result sets are in the result files. Requires --results")
     private String queryStorePath;
@@ -83,7 +86,7 @@ public class Replay implements Runnable
                 System.err.println("You need to state at least one --target host to replay the query against");
                 System.exit(1);
             }
-            replay(keyspace, arguments, targetHosts, resultPaths, queryStorePath);
+            replay(keyspace, arguments, targetHosts, resultPaths, queryStorePath, debug);
         }
         catch (Exception e)
         {
@@ -91,7 +94,7 @@ public class Replay implements Runnable
         }
     }
 
-    public static void replay(String keyspace, List<String> arguments, List<String> targetHosts, List<File> resultPaths, String queryStorePath)
+    public static void replay(String keyspace, List<String> arguments, List<String> targetHosts, List<File> resultPaths, String queryStorePath, boolean debug)
     {
         int readAhead = 200; // how many fql queries should we read in to memory to be able to sort them?
         List<ChronicleQueue> readQueues = null;
@@ -106,7 +109,7 @@ public class Replay implements Runnable
             readQueues = arguments.stream().map(s -> ChronicleQueueBuilder.single(s).readOnly(true).build()).collect(Collectors.toList());
             iterators = readQueues.stream().map(ChronicleQueue::createTailer).map(tailer -> new FQLQueryIterator(tailer, readAhead)).collect(Collectors.toList());
             try (MergeIterator<FQLQuery, List<FQLQuery>> iter = MergeIterator.get(iterators, FQLQuery::compareTo, new Reducer());
-                 QueryReplayer replayer = new QueryReplayer(iter, targetHosts, resultPaths, filters, queryStorePath))
+                 QueryReplayer replayer = new QueryReplayer(iter, targetHosts, resultPaths, filters, System.out, queryStorePath, debug))
             {
                 replayer.replay();
             }
