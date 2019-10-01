@@ -18,6 +18,7 @@
 package org.apache.cassandra.hints;
 
 import java.io.File;
+import java.lang.management.ManagementFactory;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Collections;
@@ -28,10 +29,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.locator.ReplicaLayout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,7 +49,6 @@ import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.utils.MBeanWrapper;
 
 import static com.google.common.collect.Iterables.transform;
 
@@ -135,7 +136,15 @@ public final class HintsService implements HintsServiceMBean
 
     public void registerMBean()
     {
-        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
+        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+        try
+        {
+            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
@@ -176,7 +185,7 @@ public final class HintsService implements HintsServiceMBean
         String keyspaceName = hint.mutation.getKeyspaceName();
         Token token = hint.mutation.key().getToken();
 
-        EndpointsForToken replicas = ReplicaLayout.forTokenWriteLiveAndDown(Keyspace.open(keyspaceName), token).all();
+        EndpointsForToken replicas = StorageService.instance.getNaturalAndPendingReplicasForToken(keyspaceName, token);
 
         // judicious use of streams: eagerly materializing probably cheaper
         // than performing filters / translations 2x extra via Iterables.filter/transform
@@ -256,7 +265,6 @@ public final class HintsService implements HintsServiceMBean
         writeExecutor.shutdownBlocking();
 
         HintsServiceDiagnostics.dispatchingShutdown(this);
-        bufferPool.close();
     }
 
     /**

@@ -20,13 +20,11 @@ package org.apache.cassandra.db;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.LongPredicate;
 
 import javax.annotation.Nullable;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.hash.Hasher;
@@ -36,14 +34,11 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.net.MessageFlag;
-import org.apache.cassandra.net.Verb;
-import org.apache.cassandra.utils.ApproximateTime;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundCloser;
 import org.apache.cassandra.db.transform.RTBoundValidator;
-import org.apache.cassandra.db.transform.RTBoundValidator.Stage;
 import org.apache.cassandra.db.transform.StoppingTransformation;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.exceptions.UnknownIndexException;
@@ -54,9 +49,8 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaConstants;
@@ -68,10 +62,6 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.HashingUtils;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.filter;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * General interface for storage-engine read commands (common to both range and
@@ -152,9 +142,6 @@ public abstract class ReadCommand extends AbstractReadQuery
                           IndexMetadata index)
     {
         super(metadata, nowInSec, columnFilter, rowFilter, limits);
-        if (acceptsTransient && isDigestQuery)
-            throw new IllegalArgumentException("Attempted to issue a digest response to transient replica");
-
         this.kind = kind;
         this.isDigestQuery = isDigestQuery;
         this.digestVersion = digestVersion;
@@ -166,8 +153,6 @@ public abstract class ReadCommand extends AbstractReadQuery
     protected abstract long selectionSerializedSize(int version);
 
     public abstract boolean isLimitedToOnePartition();
-
-    public abstract boolean isRangeRequest();
 
     /**
      * Creates a new <code>ReadCommand</code> instance with new limits.
@@ -182,7 +167,7 @@ public abstract class ReadCommand extends AbstractReadQuery
      *
      * @return the configured timeout for this command.
      */
-    public abstract long getTimeout(TimeUnit unit);
+    public abstract long getTimeout();
 
     /**
      * Whether this query is a digest one or not.
@@ -323,49 +308,10 @@ public abstract class ReadCommand extends AbstractReadQuery
     public abstract ReadCommand copy();
 
     /**
-     * Returns a copy of this command with acceptsTransient set to true.
-     */
-    public ReadCommand copyAsTransientQuery(Replica replica)
-    {
-        Preconditions.checkArgument(replica.isTransient(),
-                                    "Can't make a transient request on a full replica: " + replica);
-        return copyAsTransientQuery();
-    }
-
-    /**
-     * Returns a copy of this command with acceptsTransient set to true.
-     */
-    public ReadCommand copyAsTransientQuery(Iterable<Replica> replicas)
-    {
-        if (any(replicas, Replica::isFull))
-            throw new IllegalArgumentException("Can't make a transient request on full replicas: " + Iterables.toString(filter(replicas, Replica::isFull)));
-        return copyAsTransientQuery();
-    }
-
-    protected abstract ReadCommand copyAsTransientQuery();
-
-    /**
      * Returns a copy of this command with isDigestQuery set to true.
      */
-    public ReadCommand copyAsDigestQuery(Replica replica)
-    {
-        Preconditions.checkArgument(replica.isFull(),
-                                    "Can't make a digest request on a transient replica " + replica);
-        return copyAsDigestQuery();
-    }
-
-    /**
-     * Returns a copy of this command with isDigestQuery set to true.
-     */
-    public ReadCommand copyAsDigestQuery(Iterable<Replica> replicas)
-    {
-        if (any(replicas, Replica::isTransient))
-            throw new IllegalArgumentException("Can't make a digest request on a transient replica " + Iterables.toString(filter(replicas, Replica::isTransient)));
-
-        return copyAsDigestQuery();
-    }
-
-    protected abstract ReadCommand copyAsDigestQuery();
+    public abstract ReadCommand copyAsDigestQuery();
+    public abstract ReadCommand copyAsTransientQuery();
 
     protected abstract UnfilteredPartitionIterator queryStorage(ColumnFamilyStore cfs, ReadExecutionController executionController);
 
@@ -380,7 +326,7 @@ public abstract class ReadCommand extends AbstractReadQuery
     {
         // validate that the sequence of RT markers is correct: open is followed by close, deletion times for both
         // ends equal, and there are no dangling RT bound in any partition.
-        iterator = RTBoundValidator.validate(iterator, Stage.PROCESSED, true);
+        iterator = Transformation.apply(iterator, new RTBoundValidator(true));
 
         return isDigestQuery()
              ? ReadResponse.createDigestResponse(iterator, this)
@@ -457,12 +403,11 @@ public abstract class ReadCommand extends AbstractReadQuery
             repairedDataInfo = new RepairedDataInfo();
 
         UnfilteredPartitionIterator iterator = (null == searcher) ? queryStorage(cfs, executionController) : searcher.search(executionController);
-        iterator = RTBoundValidator.validate(iterator, Stage.MERGED, false);
 
         try
         {
             iterator = withStateTracking(iterator);
-            iterator = RTBoundValidator.validate(withoutPurgeableTombstones(iterator, cfs), Stage.PURGED, false);
+            iterator = withoutPurgeableTombstones(iterator, cfs);
             iterator = withMetricsRecording(iterator, cfs.metric, startTimeNanos);
 
             // If we've used a 2ndary index, we know the result already satisfy the primary expression used, so
@@ -482,7 +427,9 @@ public abstract class ReadCommand extends AbstractReadQuery
             iterator = limits().filter(iterator, nowInSec(), selectsFullPartition());
 
             // because of the above, we need to append an aritifical end bound if the source iterator was stopped short by a counter.
-            return RTBoundCloser.close(iterator);
+            iterator = Transformation.apply(iterator, new RTBoundCloser());
+
+            return iterator;
         }
         catch (RuntimeException | Error e)
         {
@@ -633,15 +580,14 @@ public abstract class ReadCommand extends AbstractReadQuery
         private boolean maybeAbort()
         {
             /**
-             * TODO: this is not a great way to abort early; why not expressly limit checks to 10ms intervals?
-             * The value returned by approxTime.now() is updated only every
-             * {@link org.apache.cassandra.utils.MonotonicClock.SampledClock.CHECK_INTERVAL_MS}, by default 2 millis. Since MonitorableImpl
-             * relies on approxTime, we don't need to check unless the approximate time has elapsed.
+             * The value returned by ApproximateTime.currentTimeMillis() is updated only every
+             * {@link ApproximateTime.CHECK_INTERVAL_MS}, by default 10 millis. Since MonitorableImpl
+             * relies on ApproximateTime, we don't need to check unless the approximate time has elapsed.
              */
-            if (lastChecked == approxTime.now())
+            if (lastChecked == ApproximateTime.currentTimeMillis())
                 return false;
 
-            lastChecked = approxTime.now();
+            lastChecked = ApproximateTime.currentTimeMillis();
 
             if (isAborted())
             {
@@ -667,14 +613,7 @@ public abstract class ReadCommand extends AbstractReadQuery
     /**
      * Creates a message for this command.
      */
-    public Message<ReadCommand> createMessage(boolean trackRepairedData)
-    {
-        return trackRepairedData
-             ? Message.outWithFlags(verb(), this, MessageFlag.CALL_BACK_ON_FAILURE, MessageFlag.TRACK_REPAIRED_DATA)
-             : Message.outWithFlag (verb(), this, MessageFlag.CALL_BACK_ON_FAILURE);
-    }
-
-    public abstract Verb verb();
+    public abstract MessageOut<ReadCommand> createMessage();
 
     protected abstract void appendCQLWhereClause(StringBuilder sb);
 

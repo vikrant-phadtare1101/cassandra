@@ -72,10 +72,9 @@ public final class KeyspaceAttributes extends PropertyDefinitions
     KeyspaceParams asAlteredKeyspaceParams(KeyspaceParams previous)
     {
         boolean durableWrites = getBoolean(Option.DURABLE_WRITES.toString(), previous.durableWrites);
-        Map<String, String> previousOptions = previous.replication.options;
         ReplicationParams replication = getReplicationStrategyClass() == null
                                       ? previous.replication
-                                      : ReplicationParams.fromMapWithDefaults(getAllReplicationOptions(), previousOptions);
+                                      : ReplicationParams.fromMap(getAllReplicationOptions());
         return new KeyspaceParams(durableWrites, replication);
     }
 

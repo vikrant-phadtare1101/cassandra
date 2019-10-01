@@ -122,13 +122,19 @@ public class AuditLogManager
         return fullQueryLogger.enabled();
     }
 
+    private boolean isSystemKeyspace(String keyspaceName)
+    {
+        return SchemaConstants.isLocalSystemKeyspace(keyspaceName);
+    }
+
     /**
      * Logs AuditLogEntry to standard audit logger
      * @param logEntry AuditLogEntry to be logged
      */
     private void logAuditLoggerEntry(AuditLogEntry logEntry)
     {
-        if (!filter.isFiltered(logEntry))
+        if ((logEntry.getKeyspace() == null || !isSystemKeyspace(logEntry.getKeyspace()))
+            && !filter.isFiltered(logEntry))
         {
             auditLogger.log(logEntry);
         }
@@ -287,7 +293,7 @@ public class AuditLogManager
         oldLogger.stop();
     }
 
-    public void configureFQL(Path path, String rollCycle, boolean blocking, int maxQueueWeight, long maxLogSize, String archiveCommand, int maxArchiveRetries)
+    public void configureFQL(Path path, String rollCycle, boolean blocking, int maxQueueWeight, long maxLogSize)
     {
         if (path.equals(auditLogger.path()))
             throw new IllegalArgumentException(String.format("fullquerylogger path (%s) cannot be the same as the " +
@@ -295,7 +301,7 @@ public class AuditLogManager
                                                              path,
                                                              auditLogger.path()));
 
-        fullQueryLogger.configure(path, rollCycle, blocking, maxQueueWeight, maxLogSize, archiveCommand, maxArchiveRetries);
+        fullQueryLogger.configure(path, rollCycle, blocking, maxQueueWeight, maxLogSize);
     }
 
     public void resetFQL(String fullQueryLogPath)

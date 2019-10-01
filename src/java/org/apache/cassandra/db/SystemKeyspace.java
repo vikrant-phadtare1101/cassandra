@@ -32,11 +32,12 @@ import javax.management.openmbean.TabularData;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.cassandra.locator.RangesAtEndpoint;
+import org.apache.cassandra.locator.Replica;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -460,8 +461,8 @@ public final class SystemKeyspace
                             FBUtilities.getReleaseVersionString(),
                             QueryProcessor.CQL_VERSION.toString(),
                             String.valueOf(ProtocolVersion.CURRENT.asInt()),
-                            snitch.getLocalDatacenter(),
-                            snitch.getLocalRack(),
+                            snitch.getDatacenter(FBUtilities.getBroadcastAddressAndPort()),
+                            snitch.getRack(FBUtilities.getBroadcastAddressAndPort()),
                             DatabaseDescriptor.getPartitioner().getClass().getName(),
                             DatabaseDescriptor.getRpcAddress(),
                             DatabaseDescriptor.getNativeTransportPort(),
@@ -688,17 +689,16 @@ public final class SystemKeyspace
         executeInternal(String.format(req, PEERS_V2), ep.address, ep.port, tokensAsSet(tokens));
     }
 
-    public static synchronized boolean updatePreferredIP(InetAddressAndPort ep, InetAddressAndPort preferred_ip)
+    public static synchronized void updatePreferredIP(InetAddressAndPort ep, InetAddressAndPort preferred_ip)
     {
-        if (preferred_ip.equals(getPreferredIP(ep)))
-            return false;
+        if (getPreferredIP(ep) == preferred_ip)
+            return;
 
         String req = "INSERT INTO system.%s (peer, preferred_ip) VALUES (?, ?)";
         executeInternal(String.format(req, LEGACY_PEERS), ep.address, preferred_ip.address);
         req = "INSERT INTO system.%s (peer, peer_port, preferred_ip, preferred_port) VALUES (?, ?, ?, ?)";
         executeInternal(String.format(req, PEERS_V2), ep.address, ep.port, preferred_ip.address, preferred_ip.port);
         forceBlockingFlush(LEGACY_PEERS, PEERS_V2);
-        return true;
     }
 
     public static synchronized void updatePeerInfo(InetAddressAndPort ep, String columnName, Object value)
@@ -778,7 +778,7 @@ public final class SystemKeyspace
 
     /**
      * This method is used to update the System Keyspace with the new tokens for this node
-     */
+    */
     public static synchronized void updateTokens(Collection<Token> tokens)
     {
         assert !tokens.isEmpty() : "removeEndpoint should be used instead";
@@ -1276,30 +1276,6 @@ public final class SystemKeyspace
         executeInternal(cql, keyspace, table);
     }
 
-    /**
-     * Clears size estimates for a keyspace (used to manually clean when we miss a keyspace drop)
-     */
-    public static void clearSizeEstimates(String keyspace)
-    {
-        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
-        executeInternal(cql, keyspace);
-    }
-
-    /**
-     * @return A multimap from keyspace to table for all tables with entries in size estimates
-     */
-    public static synchronized SetMultimap<String, String> getTablesWithSizeEstimates()
-    {
-        SetMultimap<String, String> keyspaceTableMap = HashMultimap.create();
-        String cql = String.format("SELECT keyspace_name, table_name FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
-        UntypedResultSet rs = executeInternal(cql);
-        for (UntypedResultSet.Row row : rs)
-        {
-            keyspaceTableMap.put(row.getString("keyspace_name"), row.getString("table_name"));
-        }
-        return keyspaceTableMap;
-    }
-
     public static synchronized void updateAvailableRanges(String keyspace, Collection<Range<Token>> completedFullRanges, Collection<Range<Token>> completedTransientRanges)
     {
         String cql = "UPDATE system.%s SET full_ranges = full_ranges + ?, transient_ranges = transient_ranges + ? WHERE keyspace_name = ?";
@@ -1309,40 +1285,24 @@ public final class SystemKeyspace
                         keyspace);
     }
 
-    /**
-     * List of the streamed ranges, where transientness is encoded based on the source, where range was streamed from.
-     */
-    public static synchronized AvailableRanges getAvailableRanges(String keyspace, IPartitioner partitioner)
+    public static synchronized RangesAtEndpoint getAvailableRanges(String keyspace, IPartitioner partitioner)
     {
         String query = "SELECT * FROM system.%s WHERE keyspace_name=?";
         UntypedResultSet rs = executeInternal(format(query, AVAILABLE_RANGES_V2), keyspace);
-
-        ImmutableSet.Builder<Range<Token>> full = new ImmutableSet.Builder<>();
-        ImmutableSet.Builder<Range<Token>> trans = new ImmutableSet.Builder<>();
+        InetAddressAndPort endpoint = InetAddressAndPort.getLocalHost();
+        RangesAtEndpoint.Builder builder = RangesAtEndpoint.builder(endpoint);
         for (UntypedResultSet.Row row : rs)
         {
             Optional.ofNullable(row.getSet("full_ranges", BytesType.instance))
                     .ifPresent(full_ranges -> full_ranges.stream()
                             .map(buf -> byteBufferToRange(buf, partitioner))
-                            .forEach(full::add));
+                            .forEach(range -> builder.add(fullReplica(endpoint, range))));
             Optional.ofNullable(row.getSet("transient_ranges", BytesType.instance))
                     .ifPresent(transient_ranges -> transient_ranges.stream()
                             .map(buf -> byteBufferToRange(buf, partitioner))
-                            .forEach(trans::add));
+                            .forEach(range -> builder.add(transientReplica(endpoint, range))));
         }
-        return new AvailableRanges(full.build(), trans.build());
-    }
-
-    public static class AvailableRanges
-    {
-        public Set<Range<Token>> full;
-        public Set<Range<Token>> trans;
-
-        private AvailableRanges(Set<Range<Token>> full, Set<Range<Token>> trans)
-        {
-            this.full = full;
-            this.trans = trans;
-        }
+        return builder.build();
     }
 
     public static void resetAvailableRanges()
@@ -1390,27 +1350,30 @@ public final class SystemKeyspace
 
     /**
      * Compare the release version in the system.local table with the one included in the distro.
-     * If they don't match, snapshot all tables in the system and schema keyspaces. This is intended
-     * to be called at startup to create a backup of the system tables during an upgrade
+     * If they don't match, snapshot all tables in the system keyspace. This is intended to be
+     * called at startup to create a backup of the system tables during an upgrade
      *
      * @throws IOException
      */
-    public static void snapshotOnVersionChange() throws IOException
+    public static boolean snapshotOnVersionChange() throws IOException
     {
         String previous = getPreviousVersionString();
         String next = FBUtilities.getReleaseVersionString();
 
-        // if we're restarting after an upgrade, snapshot the system and schema keyspaces
+        // if we're restarting after an upgrade, snapshot the system keyspace
         if (!previous.equals(NULL_VERSION.toString()) && !previous.equals(next))
 
         {
-            logger.info("Detected version upgrade from {} to {}, snapshotting system keyspaces", previous, next);
+            logger.info("Detected version upgrade from {} to {}, snapshotting system keyspace", previous, next);
             String snapshotName = Keyspace.getTimestampedSnapshotName(format("upgrade-%s-%s",
                                                                              previous,
                                                                              next));
-            for (String keyspace : SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES)
-                Keyspace.open(keyspace).snapshot(snapshotName, null);
+            Keyspace systemKs = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME);
+            systemKs.snapshot(snapshotName, null);
+            return true;
         }
+
+        return false;
     }
 
     /**

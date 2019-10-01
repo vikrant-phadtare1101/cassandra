@@ -137,7 +137,7 @@ public final class SchemaKeyspace
               + "min_index_interval int,"
               + "read_repair_chance double," // no longer used, left for drivers' sake
               + "speculative_retry text,"
-              + "additional_write_policy text,"
+              + "speculative_write_threshold text,"
               + "cdc boolean,"
               + "read_repair text,"
               + "PRIMARY KEY ((keyspace_name), table_name))");
@@ -164,8 +164,8 @@ public final class SchemaKeyspace
               + "table_name text,"
               + "column_name text,"
               + "dropped_time timestamp,"
-              + "kind text,"
               + "type text,"
+              + "kind text,"
               + "PRIMARY KEY ((keyspace_name), table_name, column_name))");
 
     private static final TableMetadata Triggers =
@@ -204,7 +204,7 @@ public final class SchemaKeyspace
               + "min_index_interval int,"
               + "read_repair_chance double," // no longer used, left for drivers' sake
               + "speculative_retry text,"
-              + "additional_write_policy text,"
+              + "speculative_write_threshold text,"
               + "cdc boolean,"
               + "read_repair text,"
               + "PRIMARY KEY ((keyspace_name), view_name))");
@@ -565,7 +565,7 @@ public final class SchemaKeyspace
                .add("min_index_interval", params.minIndexInterval)
                .add("read_repair_chance", 0.0) // no longer used, left for drivers' sake
                .add("speculative_retry", params.speculativeRetry.toString())
-               .add("additional_write_policy", params.additionalWritePolicy.toString())
+               .add("speculative_write_threshold", params.speculativeWriteThreshold.toString())
                .add("crc_check_chance", params.crcCheckChance)
                .add("caching", params.caching.asMap())
                .add("compaction", params.compaction.asMap())
@@ -994,9 +994,7 @@ public final class SchemaKeyspace
                           .minIndexInterval(row.getInt("min_index_interval"))
                           .crcCheckChance(row.getDouble("crc_check_chance"))
                           .speculativeRetry(SpeculativeRetryPolicy.fromString(row.getString("speculative_retry")))
-                          .additionalWritePolicy(row.has("additional_write_policy") ?
-                                                     SpeculativeRetryPolicy.fromString(row.getString("additional_write_policy")) :
-                                                     SpeculativeRetryPolicy.fromString("99PERCENTILE"))
+                          .speculativeWriteThreshold(SpeculativeRetryPolicy.fromString(row.getString("speculative_write_threshold")))
                           .cdc(row.has("cdc") && row.getBoolean("cdc"))
                           .readRepair(getReadRepairStrategy(row))
                           .build();

@@ -26,7 +26,7 @@ import io.netty.util.concurrent.FastThreadLocal;
 
 public enum ChecksumType
 {
-    ADLER32
+    Adler32
     {
 
         @Override

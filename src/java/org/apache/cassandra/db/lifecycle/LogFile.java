@@ -247,11 +247,13 @@ final class LogFile implements AutoCloseable
 
     void commit()
     {
+        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeCommit(System.currentTimeMillis()));
     }
 
     void abort()
     {
+        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeAbort(System.currentTimeMillis()));
     }
 
@@ -280,13 +282,20 @@ final class LogFile implements AutoCloseable
 
     void add(Type type, SSTable table)
     {
-        addRecord(makeRecord(type, table));
+        add(makeRecord(type, table));
+    }
+
+    void add(LogRecord record)
+    {
+        if (!addRecord(record))
+            throw new IllegalStateException();
     }
 
     public void addAll(Type type, Iterable<SSTableReader> toBulkAdd)
     {
         for (LogRecord record : makeRecords(type, toBulkAdd).values())
-            addRecord(record);
+            if (!addRecord(record))
+                throw new IllegalStateException();
     }
 
     Map<SSTable, LogRecord> makeRecords(Type type, Iterable<SSTableReader> tables)
@@ -327,17 +336,14 @@ final class LogFile implements AutoCloseable
         return record.asType(type);
     }
 
-    void addRecord(LogRecord record)
+    private boolean addRecord(LogRecord record)
     {
-        if (completed())
-            throw new IllegalStateException("Transaction already completed");
-
         if (records.contains(record))
-            throw new IllegalStateException("Record already exists");
+            return false;
 
         replicas.append(record);
-        if (!records.add(record))
-            throw new IllegalStateException("Failed to add record");
+
+        return records.add(record);
     }
 
     void remove(Type type, SSTable table)
