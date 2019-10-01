@@ -20,7 +20,6 @@ package org.apache.cassandra.service.reads;
 
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Locale;
 
 import org.junit.Test;
 import org.junit.experimental.runners.Enclosed;
@@ -37,11 +36,10 @@ import static org.apache.cassandra.service.reads.HybridSpeculativeRetryPolicy.Fu
 @RunWith(Enclosed.class)
 public class SpeculativeRetryParseTest
 {
+
     @RunWith(Parameterized.class)
     public static class SuccessfulParseTest
     {
-        static final Locale defaultLocale = Locale.getDefault();
-
         private final String string;
         private final SpeculativeRetryPolicy expectedValue;
 
@@ -106,17 +104,9 @@ public class SpeculativeRetryParseTest
         }
 
         @Test
-        public void testToStringRoundTripDefaultLocale()
+        public void testToStringRoundTrip()
         {
             assertEquals(expectedValue, SpeculativeRetryPolicy.fromString(expectedValue.toString()));
-        }
-
-        @Test
-        public void testToStringRoundTripCommaDecimalSeparatorLocale()
-        {
-            Locale.setDefault(new Locale("pt","BR")); // CASSANDRA-14374: Brazil uses comma instead of dot as decimal separator
-            assertEquals(expectedValue, SpeculativeRetryPolicy.fromString(expectedValue.toString()));
-            Locale.setDefault(defaultLocale);
         }
     }
 

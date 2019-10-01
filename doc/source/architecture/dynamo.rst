@@ -74,35 +74,6 @@ nodes in each rack, the data load on the smallest rack may be much higher.  Simi
 into a new rack, it will be considered a replica for the entire ring.  For this reason, many operators choose to
 configure all nodes on a single "rack".
 
-.. _transient-replication:
-
-Transient Replication
-~~~~~~~~~~~~~~~~~~~~~
-
-Transient replication allows you to configure a subset of replicas to only replicate data that hasn't been incrementally
-repaired. This allows you to decouple data redundancy from availability. For instance, if you have a keyspace replicated
-at rf 3, and alter it to rf 5 with 2 transient replicas, you go from being able to tolerate one failed replica to being
-able to tolerate two, without corresponding increase in storage usage. This is because 3 nodes will replicate all the data
-for a given token range, and the other 2 will only replicate data that hasn't been incrementally repaired.
-
-To use transient replication, you first need to enable it in ``cassandra.yaml``. Once enabled, both SimpleStrategy and
-NetworkTopologyStrategy can be configured to transiently replicate data. You configure it by specifying replication factor
-as ``<total_replicas>/<transient_replicas`` Both SimpleStrategy and NetworkTopologyStrategy support configuring transient
-replication.
-
-Transiently replicated keyspaces only support tables created with read_repair set to NONE and monotonic reads are not currently supported.
-You also can't use LWT, logged batches, and counters in 4.0. You will possibly never be able to use materialized views
-with transiently replicated keyspaces and probably never be able to use 2i with them.
-
-Transient replication is an experimental feature that may not be ready for production use. The expected audienced is experienced
-users of Cassandra capable of fully validating a deployment of their particular application. That means being able check
-that operations like reads, writes, decommission, remove, rebuild, repair, and replace all work with your queries, data,
-configuration, operational practices, and availability requirements.
-
-It is anticipated that 4.next will support monotonic reads with transient replication as well as LWT, logged batches, and
-counters.
-
-
 Tunable Consistency
 ^^^^^^^^^^^^^^^^^^^
 
@@ -146,8 +117,12 @@ Write operations are always sent to all replicas, regardless of consistency leve
 controls how many responses the coordinator waits for before responding to the client.
 
 For read operations, the coordinator generally only issues read commands to enough replicas to satisfy the consistency
-level, with one exception. Speculative retry may issue a redundant read request to an extra replica if the other replicas
-have not responded within a specified time window.
+level. There are a couple of exceptions to this:
+
+- Speculative retry may issue a redundant read request to an extra replica if the other replicas have not responded
+  within a specified time window.
+- Based on ``read_repair_chance`` and ``dclocal_read_repair_chance`` (part of a table's schema), read requests may be
+  randomly sent to all replicas in order to repair potentially inconsistent data.
 
 Picking Consistency Levels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

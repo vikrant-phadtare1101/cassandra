@@ -186,7 +186,6 @@ public class CacheProviderTest
         assertEquals(key1.hashCode(), key2.hashCode());
 
         tm = TableMetadata.builder("ks", "tab.indexFoo", id1)
-                          .kind(TableMetadata.Kind.INDEX)
                           .addPartitionKeyColumn("pk", UTF8Type.instance)
                           .indexes(Indexes.of(IndexMetadata.fromSchemaMetadata("indexFoo", IndexMetadata.Kind.KEYS, Collections.emptyMap())))
                           .build();
