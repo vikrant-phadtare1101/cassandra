@@ -27,6 +27,5 @@ public interface RatioDistributionFactory extends Serializable
 {
 
     RatioDistribution get();
-    String getConfigAsString();
 
 }

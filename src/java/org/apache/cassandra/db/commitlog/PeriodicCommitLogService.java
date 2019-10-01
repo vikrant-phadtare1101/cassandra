@@ -17,28 +17,42 @@
  */
 package org.apache.cassandra.db.commitlog;
 
-import java.util.concurrent.TimeUnit;
-
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.utils.concurrent.WaitQueue;
 
 class PeriodicCommitLogService extends AbstractCommitLogService
 {
-    private static final long blockWhenSyncLagsNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getPeriodicCommitLogSyncBlock());
+    private static final int blockWhenSyncLagsMillis = (int) (DatabaseDescriptor.getCommitLogSyncPeriod() * 1.5);
 
     public PeriodicCommitLogService(final CommitLog commitLog)
     {
-        super(commitLog, "PERIODIC-COMMIT-LOG-SYNCER", DatabaseDescriptor.getCommitLogSyncPeriod(),
-              !(commitLog.configuration.useCompression() || commitLog.configuration.useEncryption()));
+        super(commitLog, "PERIODIC-COMMIT-LOG-SYNCER", DatabaseDescriptor.getCommitLogSyncPeriod());
     }
 
     protected void maybeWaitForSync(CommitLogSegment.Allocation alloc)
     {
-        long expectedSyncTime = System.nanoTime() - blockWhenSyncLagsNanos;
-        if (lastSyncedAt < expectedSyncTime)
+        if (waitForSyncToCatchUp(Long.MAX_VALUE))
         {
+            // wait until periodic sync() catches up with its schedule
+            long started = System.currentTimeMillis();
             pending.incrementAndGet();
-            awaitSyncAt(expectedSyncTime, commitLog.metrics.waitingOnCommit.time());
+            while (waitForSyncToCatchUp(started))
+            {
+                WaitQueue.Signal signal = syncComplete.register(commitLog.metrics.waitingOnCommit.time());
+                if (waitForSyncToCatchUp(started))
+                    signal.awaitUninterruptibly();
+                else
+                    signal.cancel();
+            }
             pending.decrementAndGet();
         }
+    }
+
+    /**
+     * @return true if sync is currently lagging behind inserts
+     */
+    private boolean waitForSyncToCatchUp(long started)
+    {
+        return started > lastSyncedAt + blockWhenSyncLagsMillis;
     }
 }

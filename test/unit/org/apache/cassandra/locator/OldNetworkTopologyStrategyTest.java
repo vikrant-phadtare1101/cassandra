@@ -1,78 +1,71 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+* Licensed to the Apache Software Foundation (ASF) under one
+* or more contributor license agreements.  See the NOTICE file
+* distributed with this work for additional information
+* regarding copyright ownership.  The ASF licenses this file
+* to you under the Apache License, Version 2.0 (the
+* "License"); you may not use this file except in compliance
+* with the License.  You may obtain a copy of the License at
+*
+*    http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing,
+* software distributed under the License is distributed on an
+* "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+* KIND, either express or implied.  See the License for the
+* specific language governing permissions and limitations
+* under the License.
+*/
+
 package org.apache.cassandra.locator;
 
+import static org.junit.Assert.assertEquals;
+
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
-
-import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.dht.RandomPartitioner.BigIntegerToken;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.service.RangeRelocator;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.Pair;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import org.junit.Before;
+import org.junit.Test;
 
 public class OldNetworkTopologyStrategyTest
 {
-
     private List<Token> keyTokens;
     private TokenMetadata tmd;
-    private Map<String, ArrayList<InetAddressAndPort>> expectedResults;
-
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
+    private Map<String, ArrayList<InetAddress>> expectedResults;
 
     @Before
-    public void init() throws Exception
+    public void init()
     {
         keyTokens = new ArrayList<Token>();
         tmd = new TokenMetadata();
-        expectedResults = new HashMap<String, ArrayList<InetAddressAndPort>>();
+        expectedResults = new HashMap<String, ArrayList<InetAddress>>();
     }
 
     /**
      * 4 same rack endpoints
      *
-     * @throws java.net.UnknownHostException
+     * @throws UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsA() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.0.0.3");
@@ -90,14 +83,14 @@ public class OldNetworkTopologyStrategyTest
      * 3 same rack endpoints
      * 1 external datacenter
      *
-     * @throws java.net.UnknownHostException
+     * @throws UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsB() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.1.0.3");
@@ -116,14 +109,14 @@ public class OldNetworkTopologyStrategyTest
      * 1 same datacenter, different rack endpoints
      * 1 external datacenter
      *
-     * @throws java.net.UnknownHostException
+     * @throws UnknownHostException
      */
     @Test
     public void testBigIntegerEndpointsC() throws UnknownHostException
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, optsWithRF(1));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tmd, endpointSnitch, KSMetaData.optsWithRF(1));
         addEndpoint("0", "5", "254.0.0.1");
         addEndpoint("10", "15", "254.0.0.2");
         addEndpoint("20", "25", "254.0.1.3");
@@ -137,12 +130,12 @@ public class OldNetworkTopologyStrategyTest
         testGetEndpoints(strategy, keyTokens.toArray(new Token[0]));
     }
 
-    private ArrayList<InetAddressAndPort> buildResult(String... addresses) throws UnknownHostException
+    private ArrayList<InetAddress> buildResult(String... addresses) throws UnknownHostException
     {
-        ArrayList<InetAddressAndPort> result = new ArrayList<>();
+        ArrayList<InetAddress> result = new ArrayList<InetAddress>();
         for (String address : addresses)
         {
-            result.add(InetAddressAndPort.getByName(address));
+            result.add(InetAddress.getByName(address));
         }
         return result;
     }
@@ -154,7 +147,7 @@ public class OldNetworkTopologyStrategyTest
         BigIntegerToken keyToken = new BigIntegerToken(keyTokenID);
         keyTokens.add(keyToken);
 
-        InetAddressAndPort ep = InetAddressAndPort.getByName(endpointAddress);
+        InetAddress ep = InetAddress.getByName(endpointAddress);
         tmd.updateNormalToken(endpointToken, ep);
     }
 
@@ -162,11 +155,11 @@ public class OldNetworkTopologyStrategyTest
     {
         for (Token keyToken : keyTokens)
         {
-            int j = 0;
-            for (InetAddressAndPort endpoint : strategy.getNaturalReplicasForToken(keyToken).endpoints())
+            List<InetAddress> endpoints = strategy.getNaturalEndpoints(keyToken);
+            for (int j = 0; j < endpoints.size(); j++)
             {
-                ArrayList<InetAddressAndPort> hostsExpected = expectedResults.get(keyToken.toString());
-                assertEquals(endpoint, hostsExpected.get(j++));
+                ArrayList<InetAddress> hostsExpected = expectedResults.get(keyToken.toString());
+                assertEquals(endpoints.get(j), hostsExpected.get(j));
             }
         }
     }
@@ -174,7 +167,7 @@ public class OldNetworkTopologyStrategyTest
     /**
      * test basic methods to move a node. For sure, it's not the best place, but it's easy to test
      *
-     * @throws java.net.UnknownHostException
+     * @throws UnknownHostException
      */
     @Test
     public void testMoveLeft() throws UnknownHostException
@@ -190,6 +183,7 @@ public class OldNetworkTopologyStrategyTest
         assertEquals(ranges.left.iterator().next().left, tokensAfterMove[movingNodeIdx]);
         assertEquals(ranges.left.iterator().next().right, tokens[movingNodeIdx]);
         assertEquals("No data should be fetched", ranges.right.size(), 0);
+
     }
 
     @Test
@@ -206,6 +200,7 @@ public class OldNetworkTopologyStrategyTest
         assertEquals("No data should be streamed", ranges.left.size(), 0);
         assertEquals(ranges.right.iterator().next().left, tokens[movingNodeIdx]);
         assertEquals(ranges.right.iterator().next().right, tokensAfterMove[movingNodeIdx]);
+
     }
 
     @SuppressWarnings("unchecked")
@@ -339,7 +334,7 @@ public class OldNetworkTopologyStrategyTest
 
         int lastIPPart = 1;
         for (BigIntegerToken token : tokens)
-            tokenMetadataCurrent.updateNormalToken(token, InetAddressAndPort.getByName("254.0.0." + Integer.toString(lastIPPart++)));
+            tokenMetadataCurrent.updateNormalToken(token, InetAddress.getByName("254.0.0." + Integer.toString(lastIPPart++)));
 
         return tokenMetadataCurrent;
     }
@@ -359,28 +354,20 @@ public class OldNetworkTopologyStrategyTest
     {
         RackInferringSnitch endpointSnitch = new RackInferringSnitch();
 
-        InetAddressAndPort movingNode = InetAddressAndPort.getByName("254.0.0." + Integer.toString(movingNodeIdx + 1));
+        InetAddress movingNode = InetAddress.getByName("254.0.0." + Integer.toString(movingNodeIdx + 1));
 
 
         TokenMetadata tokenMetadataCurrent = initTokenMetadata(tokens);
         TokenMetadata tokenMetadataAfterMove = initTokenMetadata(tokensAfterMove);
-        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tokenMetadataCurrent, endpointSnitch, optsWithRF(2));
+        AbstractReplicationStrategy strategy = new OldNetworkTopologyStrategy("Keyspace1", tokenMetadataCurrent, endpointSnitch, KSMetaData.optsWithRF(2));
 
-        RangesAtEndpoint currentRanges = strategy.getAddressReplicas().get(movingNode);
-        RangesAtEndpoint updatedRanges = strategy.getPendingAddressRanges(tokenMetadataAfterMove, tokensAfterMove[movingNodeIdx], movingNode);
+        Collection<Range<Token>> currentRanges = strategy.getAddressRanges().get(movingNode);
+        Collection<Range<Token>> updatedRanges = strategy.getPendingAddressRanges(tokenMetadataAfterMove, tokensAfterMove[movingNodeIdx], movingNode);
 
-        return asRanges(RangeRelocator.calculateStreamAndFetchRanges(currentRanges, updatedRanges));
+        Pair<Set<Range<Token>>, Set<Range<Token>>> ranges = StorageService.instance.calculateStreamAndFetchRanges(currentRanges, updatedRanges);
+
+        return ranges;
     }
 
-    private static Map<String, String> optsWithRF(int rf)
-    {
-        return Collections.singletonMap("replication_factor", Integer.toString(rf));
-    }
 
-    public static Pair<Set<Range<Token>>, Set<Range<Token>>> asRanges(Pair<RangesAtEndpoint, RangesAtEndpoint> replicas)
-    {
-        Set<Range<Token>> leftRanges = replicas.left.ranges();
-        Set<Range<Token>> rightRanges = replicas.right.ranges();
-        return Pair.create(leftRanges, rightRanges);
-    }
 }

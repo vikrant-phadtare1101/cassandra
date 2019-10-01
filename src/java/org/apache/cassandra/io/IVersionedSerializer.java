@@ -17,6 +17,37 @@
  */
 package org.apache.cassandra.io;
 
-public interface IVersionedSerializer<T> extends IVersionedAsymmetricSerializer<T, T>
+import java.io.DataInput;
+import java.io.IOException;
+
+import org.apache.cassandra.io.util.DataOutputPlus;
+
+public interface IVersionedSerializer<T>
 {
+    /**
+     * Serialize the specified type into the specified DataOutputStream instance.
+     *
+     * @param t type that needs to be serialized
+     * @param out DataOutput into which serialization needs to happen.
+     * @param version protocol version
+     * @throws java.io.IOException if serialization fails
+     */
+    public void serialize(T t, DataOutputPlus out, int version) throws IOException;
+
+    /**
+     * Deserialize into the specified DataInputStream instance.
+     * @param in DataInput from which deserialization needs to happen.
+     * @param version protocol version
+     * @return the type that was deserialized
+     * @throws IOException if deserialization fails
+     */
+    public T deserialize(DataInput in, int version) throws IOException;
+
+    /**
+     * Calculate serialized size of object without actually serializing.
+     * @param t object to calculate serialized size
+     * @param version protocol version
+     * @return serialized size of object t
+     */
+    public long serializedSize(T t, int version);
 }

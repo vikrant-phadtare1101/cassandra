@@ -49,9 +49,4 @@ public abstract class SharedCloseableImpl implements SharedCloseable
     {
         return ref.ensureReleased(accumulate);
     }
-
-    public void addTo(Ref.IdentityCollection identities)
-    {
-        identities.add(ref);
-    }
 }

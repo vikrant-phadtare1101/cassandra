@@ -21,10 +21,37 @@ package org.apache.cassandra.cql3.validation.entities;
 import org.junit.Test;
 
 import org.apache.cassandra.cql3.CQLTester;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
 public class CountersTest extends CQLTester
 {
+    /**
+     * Check for a table with counters,
+     * migrated from cql_tests.py:TestCQL.counters_test()
+     */
+    @Test
+    public void testCounters() throws Throwable
+    {
+        createTable("CREATE TABLE %s (userid int, url text, total counter, PRIMARY KEY (userid, url)) WITH COMPACT STORAGE");
+
+        execute("UPDATE %s SET total = total + 1 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(1L));
+
+        execute("UPDATE %s SET total = total - 4 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(-3L));
+
+        execute("UPDATE %s SET total = total+1 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(-2L));
+
+        execute("UPDATE %s SET total = total -2 WHERE userid = 1 AND url = 'http://foo.com'");
+        assertRows(execute("SELECT total FROM %s WHERE userid = 1 AND url = 'http://foo.com'"),
+                   row(-4L));
+    }
+
     /**
      * Test for the validation bug of #4706,
      * migrated from cql_tests.py:TestCQL.validate_counter_regular_test()
@@ -32,8 +59,8 @@ public class CountersTest extends CQLTester
     @Test
     public void testRegularCounters() throws Throwable
     {
-        assertInvalidThrowMessage("Cannot mix counter and non counter columns in the same table",
-                                  InvalidRequestException.class,
+        assertInvalidThrowMessage("Cannot add a non counter column",
+                                  ConfigurationException.class,
                                   String.format("CREATE TABLE %s.%s (id bigint PRIMARY KEY, count counter, things set<text>)", KEYSPACE, createTableName()));
     }
 
@@ -86,81 +113,14 @@ public class CountersTest extends CQLTester
         );
     }
 
-    @Test
-    public void testCounterFiltering() throws Throwable
-    {
-        createTable("CREATE TABLE %s (k int PRIMARY KEY, a counter)");
-
-        for (int i = 0; i < 10; i++)
-            execute("UPDATE %s SET a = a + ? WHERE k = ?", (long) i, i);
-
-        execute("UPDATE %s SET a = a + ? WHERE k = ?", 6L, 10);
-
-        // GT
-        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE a > ? ALLOW FILTERING", 5L),
-                                row(6, 6L),
-                                row(7, 7L),
-                                row(8, 8L),
-                                row(9, 9L),
-                                row(10, 6L));
-
-        // GTE
-        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE a >= ? ALLOW FILTERING", 6L),
-                                row(6, 6L),
-                                row(7, 7L),
-                                row(8, 8L),
-                                row(9, 9L),
-                                row(10, 6L));
-
-        // LT
-        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE a < ? ALLOW FILTERING", 3L),
-                                row(0, 0L),
-                                row(1, 1L),
-                                row(2, 2L));
-
-        // LTE
-        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE a <= ? ALLOW FILTERING", 3L),
-                                row(0, 0L),
-                                row(1, 1L),
-                                row(2, 2L),
-                                row(3, 3L));
-
-        // EQ
-        assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE a = ? ALLOW FILTERING", 6L),
-                                row(6, 6L),
-                                row(10, 6L));
-    }
-
-    @Test
-    public void testCounterFilteringWithNull() throws Throwable
-    {
-        createTable("CREATE TABLE %s (k int PRIMARY KEY, a counter, b counter)");
-        execute("UPDATE %s SET a = a + ? WHERE k = ?", 1L, 1);
-
-        assertRows(execute("SELECT * FROM %s WHERE a > ? ALLOW FILTERING", 0L),
-                   row(1, 1L, null));
-        // GT
-        assertEmpty(execute("SELECT * FROM %s WHERE b > ? ALLOW FILTERING", 1L));
-        // GTE
-        assertEmpty(execute("SELECT * FROM %s WHERE b >= ? ALLOW FILTERING", 1L));
-        // LT
-        assertEmpty(execute("SELECT * FROM %s WHERE b < ? ALLOW FILTERING", 1L));
-        // LTE
-        assertEmpty(execute("SELECT * FROM %s WHERE b <= ? ALLOW FILTERING", 1L));
-        // EQ
-        assertEmpty(execute("SELECT * FROM %s WHERE b = ? ALLOW FILTERING", 1L));
-        // with null
-        assertInvalidMessage("Invalid null value for counter increment/decrement",
-                             "SELECT * FROM %s WHERE b = null ALLOW FILTERING");
-    }
-
     /**
      * Test for the validation bug of #9395.
      */
     @Test
     public void testProhibitReversedCounterAsPartOfPrimaryKey() throws Throwable
     {
-        assertInvalidThrowMessage("counter type is not supported for PRIMARY KEY column 'a'",
+        assertInvalidThrowMessage("counter type is not supported for PRIMARY KEY part a",
                                   InvalidRequestException.class, String.format("CREATE TABLE %s.%s (a counter, b int, PRIMARY KEY (b, a)) WITH CLUSTERING ORDER BY (a desc);", KEYSPACE, createTableName()));
     }
+
 }

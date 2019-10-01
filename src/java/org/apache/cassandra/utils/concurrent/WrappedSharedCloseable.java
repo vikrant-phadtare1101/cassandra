@@ -20,9 +20,6 @@ package org.apache.cassandra.utils.concurrent;
 
 import java.util.Arrays;
 
-import static org.apache.cassandra.utils.Throwables.maybeFail;
-import static org.apache.cassandra.utils.Throwables.merge;
-
 /**
  * An implementation of SharedCloseable that wraps a normal AutoCloseable,
  * ensuring its close method is only called when all instances of SharedCloseable have been
@@ -33,44 +30,25 @@ public abstract class WrappedSharedCloseable extends SharedCloseableImpl
 
     public WrappedSharedCloseable(final AutoCloseable closeable)
     {
-        this(new AutoCloseable[] {closeable});
+        this(new AutoCloseable[] { closeable});
     }
 
     public WrappedSharedCloseable(final AutoCloseable[] closeable)
     {
-        super(new Tidy(closeable));
-        wrapped = closeable;
-    }
-
-    static final class Tidy implements RefCounted.Tidy
-    {
-        final AutoCloseable[] closeable;
-        Tidy(AutoCloseable[] closeable)
+        super(new RefCounted.Tidy()
         {
-            this.closeable = closeable;
-        }
-
-        public void tidy() throws Exception
-        {
-            Throwable fail = null;
-            for (AutoCloseable c : closeable)
+            public void tidy() throws Exception
             {
-                try
-                {
+                for (AutoCloseable c : closeable)
                     c.close();
-                }
-                catch (Throwable t)
-                {
-                    fail = merge(fail, t);
-                }
             }
-            maybeFail(fail);
-        }
 
-        public String name()
-    {
-        return Arrays.toString(closeable);
-    }
+            public String name()
+            {
+                return Arrays.toString(closeable);
+            }
+        });
+        wrapped = closeable;
     }
 
     protected WrappedSharedCloseable(WrappedSharedCloseable copy)

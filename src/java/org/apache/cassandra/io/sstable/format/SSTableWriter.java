@@ -18,20 +18,15 @@
 
 package org.apache.cassandra.io.sstable.format;
 
-import java.util.*;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
-
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.RowIndexEntry;
-import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.compaction.OperationType;
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
-import org.apache.cassandra.db.rows.UnfilteredRowIterator;
-import org.apache.cassandra.index.Index;
-import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.db.compaction.AbstractCompactedRow;
+import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTable;
@@ -40,10 +35,14 @@ import org.apache.cassandra.io.sstable.metadata.MetadataComponent;
 import org.apache.cassandra.io.sstable.metadata.MetadataType;
 import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.utils.concurrent.Transactional;
+
+import java.io.DataInput;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * This is the API all table writers must implement.
@@ -54,15 +53,11 @@ import org.apache.cassandra.utils.concurrent.Transactional;
 public abstract class SSTableWriter extends SSTable implements Transactional
 {
     protected long repairedAt;
-    protected UUID pendingRepair;
-    protected boolean isTransient;
     protected long maxDataAge = -1;
     protected final long keyCount;
     protected final MetadataCollector metadataCollector;
     protected final RowIndexEntry.IndexSerializer rowIndexEntrySerializer;
-    protected final SerializationHeader header;
     protected final TransactionalProxy txnProxy = txnProxy();
-    protected final Collection<SSTableFlushObserver> observers;
 
     protected abstract TransactionalProxy txnProxy();
 
@@ -74,85 +69,54 @@ public abstract class SSTableWriter extends SSTable implements Transactional
         protected boolean openResult;
     }
 
-    protected SSTableWriter(Descriptor descriptor,
-                            long keyCount,
-                            long repairedAt,
-                            UUID pendingRepair,
-                            boolean isTransient,
-                            TableMetadataRef metadata,
-                            MetadataCollector metadataCollector,
-                            SerializationHeader header,
-                            Collection<SSTableFlushObserver> observers)
+    protected SSTableWriter(Descriptor descriptor, long keyCount, long repairedAt, CFMetaData metadata, IPartitioner partitioner, MetadataCollector metadataCollector)
     {
-        super(descriptor, components(metadata.get()), metadata, DatabaseDescriptor.getDiskOptimizationStrategy());
+        super(descriptor, components(metadata), metadata, partitioner);
         this.keyCount = keyCount;
         this.repairedAt = repairedAt;
-        this.pendingRepair = pendingRepair;
-        this.isTransient = isTransient;
         this.metadataCollector = metadataCollector;
-        this.header = header;
-        this.rowIndexEntrySerializer = descriptor.version.getSSTableFormat().getIndexSerializer(metadata.get(), descriptor.version, header);
-        this.observers = observers == null ? Collections.emptySet() : observers;
+        this.rowIndexEntrySerializer = descriptor.version.getSSTableFormat().getIndexSerializer(metadata);
     }
 
-    public static SSTableWriter create(Descriptor descriptor,
-                                       Long keyCount,
-                                       Long repairedAt,
-                                       UUID pendingRepair,
-                                       boolean isTransient,
-                                       TableMetadataRef metadata,
-                                       MetadataCollector metadataCollector,
-                                       SerializationHeader header,
-                                       Collection<Index> indexes,
-                                       LifecycleNewTracker lifecycleNewTracker)
+    public static SSTableWriter create(Descriptor descriptor, Long keyCount, Long repairedAt, CFMetaData metadata,  IPartitioner partitioner, MetadataCollector metadataCollector)
     {
         Factory writerFactory = descriptor.getFormat().getWriterFactory();
-        return writerFactory.open(descriptor, keyCount, repairedAt, pendingRepair, isTransient, metadata, metadataCollector, header, observers(descriptor, indexes, lifecycleNewTracker.opType()), lifecycleNewTracker);
+        return writerFactory.open(descriptor, keyCount, repairedAt, metadata, partitioner, metadataCollector);
     }
 
-    public static SSTableWriter create(Descriptor descriptor,
-                                       long keyCount,
-                                       long repairedAt,
-                                       UUID pendingRepair,
-                                       boolean isTransient,
-                                       int sstableLevel,
-                                       SerializationHeader header,
-                                       Collection<Index> indexes,
-                                       LifecycleNewTracker lifecycleNewTracker)
+    public static SSTableWriter create(Descriptor descriptor, long keyCount, long repairedAt)
     {
-        TableMetadataRef metadata = Schema.instance.getTableMetadataRef(descriptor);
-        return create(metadata, descriptor, keyCount, repairedAt, pendingRepair, isTransient, sstableLevel, header, indexes, lifecycleNewTracker);
+        return create(descriptor, keyCount, repairedAt, 0);
     }
 
-    public static SSTableWriter create(TableMetadataRef metadata,
+    public static SSTableWriter create(Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel)
+    {
+        CFMetaData metadata = Schema.instance.getCFMetaData(descriptor);
+        return create(metadata, descriptor, keyCount, repairedAt, sstableLevel, DatabaseDescriptor.getPartitioner());
+    }
+
+    public static SSTableWriter create(CFMetaData metadata,
                                        Descriptor descriptor,
                                        long keyCount,
                                        long repairedAt,
-                                       UUID pendingRepair,
-                                       boolean isTransient,
                                        int sstableLevel,
-                                       SerializationHeader header,
-                                       Collection<Index> indexes,
-                                       LifecycleNewTracker lifecycleNewTracker)
+                                       IPartitioner partitioner)
     {
-        MetadataCollector collector = new MetadataCollector(metadata.get().comparator).sstableLevel(sstableLevel);
-        return create(descriptor, keyCount, repairedAt, pendingRepair, isTransient, metadata, collector, header, indexes, lifecycleNewTracker);
+        MetadataCollector collector = new MetadataCollector(metadata.comparator).sstableLevel(sstableLevel);
+        return create(descriptor, keyCount, repairedAt, metadata, partitioner, collector);
     }
 
-    @VisibleForTesting
-    public static SSTableWriter create(Descriptor descriptor,
-                                       long keyCount,
-                                       long repairedAt,
-                                       UUID pendingRepair,
-                                       boolean isTransient,
-                                       SerializationHeader header,
-                                       Collection<Index> indexes,
-                                       LifecycleNewTracker lifecycleNewTracker)
+    public static SSTableWriter create(String filename, long keyCount, long repairedAt, int sstableLevel)
     {
-        return create(descriptor, keyCount, repairedAt, pendingRepair, isTransient, 0, header, indexes, lifecycleNewTracker);
+        return create(Descriptor.fromFilename(filename), keyCount, repairedAt, sstableLevel);
     }
 
-    private static Set<Component> components(TableMetadata metadata)
+    public static SSTableWriter create(String filename, long keyCount, long repairedAt)
+    {
+        return create(Descriptor.fromFilename(filename), keyCount, repairedAt, 0);
+    }
+
+    private static Set<Component> components(CFMetaData metadata)
     {
         Set<Component> components = new HashSet<Component>(Arrays.asList(Component.DATA,
                 Component.PRIMARY_INDEX,
@@ -161,10 +125,10 @@ public abstract class SSTableWriter extends SSTable implements Transactional
                 Component.TOC,
                 Component.DIGEST));
 
-        if (metadata.params.bloomFilterFpChance < 1.0)
+        if (metadata.getBloomFilterFpChance() < 1.0)
             components.add(Component.FILTER);
 
-        if (metadata.params.compression.isEnabled())
+        if (metadata.compressionParameters().sstableCompressor != null)
         {
             components.add(Component.COMPRESSION_INFO);
         }
@@ -177,48 +141,23 @@ public abstract class SSTableWriter extends SSTable implements Transactional
         return components;
     }
 
-    private static Collection<SSTableFlushObserver> observers(Descriptor descriptor,
-                                                              Collection<Index> indexes,
-                                                              OperationType operationType)
-    {
-        if (indexes == null)
-            return Collections.emptyList();
-
-        List<SSTableFlushObserver> observers = new ArrayList<>(indexes.size());
-        for (Index index : indexes)
-        {
-            SSTableFlushObserver observer = index.getFlushObserver(descriptor, operationType);
-            if (observer != null)
-            {
-                observer.begin();
-                observers.add(observer);
-            }
-        }
-
-        return ImmutableList.copyOf(observers);
-    }
 
     public abstract void mark();
 
+
     /**
-     * Appends partition data to this writer.
-     *
-     * @param iterator the partition to write
-     * @return the created index entry if something was written, that is if {@code iterator}
-     * wasn't empty, {@code null} otherwise.
-     *
-     * @throws FSWriteError if a write to the dataFile fails
+     * @param row
+     * @return null if the row was compacted away entirely; otherwise, the PK index entry for this row
      */
-    public abstract RowIndexEntry append(UnfilteredRowIterator iterator);
+    public abstract RowIndexEntry append(AbstractCompactedRow row);
+
+    public abstract void append(DecoratedKey decoratedKey, ColumnFamily cf);
+
+    public abstract long appendFromStream(DecoratedKey key, CFMetaData metadata, DataInput in, Version version) throws IOException;
 
     public abstract long getFilePointer();
 
     public abstract long getOnDiskFilePointer();
-
-    public long getEstimatedOnDiskBytesWritten()
-    {
-        return getOnDiskFilePointer();
-    }
 
     public abstract void resetAndTruncate();
 
@@ -262,9 +201,8 @@ public abstract class SSTableWriter extends SSTable implements Transactional
 
     public SSTableReader finish(boolean openResult)
     {
-        setOpenResult(openResult);
+        txnProxy.openResult = openResult;
         txnProxy.finish();
-        observers.forEach(SSTableFlushObserver::complete);
         return finished();
     }
 
@@ -285,14 +223,7 @@ public abstract class SSTableWriter extends SSTable implements Transactional
 
     public final Throwable commit(Throwable accumulate)
     {
-        try
-        {
-            return txnProxy.commit(accumulate);
-        }
-        finally
-        {
-            observers.forEach(SSTableFlushObserver::complete);
-        }
+        return txnProxy.commit(accumulate);
     }
 
     public final Throwable abort(Throwable accumulate)
@@ -312,17 +243,20 @@ public abstract class SSTableWriter extends SSTable implements Transactional
 
     protected Map<MetadataType, MetadataComponent> finalizeMetadata()
     {
-        return metadataCollector.finalizeMetadata(getPartitioner().getClass().getCanonicalName(),
-                                                  metadata().params.bloomFilterFpChance,
-                                                  repairedAt,
-                                                  pendingRepair,
-                                                  isTransient,
-                                                  header);
+        return metadataCollector.finalizeMetadata(partitioner.getClass().getCanonicalName(),
+                                                  metadata.getBloomFilterFpChance(), repairedAt);
     }
 
     protected StatsMetadata statsMetadata()
     {
         return (StatsMetadata) finalizeMetadata().get(MetadataType.STATS);
+    }
+
+    public static Descriptor rename(Descriptor tmpdesc, Set<Component> components)
+    {
+        Descriptor newdesc = tmpdesc.asType(Descriptor.Type.FINAL);
+        rename(tmpdesc, newdesc, components);
+        return newdesc;
     }
 
     public static void rename(Descriptor tmpdesc, Descriptor newdesc, Set<Component> components)
@@ -342,15 +276,6 @@ public abstract class SSTableWriter extends SSTable implements Transactional
 
     public static abstract class Factory
     {
-        public abstract SSTableWriter open(Descriptor descriptor,
-                                           long keyCount,
-                                           long repairedAt,
-                                           UUID pendingRepair,
-                                           boolean isTransient,
-                                           TableMetadataRef metadata,
-                                           MetadataCollector metadataCollector,
-                                           SerializationHeader header,
-                                           Collection<SSTableFlushObserver> observers,
-                                           LifecycleNewTracker lifecycleNewTracker);
+        public abstract SSTableWriter open(Descriptor descriptor, long keyCount, long repairedAt, CFMetaData metadata, IPartitioner partitioner, MetadataCollector metadataCollector);
     }
 }

@@ -17,17 +17,12 @@
  */
 package org.apache.cassandra.db;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
-
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 
 /**
  * The MBean interface for ColumnFamilyStore
@@ -37,10 +32,7 @@ public interface ColumnFamilyStoreMBean
     /**
      * @return the name of the column family
      */
-    @Deprecated
     public String getColumnFamilyName();
-
-    public String getTableName();
 
     /**
      * force a major compaction of this column family
@@ -49,10 +41,6 @@ public interface ColumnFamilyStoreMBean
      */
     public void forceMajorCompaction(boolean splitOutput) throws ExecutionException, InterruptedException;
 
-    /**
-     * force a major compaction of specified key range in this column family
-     */
-    public void forceCompactionForTokenRange(Collection<Range<Token>> tokenRanges) throws ExecutionException, InterruptedException;
     /**
      * Gets the minimum number of sstables in queue before compaction kicks off
      */
@@ -97,20 +85,29 @@ public interface ColumnFamilyStoreMBean
      */
     public void setCompactionParameters(Map<String, String> options);
     public Map<String, String> getCompactionParameters();
+    /**
+     * Sets the compaction strategy by class name
+     * @param className the name of the compaction strategy class
+     */
+    @Deprecated
+    public void setCompactionStrategyClass(String className);
+
+    /**
+     * Gets the compaction strategy class name
+     */
+    @Deprecated
+    public String getCompactionStrategyClass();
 
     /**
      * Get the compression parameters
      */
     public Map<String,String> getCompressionParameters();
 
-    public String getCompressionParametersJson();
-
     /**
-     * Set the compression parameters locally for this node
+     * Set the compression parameters
      * @param opts map of string names to values
      */
     public void setCompressionParameters(Map<String,String> opts);
-    public void setCompressionParametersJson(String options);
 
     /**
      * Set new crc check chance
@@ -136,37 +133,11 @@ public interface ColumnFamilyStoreMBean
     public List<String> getSSTablesForKey(String key);
 
     /**
-     * Returns a list of filenames that contain the given key on this node
-     * @param key
-     * @param hexFormat if key is in hex string format
-     * @return list of filenames containing the key
+     * Scan through Keyspace/ColumnFamily's data directory
+     * determine which SSTables should be loaded and load them
      */
-    public List<String> getSSTablesForKey(String key, boolean hexFormat);
-
-    /**
-     * Load new sstables from the given directory
-     *
-     * @param srcPaths the path to the new sstables - if it is an empty set, the data directories will be scanned
-     * @param resetLevel if the level should be reset to 0 on the new sstables
-     * @param clearRepaired if repaired info should be wiped from the new sstables
-     * @param verifySSTables if the new sstables should be verified that they are not corrupt
-     * @param verifyTokens if the tokens in the new sstables should be verified that they are owned by the current node
-     * @param invalidateCaches if row cache should be invalidated for the keys in the new sstables
-     * @param jbodCheck if the new sstables should be placed 'optimally' - count tokens and move the sstable to the directory where it has the most keys
-     * @param extendedVerify if we should run an extended verify checking all values in the new sstables
-     *
-     * @return list of failed import directories
-     */
-    public List<String> importNewSSTables(Set<String> srcPaths,
-                                          boolean resetLevel,
-                                          boolean clearRepaired,
-                                          boolean verifySSTables,
-                                          boolean verifyTokens,
-                                          boolean invalidateCaches,
-                                          boolean extendedVerify);
-
-    @Deprecated
     public void loadNewSSTables();
+
     /**
      * @return the number of SSTables in L0.  Always return 0 if Leveled compaction is not enabled.
      */
@@ -177,11 +148,6 @@ public interface ColumnFamilyStoreMBean
      *         array index corresponds to level(int[0] is for level 0, ...).
      */
     public int[] getSSTableCountPerLevel();
-
-    /**
-     * @return sstable fanout size for level compaction strategy.
-     */
-    public int getLevelFanoutSize();
 
     /**
      * Get the ratio of droppable tombstones to real columns (and non-droppable tombstones)
@@ -198,24 +164,10 @@ public interface ColumnFamilyStoreMBean
      * begin sampling for a specific sampler with a given capacity.  The cardinality may
      * be larger than the capacity, but depending on the use case it may affect its accuracy
      */
-    public void beginLocalSampling(String sampler, int capacity, int durationMillis);
+    public void beginLocalSampling(String sampler, int capacity);
 
     /**
      * @return top <i>count</i> items for the sampler since beginLocalSampling was called
      */
-    public List<CompositeData> finishLocalSampling(String sampler, int count) throws OpenDataException;
-
-    /*
-        Is Compaction space check enabled
-     */
-    public boolean isCompactionDiskSpaceCheckEnabled();
-
-    /*
-       Enable/Disable compaction space check
-     */
-    public void compactionDiskSpaceCheck(boolean enable);
-
-    public void setNeverPurgeTombstones(boolean value);
-
-    public boolean getNeverPurgeTombstones();
+    public CompositeData finishLocalSampling(String sampler, int count) throws OpenDataException;
 }

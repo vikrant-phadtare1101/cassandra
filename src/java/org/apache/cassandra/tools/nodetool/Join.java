@@ -18,7 +18,7 @@
 package org.apache.cassandra.tools.nodetool;
 
 import static com.google.common.base.Preconditions.checkState;
-import io.airlift.airline.Command;
+import io.airlift.command.Command;
 
 import java.io.IOException;
 
@@ -32,7 +32,6 @@ public class Join extends NodeToolCmd
     public void execute(NodeProbe probe)
     {
         checkState(!probe.isJoined(), "This node has already joined the ring.");
-        checkState(!probe.isBootstrapMode(), "Cannot join the ring until bootstrap completes");
 
         try
         {

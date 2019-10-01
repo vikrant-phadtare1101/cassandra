@@ -22,20 +22,11 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.AbstractIterator;
 
-import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.cql3.statements.SelectStatement;
-import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.*;
-import org.apache.cassandra.db.partitions.PartitionIterator;
-import org.apache.cassandra.db.rows.*;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.pager.QueryPager;
-import org.apache.cassandra.transport.ProtocolVersion;
-import org.apache.cassandra.utils.AbstractIterator;
-import org.apache.cassandra.utils.FBUtilities;
 
 /** a utility for doing internal cql-based queries */
 public abstract class UntypedResultSet implements Iterable<UntypedResultSet.Row>
@@ -53,20 +44,6 @@ public abstract class UntypedResultSet implements Iterable<UntypedResultSet.Row>
     public static UntypedResultSet create(SelectStatement select, QueryPager pager, int pageSize)
     {
         return new FromPager(select, pager, pageSize);
-    }
-
-    /**
-     * This method is intended for testing purposes, since it executes query on cluster
-     * and not on the local node only.
-     */
-    @VisibleForTesting
-    public static UntypedResultSet create(SelectStatement select,
-                                          ConsistencyLevel cl,
-                                          ClientState clientState,
-                                          QueryPager pager,
-                                          int pageSize)
-    {
-        return new FromDistributedPager(select, cl, clientState, pager, pageSize);
     }
 
     public boolean isEmpty()
@@ -197,82 +174,11 @@ public abstract class UntypedResultSet implements Iterable<UntypedResultSet.Row>
 
                 protected Row computeNext()
                 {
-                    int nowInSec = FBUtilities.nowInSeconds();
                     while (currentPage == null || !currentPage.hasNext())
                     {
                         if (pager.isExhausted())
                             return endOfData();
-
-                        try (ReadExecutionController executionController = pager.executionController();
-                             PartitionIterator iter = pager.fetchPageInternal(pageSize, executionController))
-                        {
-                            currentPage = select.process(iter, nowInSec).rows.iterator();
-                        }
-                    }
-                    return new Row(metadata, currentPage.next());
-                }
-            };
-        }
-
-        public List<ColumnSpecification> metadata()
-        {
-            return metadata;
-        }
-    }
-
-    /**
-     * Pager that calls `execute` rather than `executeInternal`
-     */
-    private static class FromDistributedPager extends UntypedResultSet
-    {
-        private final SelectStatement select;
-        private final ConsistencyLevel cl;
-        private final ClientState clientState;
-        private final QueryPager pager;
-        private final int pageSize;
-        private final List<ColumnSpecification> metadata;
-
-        private FromDistributedPager(SelectStatement select,
-                                     ConsistencyLevel cl,
-                                     ClientState clientState,
-                                     QueryPager pager, int pageSize)
-        {
-            this.select = select;
-            this.cl = cl;
-            this.clientState = clientState;
-            this.pager = pager;
-            this.pageSize = pageSize;
-            this.metadata = select.getResultMetadata().requestNames();
-        }
-
-        public int size()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        public Row one()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        public Iterator<Row> iterator()
-        {
-            return new AbstractIterator<Row>()
-            {
-                private Iterator<List<ByteBuffer>> currentPage;
-
-                protected Row computeNext()
-                {
-                    int nowInSec = FBUtilities.nowInSeconds();
-                    while (currentPage == null || !currentPage.hasNext())
-                    {
-                        if (pager.isExhausted())
-                            return endOfData();
-
-                        try (PartitionIterator iter = pager.fetchPage(pageSize, cl, clientState, System.nanoTime()))
-                        {
-                            currentPage = select.process(iter, nowInSec).rows.iterator();
-                        }
+                        currentPage = select.process(pager.fetchPage(pageSize)).rows.iterator();
                     }
                     return new Row(metadata, currentPage.next());
                 }
@@ -300,37 +206,6 @@ public abstract class UntypedResultSet implements Iterable<UntypedResultSet.Row>
             this.columns.addAll(names);
             for (int i = 0; i < names.size(); i++)
                 data.put(names.get(i).name.toString(), columns.get(i));
-        }
-
-        public static Row fromInternalRow(TableMetadata metadata, DecoratedKey key, org.apache.cassandra.db.rows.Row row)
-        {
-            Map<String, ByteBuffer> data = new HashMap<>();
-
-            ByteBuffer[] keyComponents = SelectStatement.getComponents(metadata, key);
-            for (ColumnMetadata def : metadata.partitionKeyColumns())
-                data.put(def.name.toString(), keyComponents[def.position()]);
-
-            Clustering clustering = row.clustering();
-            for (ColumnMetadata def : metadata.clusteringColumns())
-                data.put(def.name.toString(), clustering.get(def.position()));
-
-            for (ColumnMetadata def : metadata.regularAndStaticColumns())
-            {
-                if (def.isSimple())
-                {
-                    Cell cell = row.getCell(def);
-                    if (cell != null)
-                        data.put(def.name.toString(), cell.value());
-                }
-                else
-                {
-                    ComplexColumnData complexData = row.getComplexColumnData(def);
-                    if (complexData != null)
-                        data.put(def.name.toString(), ((CollectionType)def.type).serializeForNativeProtocol(complexData.iterator(), ProtocolVersion.V3));
-                }
-            }
-
-            return new Row(data);
         }
 
         public boolean has(String column)
@@ -415,34 +290,6 @@ public abstract class UntypedResultSet implements Iterable<UntypedResultSet.Row>
         {
             ByteBuffer raw = data.get(column);
             return raw == null ? null : MapType.getInstance(keyType, valueType, true).compose(raw);
-        }
-
-        public Map<String, String> getTextMap(String column)
-        {
-            return getMap(column, UTF8Type.instance, UTF8Type.instance);
-        }
-
-        public <T> Set<T> getFrozenSet(String column, AbstractType<T> type)
-        {
-            ByteBuffer raw = data.get(column);
-            return raw == null ? null : SetType.getInstance(type, false).compose(raw);
-        }
-
-        public <T> List<T> getFrozenList(String column, AbstractType<T> type)
-        {
-            ByteBuffer raw = data.get(column);
-            return raw == null ? null : ListType.getInstance(type, false).compose(raw);
-        }
-
-        public <K, V> Map<K, V> getFrozenMap(String column, AbstractType<K> keyType, AbstractType<V> valueType)
-        {
-            ByteBuffer raw = data.get(column);
-            return raw == null ? null : MapType.getInstance(keyType, valueType, false).compose(raw);
-        }
-
-        public Map<String, String> getFrozenTextMap(String column)
-        {
-            return getFrozenMap(column, UTF8Type.instance, UTF8Type.instance);
         }
 
         public List<ColumnSpecification> getColumns()

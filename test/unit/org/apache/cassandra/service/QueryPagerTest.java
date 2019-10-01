@@ -18,37 +18,33 @@
 */
 package org.apache.cassandra.service;
 
+import java.util.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.util.*;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.apache.cassandra.*;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.OrderedJUnit4ClassRunner;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.Cell;
-import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.db.rows.RowIterator;
+import org.apache.cassandra.db.composites.*;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.db.partitions.FilteredPartition;
-import org.apache.cassandra.db.partitions.PartitionIterator;
+import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.service.pager.QueryPager;
-import org.apache.cassandra.service.pager.PagingState;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.service.pager.*;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
 
-import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
-import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
 import static org.junit.Assert.*;
+import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
+import static org.apache.cassandra.Util.range;
+import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
 public class QueryPagerTest
@@ -58,32 +54,36 @@ public class QueryPagerTest
     public static final String KEYSPACE_CQL = "cql_keyspace";
     public static final String CF_CQL = "table2";
     public static final String CF_CQL_WITH_STATIC = "with_static";
-    public static final int nowInSec = FBUtilities.nowInSeconds();
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
         SchemaLoader.prepareServer();
-
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    KeyspaceParams.simple(1),
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD));
-
         SchemaLoader.createKeyspace(KEYSPACE_CQL,
-                                    KeyspaceParams.simple(1),
-                                    CreateTableStatement.parse("CREATE TABLE " + CF_CQL + " ("
-                                                               + "k text,"
-                                                               + "c text,"
-                                                               + "v text,"
-                                                               + "PRIMARY KEY (k, c))", KEYSPACE_CQL),
-                                    CreateTableStatement.parse("CREATE TABLE " + CF_CQL_WITH_STATIC + " ("
-                                                               + "pk text, "
-                                                               + "ck int, "
-                                                               + "st int static, "
-                                                               + "v1 int, "
-                                                               + "v2 int, "
-                                                               + "PRIMARY KEY(pk, ck))", KEYSPACE_CQL));
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    CFMetaData.compile("CREATE TABLE " + CF_CQL + " ("
+                                                     + "k text,"
+                                                     + "c text,"
+                                                     + "v text,"
+                                                     + "PRIMARY KEY (k, c))", KEYSPACE_CQL),
+                                    CFMetaData.compile("CREATE TABLE " + CF_CQL_WITH_STATIC + " ("
+                                                     + "pk text, "
+                                                     + "ck int, "
+                                                     + "st int static, "
+                                                     + "v1 int, "
+                                                     + "v2 int, "
+                                                     + "PRIMARY KEY(pk, ck))", KEYSPACE_CQL));
         addData();
+    }
+
+    private static String string(CellName name)
+    {
+        return string(name.toByteBuffer());
     }
 
     private static String string(ByteBuffer bb)
@@ -105,19 +105,21 @@ public class QueryPagerTest
         int nbKeys = 10;
         int nbCols = 10;
 
-        // *
-        // * Creates the following data:
-        // *   k1: c1 ... cn
-        // *   ...
-        // *   ki: c1 ... cn
-        // *
+        /*
+         * Creates the following data:
+         *   k1: c1 ... cn
+         *   ...
+         *   ki: c1 ... cn
+         */
         for (int i = 0; i < nbKeys; i++)
         {
+            Mutation rm = new Mutation(KEYSPACE1, bytes("k" + i));
+            ColumnFamily cf = rm.addOrGet(CF_STANDARD);
+
             for (int j = 0; j < nbCols; j++)
-            {
-                RowUpdateBuilder builder = new RowUpdateBuilder(cfs().metadata(), FBUtilities.timestampMicros(), "k" + i);
-                builder.clustering("c" + j).add("val", "").build().applyUnsafe();
-            }
+                cf.addColumn(Util.column("c" + j, "", 0));
+
+            rm.applyUnsafe();
         }
     }
 
@@ -126,82 +128,60 @@ public class QueryPagerTest
         return Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD);
     }
 
-    private static List<FilteredPartition> query(QueryPager pager, int expectedSize)
-    {
-        return query(pager, expectedSize, expectedSize);
-    }
-
-    private static List<FilteredPartition> query(QueryPager pager, int toQuery, int expectedSize)
+    private static String toString(List<Row> rows)
     {
         StringBuilder sb = new StringBuilder();
-        List<FilteredPartition> partitionList = new ArrayList<>();
-        int rows = 0;
-        try (ReadExecutionController executionController = pager.executionController();
-             PartitionIterator iterator = pager.fetchPageInternal(toQuery, executionController))
-        {
-            while (iterator.hasNext())
-            {
-                try (RowIterator rowIter = iterator.next())
-                {
-                    FilteredPartition partition = FilteredPartition.create(rowIter);
-                    sb.append(partition);
-                    partitionList.add(partition);
-                    rows += partition.rowCount();
-                }
-            }
-        }
-        assertEquals(sb.toString(), expectedSize, rows);
-        return partitionList;
+        for (Row row : rows)
+            sb.append(string(row.key.getKey())).append(":").append(toString(row.cf)).append("\n");
+        return sb.toString();
+    }
+
+    private static String toString(ColumnFamily cf)
+    {
+        if (cf == null)
+            return "";
+
+        StringBuilder sb = new StringBuilder();
+        for (Cell c : cf)
+            sb.append(" ").append(string(c.name()));
+        return sb.toString();
     }
 
     private static ReadCommand namesQuery(String key, String... names)
     {
-        AbstractReadCommandBuilder builder = Util.cmd(cfs(), key);
+        SortedSet<CellName> s = new TreeSet<CellName>(cfs().metadata.comparator);
         for (String name : names)
-            builder.includeRow(name);
-        return builder.withPagingLimit(100).build();
+            s.add(CellNames.simpleDense(bytes(name)));
+        return new SliceByNamesReadCommand(KEYSPACE1, bytes(key), CF_STANDARD, System.currentTimeMillis(), new NamesQueryFilter(s, true));
     }
 
-    private static SinglePartitionReadCommand sliceQuery(String key, String start, String end, int count)
+    private static ReadCommand sliceQuery(String key, String start, String end, int count)
     {
         return sliceQuery(key, start, end, false, count);
     }
 
-    private static SinglePartitionReadCommand sliceQuery(String key, String start, String end, boolean reversed, int count)
+    private static ReadCommand sliceQuery(String key, String start, String end, boolean reversed, int count)
     {
-        ClusteringComparator cmp = cfs().getComparator();
-        TableMetadata metadata = cfs().metadata();
-
-        Slice slice = Slice.make(cmp.make(start), cmp.make(end));
-        ClusteringIndexSliceFilter filter = new ClusteringIndexSliceFilter(Slices.with(cmp, slice), reversed);
-
-        return SinglePartitionReadCommand.create(metadata, nowInSec, ColumnFilter.all(metadata), RowFilter.NONE, DataLimits.NONE, Util.dk(key), filter);
+        SliceQueryFilter filter = new SliceQueryFilter(CellNames.simpleDense(bytes(start)), CellNames.simpleDense(bytes(end)), reversed, count);
+        // Note: for MultiQueryTest, we need the same timestamp/expireBefore for all queries, so we just use 0 as it doesn't matter here.
+        return new SliceFromReadCommand(KEYSPACE1, bytes(key), CF_STANDARD, 0, filter);
     }
 
-    private static ReadCommand rangeNamesQuery(String keyStart, String keyEnd, int count, String... names)
+    private static RangeSliceCommand rangeNamesQuery(AbstractBounds<RowPosition> range, int count, String... names)
     {
-        AbstractReadCommandBuilder builder = Util.cmd(cfs())
-                                                 .fromKeyExcl(keyStart)
-                                                 .toKeyIncl(keyEnd)
-                                                 .withPagingLimit(count);
+        SortedSet<CellName> s = new TreeSet<CellName>(cfs().metadata.comparator);
         for (String name : names)
-            builder.includeRow(name);
-
-        return builder.build();
+            s.add(CellNames.simpleDense(bytes(name)));
+        return new RangeSliceCommand(KEYSPACE1, CF_STANDARD, System.currentTimeMillis(), new NamesQueryFilter(s, true), range, count);
     }
 
-    private static ReadCommand rangeSliceQuery(String keyStart, String keyEnd, int count, String start, String end)
+    private static RangeSliceCommand rangeSliceQuery(AbstractBounds<RowPosition> range, int count, String start, String end)
     {
-        return Util.cmd(cfs())
-                   .fromKeyExcl(keyStart)
-                   .toKeyIncl(keyEnd)
-                   .fromIncl(start)
-                   .toIncl(end)
-                   .withPagingLimit(count)
-                   .build();
+        SliceQueryFilter filter = new SliceQueryFilter(CellNames.simpleDense(bytes(start)), CellNames.simpleDense(bytes(end)), false, Integer.MAX_VALUE);
+        return new RangeSliceCommand(KEYSPACE1, CF_STANDARD, System.currentTimeMillis(), filter, range, null, count, true, false);
     }
 
-    private static void assertRow(FilteredPartition r, String key, String... names)
+    private static void assertRow(Row r, String key, String... names)
     {
         ByteBuffer[] bbs = new ByteBuffer[names.length];
         for (int i = 0; i < names.length; i++)
@@ -209,35 +189,31 @@ public class QueryPagerTest
         assertRow(r, key, bbs);
     }
 
-    private static void assertRow(FilteredPartition partition, String key, ByteBuffer... names)
+    private static void assertRow(Row r, String key, ByteBuffer... names)
     {
-        assertEquals(key, string(partition.partitionKey().getKey()));
-        assertFalse(partition.isEmpty());
+        assertEquals(key, string(r.key.getKey()));
+        assertNotNull(r.cf);
         int i = 0;
-        for (Row row : Util.once(partition.iterator()))
+        for (Cell c : r.cf)
         {
+            // Ignore deleted cells if we have them
+            if (!c.isLive())
+                continue;
+
             ByteBuffer expected = names[i++];
-            assertEquals("column " + i + " doesn't match "+string(expected)+" vs "+string(row.clustering().get(0)), expected, row.clustering().get(0));
+            assertEquals("column " + i + " doesn't match: " + toString(r.cf), expected, c.name().toByteBuffer());
         }
-    }
-
-    private QueryPager maybeRecreate(QueryPager pager, ReadQuery command, boolean testPagingState, ProtocolVersion protocolVersion)
-    {
-        if (!testPagingState)
-            return pager;
-
-        PagingState state = PagingState.deserialize(pager.state().serialize(protocolVersion), protocolVersion);
-        return command.getPager(state, protocolVersion);
     }
 
     @Test
     public void namesQueryTest() throws Exception
     {
-        QueryPager pager = namesQuery("k0", "c1", "c5", "c7", "c8").getPager(null, ProtocolVersion.CURRENT);
+        QueryPager pager = QueryPagers.localPager(namesQuery("k0", "c1", "c5", "c7", "c8"));
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partition = query(pager, 5, 4);
-        assertRow(partition.get(0), "k0", "c1", "c5", "c7", "c8");
+        List<Row> page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c1", "c5", "c7", "c8");
 
         assertTrue(pager.isExhausted());
     }
@@ -245,33 +221,24 @@ public class QueryPagerTest
     @Test
     public void sliceQueryTest() throws Exception
     {
-        sliceQueryTest(false, ProtocolVersion.V3);
-        sliceQueryTest(true,  ProtocolVersion.V3);
+        QueryPager pager = QueryPagers.localPager(sliceQuery("k0", "c1", "c8", 10));
 
-        sliceQueryTest(false, ProtocolVersion.V4);
-        sliceQueryTest(true,  ProtocolVersion.V4);
-    }
-
-    public void sliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
-    {
-        ReadCommand command = sliceQuery("k0", "c1", "c8", 10);
-        QueryPager pager = command.getPager(null, protocolVersion);
+        List<Row> page;
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partition = query(pager, 3);
-        assertRow(partition.get(0), "k0", "c1", "c2", "c3");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c1", "c2", "c3");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager, 3);
-        assertRow(partition.get(0), "k0", "c4", "c5", "c6");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c4", "c5", "c6");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager, 3, 2);
-        assertRow(partition.get(0), "k0", "c7", "c8");
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c7", "c8");
 
         assertTrue(pager.isExhausted());
     }
@@ -279,33 +246,24 @@ public class QueryPagerTest
     @Test
     public void reversedSliceQueryTest() throws Exception
     {
-        reversedSliceQueryTest(false, ProtocolVersion.V3);
-        reversedSliceQueryTest(true,  ProtocolVersion.V3);
+        QueryPager pager = QueryPagers.localPager(sliceQuery("k0", "c8", "c1", true, 10));
 
-        reversedSliceQueryTest(false, ProtocolVersion.V4);
-        reversedSliceQueryTest(true,  ProtocolVersion.V4);
-    }
-
-    public void reversedSliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
-    {
-        ReadCommand command = sliceQuery("k0", "c1", "c8", true, 10);
-        QueryPager pager = command.getPager(null, protocolVersion);
+        List<Row> page;
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partition = query(pager, 3);
-        assertRow(partition.get(0), "k0", "c6", "c7", "c8");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c6", "c7", "c8");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager, 3);
-        assertRow(partition.get(0), "k0", "c3", "c4", "c5");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c3", "c4", "c5");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager, 3, 2);
-        assertRow(partition.get(0), "k0", "c1", "c2");
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k0", "c1", "c2");
 
         assertTrue(pager.isExhausted());
     }
@@ -313,38 +271,28 @@ public class QueryPagerTest
     @Test
     public void multiQueryTest() throws Exception
     {
-        multiQueryTest(false, ProtocolVersion.V3);
-        multiQueryTest(true,  ProtocolVersion.V3);
-
-        multiQueryTest(false, ProtocolVersion.V4);
-        multiQueryTest(true,  ProtocolVersion.V4);
-    }
-
-    public void multiQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
-    {
-        ReadQuery command = new SinglePartitionReadCommand.Group(new ArrayList<SinglePartitionReadCommand>()
-        {{
+        QueryPager pager = QueryPagers.localPager(new Pageable.ReadCommands(new ArrayList<ReadCommand>() {{
             add(sliceQuery("k1", "c2", "c6", 10));
             add(sliceQuery("k4", "c3", "c5", 10));
-        }}, DataLimits.NONE);
-        QueryPager pager = command.getPager(null, protocolVersion);
+        }}, 10));
+
+        List<Row> page;
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partition = query(pager, 3);
-        assertRow(partition.get(0), "k1", "c2", "c3", "c4");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k1", "c2", "c3", "c4");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager , 4);
-        assertRow(partition.get(0), "k1", "c5", "c6");
-        assertRow(partition.get(1), "k4", "c3", "c4");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(4);
+        assertEquals(toString(page), 2, page.size());
+        assertRow(page.get(0), "k1", "c5", "c6");
+        assertRow(page.get(1), "k4", "c3", "c4");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partition = query(pager, 3, 1);
-        assertRow(partition.get(0), "k4", "c5");
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k4", "c5");
 
         assertTrue(pager.isExhausted());
     }
@@ -352,29 +300,21 @@ public class QueryPagerTest
     @Test
     public void rangeNamesQueryTest() throws Exception
     {
-        rangeNamesQueryTest(false, ProtocolVersion.V3);
-        rangeNamesQueryTest(true,  ProtocolVersion.V3);
+        QueryPager pager = QueryPagers.localPager(rangeNamesQuery(range("k0", "k5"), 100, "c1", "c4", "c8"));
 
-        rangeNamesQueryTest(false, ProtocolVersion.V4);
-        rangeNamesQueryTest(true,  ProtocolVersion.V4);
-    }
-
-    public void rangeNamesQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
-    {
-        ReadCommand command = rangeNamesQuery("k0", "k5", 100, "c1", "c4", "c8");
-        QueryPager pager = command.getPager(null, protocolVersion);
+        List<Row> page;
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partitions = query(pager, 3 * 3);
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 3, page.size());
         for (int i = 1; i <= 3; i++)
-            assertRow(partitions.get(i-1), "k" + i, "c1", "c4", "c8");
-        assertFalse(pager.isExhausted());
+            assertRow(page.get(i-1), "k" + i, "c1", "c4", "c8");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 3 * 3, 2 * 3);
+        page = pager.fetchPage(3);
+        assertEquals(toString(page), 2, page.size());
         for (int i = 4; i <= 5; i++)
-            assertRow(partitions.get(i-4), "k" + i, "c1", "c4", "c8");
+            assertRow(page.get(i-4), "k" + i, "c1", "c4", "c8");
 
         assertTrue(pager.isExhausted());
     }
@@ -382,54 +322,42 @@ public class QueryPagerTest
     @Test
     public void rangeSliceQueryTest() throws Exception
     {
-        rangeSliceQueryTest(false, ProtocolVersion.V3);
-        rangeSliceQueryTest(true,  ProtocolVersion.V3);
+        QueryPager pager = QueryPagers.localPager(rangeSliceQuery(range("k1", "k5"), 100, "c1", "c7"));
 
-        rangeSliceQueryTest(false, ProtocolVersion.V4);
-        rangeSliceQueryTest(true,  ProtocolVersion.V4);
-    }
-
-    public void rangeSliceQueryTest(boolean testPagingState, ProtocolVersion protocolVersion) throws Exception
-    {
-        ReadCommand command = rangeSliceQuery("k1", "k5", 100, "c1", "c7");
-        QueryPager pager = command.getPager(null, protocolVersion);
+        List<Row> page;
 
         assertFalse(pager.isExhausted());
-        List<FilteredPartition> partitions = query(pager, 5);
-        assertRow(partitions.get(0), "k2", "c1", "c2", "c3", "c4", "c5");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(5);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k2", "c1", "c2", "c3", "c4", "c5");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 4);
-        assertRow(partitions.get(0), "k2", "c6", "c7");
-        assertRow(partitions.get(1), "k3", "c1", "c2");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(4);
+        assertEquals(toString(page), 2, page.size());
+        assertRow(page.get(0), "k2", "c6", "c7");
+        assertRow(page.get(1), "k3", "c1", "c2");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 6);
-        assertRow(partitions.get(0), "k3", "c3", "c4", "c5", "c6", "c7");
-        assertRow(partitions.get(1), "k4", "c1");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(6);
+        assertEquals(toString(page), 2, page.size());
+        assertRow(page.get(0), "k3", "c3", "c4", "c5", "c6", "c7");
+        assertRow(page.get(1), "k4", "c1");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 5);
-        assertRow(partitions.get(0), "k4", "c2", "c3", "c4", "c5", "c6");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(5);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k4", "c2", "c3", "c4", "c5", "c6");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 5);
-        assertRow(partitions.get(0), "k4", "c7");
-        assertRow(partitions.get(1), "k5", "c1", "c2", "c3", "c4");
-        assertFalse(pager.isExhausted());
+        page = pager.fetchPage(5);
+        assertEquals(toString(page), 2, page.size());
+        assertRow(page.get(0), "k4", "c7");
+        assertRow(page.get(1), "k5", "c1", "c2", "c3", "c4");
 
-        pager = maybeRecreate(pager, command, testPagingState, protocolVersion);
         assertFalse(pager.isExhausted());
-        partitions = query(pager, 5, 3);
-        assertRow(partitions.get(0), "k5", "c5", "c6", "c7");
+        page = pager.fetchPage(5);
+        assertEquals(toString(page), 1, page.size());
+        assertRow(page.get(0), "k5", "c5", "c6", "c7");
 
         assertTrue(pager.isExhausted());
     }
@@ -441,82 +369,62 @@ public class QueryPagerTest
         String keyspace = "cql_keyspace";
         String table = "table2";
         ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(table);
+        CompositeType ct = (CompositeType)cfs.metadata.comparator.asAbstractType();
 
         // Insert rows but with a tombstone as last cell
         for (int i = 0; i < 5; i++)
             executeInternal(String.format("INSERT INTO %s.%s (k, c, v) VALUES ('k%d', 'c%d', null)", keyspace, table, 0, i));
 
-        ReadCommand command = SinglePartitionReadCommand.create(cfs.metadata(), nowInSec, Util.dk("k0"), Slice.ALL);
-
-        QueryPager pager = command.getPager(null, ProtocolVersion.CURRENT);
+        SliceQueryFilter filter = new SliceQueryFilter(ColumnSlice.ALL_COLUMNS_ARRAY, false, 100);
+        QueryPager pager = QueryPagers.localPager(new SliceFromReadCommand(keyspace, bytes("k0"), table, 0, filter));
 
         for (int i = 0; i < 5; i++)
         {
-            List<FilteredPartition> partitions = query(pager, 1);
+            List<Row> page = pager.fetchPage(1);
+            assertEquals(toString(page), 1, page.size());
             // The only live cell we should have each time is the row marker
-            assertRow(partitions.get(0), "k0", "c" + i);
+            assertRow(page.get(0), "k0", ct.decompose("c" + i, ""));
         }
     }
 
     @Test
     public void pagingReversedQueriesWithStaticColumnsTest() throws Exception
     {
-        // There was a bug in paging for reverse queries when the schema includes static columns in
-        // 2.1 & 2.2. This was never a problem in 3.0, so this test just guards against regressions
-        // see CASSANDRA-13222
-
         // insert some rows into a single partition
         for (int i=0; i < 5; i++)
             executeInternal(String.format("INSERT INTO %s.%s (pk, ck, st, v1, v2) VALUES ('k0', %3$s, %3$s, %3$s, %3$s)",
                                           KEYSPACE_CQL, CF_CQL_WITH_STATIC, i));
 
         // query the table in reverse with page size = 1 & check that the returned rows contain the correct cells
-        TableMetadata table = Keyspace.open(KEYSPACE_CQL).getColumnFamilyStore(CF_CQL_WITH_STATIC).metadata();
-        queryAndVerifyCells(table, true, "k0");
+        CFMetaData cfm = Keyspace.open(KEYSPACE_CQL).getColumnFamilyStore(CF_CQL_WITH_STATIC).metadata;
+        queryAndVerifyCells(cfm, true, "k0");
     }
 
-    private void queryAndVerifyCells(TableMetadata table, boolean reversed, String key) throws Exception
+    private void queryAndVerifyCells(CFMetaData cfm, boolean reversed, String key) throws Exception
     {
-        ClusteringIndexFilter rowfilter = new ClusteringIndexSliceFilter(Slices.ALL, reversed);
-        ReadCommand command = SinglePartitionReadCommand.create(table, nowInSec, Util.dk(key), ColumnFilter.all(table), rowfilter);
-        QueryPager pager = command.getPager(null, ProtocolVersion.CURRENT);
-
-        ColumnMetadata staticColumn = table.staticColumns().getSimple(0);
-        assertEquals(staticColumn.name.toCQLString(), "st");
-
+        SliceQueryFilter filter = new SliceQueryFilter(ColumnSlice.ALL_COLUMNS_ARRAY, reversed, 100, 1);
+        QueryPager pager = QueryPagers.localPager(new SliceFromReadCommand(cfm.ksName, bytes(key), cfm.cfName, 0, filter));
+        CellName staticCellName = cfm.comparator.create(cfm.comparator.staticPrefix(),
+                                                        cfm.staticColumns().iterator().next());
         for (int i=0; i<5; i++)
         {
-            try (ReadExecutionController controller = pager.executionController();
-                 PartitionIterator partitions = pager.fetchPageInternal(1, controller))
-            {
-                try (RowIterator partition = partitions.next())
-                {
-                    assertCell(partition.staticRow(), staticColumn, 4);
-
-                    Row row = partition.next();
-                    int cellIndex = !reversed ? i : 4 - i;
-
-                    assertEquals(row.clustering().get(0), ByteBufferUtil.bytes(cellIndex));
-                    assertCell(row, table.getColumn(new ColumnIdentifier("v1", false)), cellIndex);
-                    assertCell(row, table.getColumn(new ColumnIdentifier("v2", false)), cellIndex);
-
-                    // the partition/page should contain just a single regular row
-                    assertFalse(partition.hasNext());
-                }
-            }
+            List<Row> page = pager.fetchPage(1);
+            assertEquals(1, page.size());
+            Row row = page.get(0);
+            assertCell(row.cf, staticCellName, 4);
+            int cellIndex = !reversed ? i : 4 - i;
+            assertCell(row.cf, Util.cellname(ByteBufferUtil.bytes(cellIndex), ByteBufferUtil.bytes("v1")), cellIndex);
+            assertCell(row.cf, Util.cellname(ByteBufferUtil.bytes(cellIndex), ByteBufferUtil.bytes("v2")), cellIndex);
         }
 
         // After processing the 5 rows there should be no more rows to return
-        try ( ReadExecutionController controller = pager.executionController();
-              PartitionIterator partitions = pager.fetchPageInternal(1, controller))
-        {
-            assertFalse(partitions.hasNext());
-        }
+        List<Row> page = pager.fetchPage(1);
+        assertTrue(page.isEmpty());
     }
 
-    private void assertCell(Row row, ColumnMetadata column, int value)
+    private void assertCell(ColumnFamily cf, CellName cellName, int value)
     {
-        Cell cell = row.getCell(column);
+        Cell cell = cf.getColumn(cellName);
         assertNotNull(cell);
         assertEquals(value, ByteBufferUtil.toInt(cell.value()));
     }

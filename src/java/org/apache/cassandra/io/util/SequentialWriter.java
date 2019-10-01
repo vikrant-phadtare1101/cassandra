@@ -17,52 +17,63 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.file.StandardOpenOption;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.utils.SyncUtil;
+import org.apache.cassandra.io.compress.BufferType;
+import org.apache.cassandra.io.compress.CompressedSequentialWriter;
+import org.apache.cassandra.io.compress.CompressionParameters;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.utils.CLibrary;
 import org.apache.cassandra.utils.concurrent.Transactional;
 
 import static org.apache.cassandra.utils.Throwables.merge;
+import org.apache.cassandra.utils.SyncUtil;
 
 /**
  * Adds buffering, mark, and fsyncing to OutputStream.  We always fsync on close; we may also
  * fsync incrementally if Config.trickle_fsync is enabled.
  */
-public class SequentialWriter extends BufferedDataOutputStreamPlus implements Transactional
+public class SequentialWriter extends OutputStream implements WritableByteChannel, Transactional
 {
+    // isDirty - true if this.buffer contains any un-synced bytes
+    protected boolean isDirty = false, syncNeeded = false;
+
     // absolute path to the given file
     private final String filePath;
+
+    protected ByteBuffer buffer;
+    private int directoryFD;
+    // directory should be synced only after first file sync, in other words, only once per file
+    private boolean directorySynced = false;
 
     // Offset for start of buffer relative to underlying file
     protected long bufferOffset;
 
-    protected final FileChannel fchannel;
-
-    //Allow derived classes to specify writing to the channel
-    //directly shouldn't happen because they intercept via doFlush for things
-    //like compression or checksumming
-    //Another hack for this value is that it also indicates that flushing early
-    //should not occur, flushes aligned with buffer size are desired
-    //Unless... it's the last flush. Compression and checksum formats
-    //expect block (same as buffer size) alignment for everything except the last block
-    private final boolean strictFlushing;
+    protected final FileChannel channel;
 
     // whether to do trickling fsync() to avoid sudden bursts of dirty buffer flushing by kernel causing read
     // latency spikes
-    private final SequentialWriterOption option;
+    private boolean trickleFsync;
+    private int trickleFsyncByteInterval;
     private int bytesSinceTrickleFsync = 0;
 
+    public final DataOutputPlus stream;
     protected long lastFlushOffset;
 
     protected Runnable runPostFlush;
 
     private final TransactionalProxy txnProxy = txnProxy();
+    private boolean finishOnClose;
+    protected Descriptor descriptor;
 
     // due to lack of multiple-inheritance, we proxy our transactional implementation
     protected class TransactionalProxy extends AbstractTransactional
@@ -70,6 +81,13 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         @Override
         protected Throwable doPreCleanup(Throwable accumulate)
         {
+            if (directoryFD >= 0)
+            {
+                try { CLibrary.tryCloseFD(directoryFD); }
+                catch (Throwable t) { accumulate = merge(accumulate, t); }
+                directoryFD = -1;
+            }
+
             // close is idempotent
             try { channel.close(); }
             catch (Throwable t) { accumulate = merge(accumulate, t); }
@@ -87,6 +105,9 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         protected void doPrepare()
         {
             syncInternal();
+            // we must cleanup our file handles during prepareCommit for Windows compatibility as we cannot rename an open file;
+            // TODO: once we stop file renaming, remove this for clarity
+            releaseFileHandle();
         }
 
         protected Throwable doCommit(Throwable accumulate)
@@ -96,83 +117,128 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
 
         protected Throwable doAbort(Throwable accumulate)
         {
-            return accumulate;
+            return FileUtils.deleteWithConfirm(filePath, false, accumulate);
         }
     }
 
-    // TODO: we should specify as a parameter if we permit an existing file or not
-    private static FileChannel openChannel(File file)
+    public SequentialWriter(File file, int bufferSize, BufferType bufferType)
     {
         try
         {
             if (file.exists())
-            {
-                return FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE);
-            }
+                channel = FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE);
             else
-            {
-                FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
-                try
-                {
-                    SyncUtil.trySyncDir(file.getParentFile());
-                }
-                catch (Throwable t)
-                {
-                    try { channel.close(); }
-                    catch (Throwable t2) { t.addSuppressed(t2); }
-                }
-                return channel;
-            }
+                channel = FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
         }
         catch (IOException e)
         {
             throw new RuntimeException(e);
         }
+
+        filePath = file.getAbsolutePath();
+
+        // Allow children to allocate buffer as direct (snappy compression) if necessary
+        buffer = bufferType.allocate(bufferSize);
+
+        this.trickleFsync = DatabaseDescriptor.getTrickleFsync();
+        this.trickleFsyncByteInterval = DatabaseDescriptor.getTrickleFsyncIntervalInKb() * 1024;
+
+        directoryFD = CLibrary.tryOpenDirectory(file.getParent());
+        stream = new WrappedDataOutputStreamPlus(this, this);
     }
 
     /**
-     * Create heap-based, non-compressed SequenialWriter with default buffer size(64k).
-     *
-     * @param file File to write
+     * Open a heap-based, non-compressed SequentialWriter
      */
-    public SequentialWriter(File file)
+    public static SequentialWriter open(File file)
     {
-       this(file, SequentialWriterOption.DEFAULT);
+        return new SequentialWriter(file, RandomAccessReader.DEFAULT_BUFFER_SIZE, BufferType.ON_HEAP);
     }
 
-    /**
-     * Create SequentialWriter for given file with specific writer option.
-     *
-     * @param file File to write
-     * @param option Writer option
-     */
-    public SequentialWriter(File file, SequentialWriterOption option)
+    public static ChecksummedSequentialWriter open(File file, File crcPath)
     {
-        this(file, option, true);
+        return new ChecksummedSequentialWriter(file, RandomAccessReader.DEFAULT_BUFFER_SIZE, crcPath);
     }
 
-    /**
-     * Create SequentialWriter for given file with specific writer option.
-     * @param file
-     * @param option
-     * @param strictFlushing
-     */
-    public SequentialWriter(File file, SequentialWriterOption option, boolean strictFlushing)
+    public static CompressedSequentialWriter open(String dataFilePath,
+                                                  String offsetsPath,
+                                                  CompressionParameters parameters,
+                                                  MetadataCollector sstableMetadataCollector)
     {
-        super(openChannel(file), option.allocateBuffer());
-        this.strictFlushing = strictFlushing;
-        this.fchannel = (FileChannel)channel;
-
-        this.filePath = file.getAbsolutePath();
-
-        this.option = option;
+        return new CompressedSequentialWriter(new File(dataFilePath), offsetsPath, parameters, sstableMetadataCollector);
     }
 
-    public void skipBytes(int numBytes) throws IOException
+    public SequentialWriter finishOnClose()
     {
-        flush();
-        fchannel.position(fchannel.position() + numBytes);
-        bufferOffset = fchannel.position();
+        finishOnClose = true;
+        return this;
+    }
+
+    public void write(int value) throws ClosedChannelException
+    {
+        if (buffer == null)
+            throw new ClosedChannelException();
+
+        if (!buffer.hasRemaining())
+        {
+            reBuffer();
+        }
+
+        buffer.put((byte) value);
+
+        isDirty = true;
+        syncNeeded = true;
+    }
+
+    public void write(byte[] buffer) throws IOException
+    {
+        write(buffer, 0, buffer.length);
+    }
+
+    public void write(byte[] data, int offset, int length) throws IOException
+    {
+        if (buffer == null)
+            throw new ClosedChannelException();
+
+        int position = offset;
+        int remaining = length;
+        while (remaining > 0)
+        {
+            if (!buffer.hasRemaining())
+                reBuffer();
+
+            int toCopy = Math.min(remaining, buffer.remaining());
+            buffer.put(data, position, toCopy);
+
+            remaining -= toCopy;
+            position += toCopy;
+
+            isDirty = true;
+            syncNeeded = true;
+        }
+    }
+
+    public int write(ByteBuffer src) throws IOException
+    {
+        if (buffer == null)
+            throw new ClosedChannelException();
+
+        int length = src.remaining();
+        int finalLimit = src.limit();
+        while (src.hasRemaining())
+        {
+            if (!buffer.hasRemaining())
+                reBuffer();
+
+            if (buffer.remaining() < src.remaining())
+                src.limit(src.position() + buffer.remaining());
+            buffer.put(src);
+            src.limit(finalLimit);
+
+            isDirty = true;
+            syncNeeded = true;
+        }
+        return length;
     }
 
     /**
@@ -187,7 +253,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     {
         try
         {
-            SyncUtil.force(fchannel, false);
+            SyncUtil.force(channel, false);
         }
         catch (IOException e)
         {
@@ -195,34 +261,55 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         }
     }
 
-    /*
-     * This is only safe to call before truncation or close for CompressedSequentialWriter
-     * Otherwise it will leave a non-uniform size compressed block in the middle of the file
-     * and the compressed format can't handle that.
-     */
     protected void syncInternal()
     {
-        doFlush(0);
-        syncDataOnlyInternal();
+        if (syncNeeded)
+        {
+            flushInternal();
+            syncDataOnlyInternal();
+
+            if (!directorySynced)
+            {
+                SyncUtil.trySync(directoryFD);
+                directorySynced = true;
+            }
+
+            syncNeeded = false;
+        }
     }
 
+    /**
+     * If buffer is dirty, flush it's contents to the operating system. Does not imply fsync().
+     *
+     * Currently, for implementation reasons, this also invalidates the buffer.
+     */
     @Override
-    protected void doFlush(int count)
+    public void flush()
     {
-        flushData();
+        flushInternal();
+    }
 
-        if (option.trickleFsync())
+    protected void flushInternal()
+    {
+        if (isDirty)
         {
-            bytesSinceTrickleFsync += buffer.position();
-            if (bytesSinceTrickleFsync >= option.trickleFsyncByteInterval())
-            {
-                syncDataOnlyInternal();
-                bytesSinceTrickleFsync = 0;
-            }
-        }
+            flushData();
 
-        // Remember that we wrote, so we don't write it again on next flush().
-        resetBuffer();
+            if (trickleFsync)
+            {
+                bytesSinceTrickleFsync += buffer.position();
+                if (bytesSinceTrickleFsync >= trickleFsyncByteInterval)
+                {
+                    syncDataOnlyInternal();
+                    bytesSinceTrickleFsync = 0;
+                }
+            }
+
+            // Remember that we wrote, so we don't write it again on next flush().
+            resetBuffer();
+
+            isDirty = false;
+        }
     }
 
     public void setPostFlushListener(Runnable runPostFlush)
@@ -251,12 +338,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
             runPostFlush.run();
     }
 
-    public boolean hasPosition()
-    {
-        return true;
-    }
-
-    public long position()
+    public long getFilePointer()
     {
         return current();
     }
@@ -272,19 +354,14 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
      */
     public long getOnDiskFilePointer()
     {
-        return position();
-    }
-
-    public long getEstimatedOnDiskBytesWritten()
-    {
-        return getOnDiskFilePointer();
+        return getFilePointer();
     }
 
     public long length()
     {
         try
         {
-            return Math.max(current(), fchannel.size());
+            return Math.max(current(), channel.size());
         }
         catch (IOException e)
         {
@@ -295,6 +372,12 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     public String getPath()
     {
         return filePath;
+    }
+
+    protected void reBuffer()
+    {
+        flushInternal();
+        resetBuffer();
     }
 
     protected void resetBuffer()
@@ -308,7 +391,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         return bufferOffset + (buffer == null ? 0 : buffer.position());
     }
 
-    public DataPosition mark()
+    public FileMark mark()
     {
         return new BufferedFileWriterMark(current());
     }
@@ -317,7 +400,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
      * Drops all buffered data that's past the limits of our new file mark + buffer capacity, or syncs and truncates
      * the underlying file to the marked position
      */
-    public void resetAndTruncate(DataPosition mark)
+    public void resetAndTruncate(FileMark mark)
     {
         assert mark instanceof BufferedFileWriterMark;
 
@@ -340,14 +423,13 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
 
         try
         {
-            fchannel.position(truncateTarget);
+            channel.position(truncateTarget);
         }
         catch (IOException e)
         {
             throw new FSReadError(e, getPath());
         }
 
-        bufferOffset = truncateTarget;
         resetBuffer();
     }
 
@@ -360,8 +442,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     {
         try
         {
-            fchannel.truncate(toSize);
-            lastFlushOffset = toSize;
+            channel.truncate(toSize);
         }
         catch (IOException e)
         {
@@ -372,6 +453,12 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     public boolean isOpen()
     {
         return channel.isOpen();
+    }
+
+    public SequentialWriter setDescriptor(Descriptor descriptor)
+    {
+        this.descriptor = descriptor;
+        return this;
     }
 
     public final void prepareToCommit()
@@ -392,19 +479,10 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     @Override
     public final void close()
     {
-        if (option.finishOnClose())
+        if (finishOnClose)
             txnProxy.finish();
         else
             txnProxy.close();
-    }
-
-    public int writeDirectlyToChannel(ByteBuffer buf) throws IOException
-    {
-        if (strictFlushing)
-            throw new UnsupportedOperationException();
-        // Don't allow writes to the underlying channel while data is buffered
-        flush();
-        return channel.write(buf);
     }
 
     public final void finish()
@@ -417,10 +495,22 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         return new TransactionalProxy();
     }
 
+    public void releaseFileHandle()
+    {
+        try
+        {
+            channel.close();
+        }
+        catch (IOException e)
+        {
+            throw new FSWriteError(e, filePath);
+        }
+    }
+
     /**
      * Class to hold a mark to the position of the file
      */
-    protected static class BufferedFileWriterMark implements DataPosition
+    protected static class BufferedFileWriterMark implements FileMark
     {
         final long pointer;
 
