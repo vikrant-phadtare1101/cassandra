@@ -26,7 +26,6 @@ import java.util.UUID;
 import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.db.TypeSizes;
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
@@ -42,7 +41,7 @@ public class PrepareConsistentRequest extends RepairMessage
 
     public PrepareConsistentRequest(UUID parentSession, InetAddressAndPort coordinator, Set<InetAddressAndPort> participants)
     {
-        super(null);
+        super(Type.CONSISTENT_REQUEST, null);
         assert parentSession != null;
         assert coordinator != null;
         assert participants != null && !participants.isEmpty();
@@ -80,8 +79,9 @@ public class PrepareConsistentRequest extends RepairMessage
                '}';
     }
 
-    public static final IVersionedSerializer<PrepareConsistentRequest> serializer = new IVersionedSerializer<PrepareConsistentRequest>()
+    public static MessageSerializer serializer = new MessageSerializer<PrepareConsistentRequest>()
     {
+
         public void serialize(PrepareConsistentRequest request, DataOutputPlus out, int version) throws IOException
         {
             UUIDSerializer.serializer.serialize(request.parentSession, out, version);

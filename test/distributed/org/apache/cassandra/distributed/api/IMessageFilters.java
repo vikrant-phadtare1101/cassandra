@@ -18,8 +18,11 @@
 
 package org.apache.cassandra.distributed.api;
 
+import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.Verb;
+
+import java.util.function.BiConsumer;
 
 public interface IMessageFilters
 {
