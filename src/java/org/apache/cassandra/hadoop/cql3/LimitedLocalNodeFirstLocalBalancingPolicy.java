@@ -71,8 +71,7 @@ class LimitedLocalNodeFirstLocalBalancingPolicy implements LoadBalancingPolicy
                 logger.warn("Invalid replica host name: {}, skipping it", replica);
             }
         }
-        if (logger.isTraceEnabled())
-            logger.trace("Created instance with the following replicas: {}", Arrays.asList(replicas));
+        logger.trace("Created instance with the following replicas: {}", Arrays.asList(replicas));
     }
 
     @Override

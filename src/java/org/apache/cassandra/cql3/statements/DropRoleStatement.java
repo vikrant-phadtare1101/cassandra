@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import org.apache.cassandra.audit.AuditLogContext;
-import org.apache.cassandra.audit.AuditLogEntryType;
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.RoleName;
@@ -39,7 +37,7 @@ public class DropRoleStatement extends AuthenticationStatement
         this.ifExists = ifExists;
     }
 
-    public void authorize(ClientState state) throws UnauthorizedException
+    public void checkAccess(ClientState state) throws UnauthorizedException
     {
         super.checkPermission(state, Permission.DROP, role);
 
@@ -53,7 +51,7 @@ public class DropRoleStatement extends AuthenticationStatement
 
     public void validate(ClientState state) throws RequestValidationException
     {
-        // validate login here before authorize to avoid leaking user existence to anonymous users.
+        // validate login here before checkAccess to avoid leaking user existence to anonymous users.
         state.ensureNotAnonymous();
 
         if (!ifExists && !DatabaseDescriptor.getRoleManager().isExistingRole(role))
@@ -82,11 +80,5 @@ public class DropRoleStatement extends AuthenticationStatement
     public String toString()
     {
         return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
-    }
-
-    @Override
-    public AuditLogContext getAuditLogContext()
-    {
-        return new AuditLogContext(AuditLogEntryType.DROP_ROLE);
     }
 }

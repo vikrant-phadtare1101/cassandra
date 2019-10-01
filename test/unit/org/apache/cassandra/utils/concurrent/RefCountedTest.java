@@ -20,7 +20,7 @@ package org.apache.cassandra.utils.concurrent;
 
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
@@ -36,7 +36,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.ObjectSizes;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.concurrent.Ref.Visitor;
@@ -343,7 +342,7 @@ public class RefCountedTest
         for (int i = 0; i < entryCount; i += 2)
             objects[i] = new Object();
 
-        File f = FileUtils.createTempFile("foo", "bar");
+        File f = File.createTempFile("foo", "bar");
         RefCounted.Tidy tidier = new RefCounted.Tidy() {
             Object ref = objects;
             //Checking we don't get an infinite loop out of traversing file refs

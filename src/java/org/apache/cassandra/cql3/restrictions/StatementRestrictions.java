@@ -32,7 +32,7 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.index.Index;
-import org.apache.cassandra.index.IndexRegistry;
+import org.apache.cassandra.index.SecondaryIndexManager;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.btree.BTreeSet;
@@ -131,27 +131,16 @@ public final class StatementRestrictions
                                  boolean allowFiltering,
                                  boolean forView)
     {
-        this(type, table, whereClause, boundNames, selectsOnlyStaticColumns, type.allowUseOfSecondaryIndices(), allowFiltering, forView);
-    }
-
-    /*
-     * We want to override allowUseOfSecondaryIndices flag from the StatementType for MV statements
-     * to avoid initing the Keyspace and SecondaryIndexManager.
-     */
-    public StatementRestrictions(StatementType type,
-                                 TableMetadata table,
-                                 WhereClause whereClause,
-                                 VariableSpecifications boundNames,
-                                 boolean selectsOnlyStaticColumns,
-                                 boolean allowUseOfSecondaryIndices,
-                                 boolean allowFiltering,
-                                 boolean forView)
-    {
         this(type, table, allowFiltering);
 
-        IndexRegistry indexRegistry = null;
+        ColumnFamilyStore cfs;
+        SecondaryIndexManager secondaryIndexManager = null;
+
         if (type.allowUseOfSecondaryIndices())
-            indexRegistry = IndexRegistry.obtain(table);
+        {
+            cfs = Keyspace.open(table.keyspace).getColumnFamilyStore(table.name);
+            secondaryIndexManager = cfs.indexManager;
+        }
 
         /*
          * WHERE clause. For a given entity, rules are:
@@ -169,13 +158,14 @@ public final class StatementRestrictions
                 if (!forView)
                     throw new InvalidRequestException("Unsupported restriction: " + relation);
 
-                this.notNullColumns.addAll(relation.toRestriction(table, boundNames).getColumnDefs());
+                for (ColumnMetadata def : relation.toRestriction(table, boundNames).getColumnDefs())
+                    this.notNullColumns.add(def);
             }
             else if (relation.isLIKE())
             {
                 Restriction restriction = relation.toRestriction(table, boundNames);
 
-                if (!type.allowUseOfSecondaryIndices() || !restriction.hasSupportingIndex(indexRegistry))
+                if (!type.allowUseOfSecondaryIndices() || !restriction.hasSupportingIndex(secondaryIndexManager))
                     throw new InvalidRequestException(String.format("LIKE restriction is only supported on properly " +
                                                                     "indexed columns. %s is not valid.",
                                                                     relation.toString()));
@@ -193,16 +183,16 @@ public final class StatementRestrictions
         boolean hasQueriableClusteringColumnIndex = false;
         boolean hasQueriableIndex = false;
 
-        if (allowUseOfSecondaryIndices)
+        if (type.allowUseOfSecondaryIndices())
         {
             if (whereClause.containsCustomExpressions())
-                processCustomIndexExpressions(whereClause.expressions, boundNames, indexRegistry);
+                processCustomIndexExpressions(whereClause.expressions, boundNames, secondaryIndexManager);
 
-            hasQueriableClusteringColumnIndex = clusteringColumnsRestrictions.hasSupportingIndex(indexRegistry);
+            hasQueriableClusteringColumnIndex = clusteringColumnsRestrictions.hasSupportingIndex(secondaryIndexManager);
             hasQueriableIndex = !filterRestrictions.getCustomIndexExpressions().isEmpty()
                     || hasQueriableClusteringColumnIndex
-                    || partitionKeyRestrictions.hasSupportingIndex(indexRegistry)
-                    || nonPrimaryKeyRestrictions.hasSupportingIndex(indexRegistry);
+                    || partitionKeyRestrictions.hasSupportingIndex(secondaryIndexManager)
+                    || nonPrimaryKeyRestrictions.hasSupportingIndex(secondaryIndexManager);
         }
 
         // At this point, the select statement if fully constructed, but we still have a few things to validate
@@ -574,22 +564,26 @@ public final class StatementRestrictions
 
     private void processCustomIndexExpressions(List<CustomIndexExpression> expressions,
                                                VariableSpecifications boundNames,
-                                               IndexRegistry indexRegistry)
+                                               SecondaryIndexManager indexManager)
     {
         if (expressions.size() > 1)
             throw new InvalidRequestException(IndexRestrictions.MULTIPLE_EXPRESSIONS);
 
         CustomIndexExpression expression = expressions.get(0);
 
-        QualifiedName name = expression.targetIndex;
-
-        if (name.hasKeyspace() && !name.getKeyspace().equals(table.keyspace))
+        CFName cfName = expression.targetIndex.getCfName();
+        if (cfName.hasKeyspace()
+            && !expression.targetIndex.getKeyspace().equals(table.keyspace))
             throw IndexRestrictions.invalidIndex(expression.targetIndex, table);
 
-        if (!table.indexes.has(expression.targetIndex.getName()))
+        if (cfName.getColumnFamily() != null && !cfName.getColumnFamily().equals(table.name))
+            throw IndexRestrictions.invalidIndex(expression.targetIndex, table);
+
+        if (!table.indexes.has(expression.targetIndex.getIdx()))
             throw IndexRestrictions.indexNotFound(expression.targetIndex, table);
 
-        Index index = indexRegistry.getIndex(table.indexes.get(expression.targetIndex.getName()).get());
+        Index index = indexManager.getIndex(table.indexes.get(expression.targetIndex.getIdx()).get());
+
         if (!index.getIndexMetadata().isCustom())
             throw IndexRestrictions.nonCustomIndexInExpression(expression.targetIndex);
 
@@ -602,14 +596,14 @@ public final class StatementRestrictions
         filterRestrictions.add(expression);
     }
 
-    public RowFilter getRowFilter(IndexRegistry indexRegistry, QueryOptions options)
+    public RowFilter getRowFilter(SecondaryIndexManager indexManager, QueryOptions options)
     {
         if (filterRestrictions.isEmpty())
             return RowFilter.NONE;
 
         RowFilter filter = RowFilter.create();
         for (Restrictions restrictions : filterRestrictions.getRestrictions())
-            restrictions.addRowFilterTo(filter, indexRegistry, options);
+            restrictions.addRowFilterTo(filter, indexManager, options);
 
         for (CustomIndexExpression expression : filterRestrictions.getCustomIndexExpressions())
             expression.addToRowFilter(filter, table, options);

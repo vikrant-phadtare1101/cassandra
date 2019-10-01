@@ -23,8 +23,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.AbstractIterator;
-
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterators;
 
 import org.apache.cassandra.db.*;
@@ -243,9 +241,9 @@ public class BigTableScanner implements ISSTableScanner
         return sstable.onDiskLength();
     }
 
-    public Set<SSTableReader> getBackingSSTables()
+    public String getBackingFiles()
     {
-        return ImmutableSet.of(sstable);
+        return sstable.toString();
     }
 
 
@@ -422,9 +420,9 @@ public class BigTableScanner implements ISSTableScanner
             return 0;
         }
 
-        public Set<SSTableReader> getBackingSSTables()
+        public String getBackingFiles()
         {
-            return ImmutableSet.of(sstable);
+            return sstable.getFilename();
         }
 
         public TableMetadata metadata()
