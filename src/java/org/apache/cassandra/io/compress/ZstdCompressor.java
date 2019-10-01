@@ -24,216 +24,115 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.common.annotations.VisibleForTesting;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.github.luben.zstd.Zstd;
 
-/**
- * ZSTD Compressor
- */
-public class ZstdCompressor implements ICompressor
+public class ZSTDCompressor implements ICompressor
 {
-    private static final Logger logger = LoggerFactory.getLogger(ZstdCompressor.class);
-
-    // These might change with the version of Zstd we're using
-    public static final int FAST_COMPRESSION_LEVEL = Zstd.minCompressionLevel();
-    public static final int BEST_COMPRESSION_LEVEL = Zstd.maxCompressionLevel();
-
-    // Compressor Defaults
-    public static final int DEFAULT_COMPRESSION_LEVEL = 3;
-    private static final boolean ENABLE_CHECKSUM_FLAG = true;
-
+    public static final int FAST_COMPRESSION = 1; // fastest compression time
+    public static final int DEFAULT_LEVEL = 3;
+    public static final int BEST_COMPRESSION = 22;// very good compression ratio
+    private static final ZSTDCompressor instance = new ZSTDCompressor();
+    private static final String COMPRESSION_LEVEL_OPTION_NAME = "compression_level";
     @VisibleForTesting
-    public static final String COMPRESSION_LEVEL_OPTION_NAME = "compression_level";
+    protected static final int compressionLevel = DEFAULT_LEVEL;
 
-    private static final ConcurrentHashMap<Integer, ZstdCompressor> instances = new ConcurrentHashMap<>();
-
-    private final int compressionLevel;
-
-    /**
-     * Create a Zstd compressor with the given options
-     *
-     * @param options
-     * @return
-     */
-    public static ZstdCompressor create(Map<String, String> options)
+    public static ZSTDCompressor create(Map<String, String> compressionOptions)
     {
-        int level = getOrDefaultCompressionLevel(options);
-
-        if (!isValid(level))
-            throw new IllegalArgumentException(String.format("%s=%d is invalid", COMPRESSION_LEVEL_OPTION_NAME, level));
-
-        return getOrCreate(level);
+        validateCompressionLevel(parseCompressionLevelOption(compressionOptions));
+        return instance;
     }
 
-    /**
-     * Private constructor
-     *
-     * @param compressionLevel
-     */
-    private ZstdCompressor(int compressionLevel)
+    private static void validateCompressionLevel(int compressionLevel)
     {
-        this.compressionLevel = compressionLevel;
-        logger.trace("Creating Zstd Compressor with compression level={}", compressionLevel);
+        if (compressionLevel < FAST_COMPRESSION || compressionLevel > BEST_COMPRESSION)
+        {
+            throw new IllegalArgumentException(
+                "ZSTD compression_level " + Integer.toString(compressionLevel) + " invalid ",
+                null
+            );
+        }
     }
 
-    /**
-     * Get a cached instance or return a new one
-     *
-     * @param level
-     * @return
-     */
-    public static ZstdCompressor getOrCreate(int level)
+    private static int parseCompressionLevelOption(Map<String,String> compressionOptions)
     {
-        return instances.computeIfAbsent(level, l -> new ZstdCompressor(level));
+        return Integer.parseInt(compressionOptions.getOrDefault(COMPRESSION_LEVEL_OPTION_NAME,
+                                                                Integer.toString(DEFAULT_LEVEL)));
     }
 
-    /**
-     * Get initial compressed buffer length
-     *
-     * @param chunkLength
-     * @return
-     */
     @Override
     public int initialCompressedBufferLength(int chunkLength)
     {
-        return (int) Zstd.compressBound(chunkLength);
+        return (int)Zstd.compressBound(chunkLength);
     }
 
-    /**
-     * Decompress data using arrays
-     *
-     * @param input
-     * @param inputOffset
-     * @param inputLength
-     * @param output
-     * @param outputOffset
-     * @return
-     * @throws IOException
-     */
     @Override
     public int uncompress(byte[] input, int inputOffset, int inputLength, byte[] output, int outputOffset)
     throws IOException
     {
-        long dsz = Zstd.decompressByteArray(output, outputOffset, output.length - outputOffset,
-                                            input, inputOffset, inputLength);
+        long decompressSize = Zstd.decompressByteArray(output,
+                                                       outputOffset,
+                                                       output.length - outputOffset,
+                                                       input,
+                                                       inputOffset,
+                                                       inputLength);
+        if (Zstd.isError(decompressSize))
+        {
+            throw new IOException("ZSTD uncompress failed with error reason " + Zstd.getErrorName(decompressSize));
+        }
 
-        if (Zstd.isError(dsz))
-            throw new IOException(String.format("Decompression failed due to %s", Zstd.getErrorName(dsz)));
-
-        return (int) dsz;
+        return (int) decompressSize;
     }
 
-    /**
-     * Decompress data via ByteBuffers
-     *
-     * @param input
-     * @param output
-     * @throws IOException
-     */
     @Override
     public void uncompress(ByteBuffer input, ByteBuffer output) throws IOException
     {
-        try
-        {
-            Zstd.decompress(output, input);
-        } catch (Exception e)
-        {
-            throw new IOException("Decompression failed", e);
-        }
+        Zstd.decompress(output, input);
     }
 
-    /**
-     * Compress using ByteBuffers
-     *
-     * @param input
-     * @param output
-     * @throws IOException
-     */
     @Override
     public void compress(ByteBuffer input, ByteBuffer output) throws IOException
     {
-        try
+        if (!input.isDirect())
         {
-            Zstd.compress(output, input, compressionLevel, ENABLE_CHECKSUM_FLAG);
-        } catch (Exception e)
-        {
-            throw new IOException("Compression failed", e);
+            throw new IllegalArgumentException("input must be a direct buffer");
         }
+
+        if (!output.isDirect())
+        {
+            throw new IllegalArgumentException("output must be a direct buffer");
+        }
+        long compressedSize = Zstd.compressDirectByteBuffer(output,
+                                                            output.position(),
+                                                            output.limit() - output.position(),
+                                                            input,
+                                                            input.position(),
+                                                            input.limit() - input.position(),
+                                                            compressionLevel);
+        if (Zstd.isError(compressedSize))
+        {
+            throw new IOException("ZSTD compress failed with error reason " + Zstd.getErrorName(compressedSize));
+        }
+        input.position(input.limit());
+        output.position((int) (compressedSize + output.position()));
     }
 
-    /**
-     * Check if the given compression level is valid. This can be a negative value as well.
-     *
-     * @param level
-     * @return
-     */
-    private static boolean isValid(int level)
-    {
-        return (level >= FAST_COMPRESSION_LEVEL && level <= BEST_COMPRESSION_LEVEL);
-    }
-
-    /**
-     * Parse the compression options
-     *
-     * @param options
-     * @return
-     */
-    private static int getOrDefaultCompressionLevel(Map<String, String> options)
-    {
-        if (options == null)
-            return DEFAULT_COMPRESSION_LEVEL;
-
-        String val = options.get(COMPRESSION_LEVEL_OPTION_NAME);
-
-        if (val == null)
-            return DEFAULT_COMPRESSION_LEVEL;
-
-        return Integer.valueOf(val);
-    }
-
-    /**
-     * Return the preferred BufferType
-     *
-     * @return
-     */
     @Override
     public BufferType preferredBufferType()
     {
         return BufferType.OFF_HEAP;
     }
 
-    /**
-     * Check whether the given BufferType is supported
-     *
-     * @param bufferType
-     * @return
-     */
     @Override
     public boolean supports(BufferType bufferType)
     {
         return bufferType == BufferType.OFF_HEAP;
     }
 
-    /**
-     * Lists the supported options by this compressor
-     *
-     * @return
-     */
     @Override
     public Set<String> supportedOptions()
     {
-        return new HashSet<>(Collections.singletonList(COMPRESSION_LEVEL_OPTION_NAME));
-    }
-
-
-    @VisibleForTesting
-    public int getCompressionLevel()
-    {
-        return compressionLevel;
+        return new HashSet(Collections.singletonList(COMPRESSION_LEVEL_OPTION_NAME));
     }
 }

@@ -85,8 +85,8 @@ final class SchemaMigrationEvent extends DiagnosticEvent
 
         if (endpoint == null) return;
 
-        if (MessagingService.instance().versions.knows(endpoint))
-            endpointMessagingVersion = MessagingService.instance().versions.getRaw(endpoint);
+        if (MessagingService.instance().knowsVersion(endpoint))
+            endpointMessagingVersion = MessagingService.instance().getRawVersion(endpoint);
 
         endpointGossipOnlyMember = Gossiper.instance.isGossipOnlyMember(endpoint);
         this.isAlive = FailureDetector.instance.isAlive(endpoint);

@@ -43,7 +43,7 @@ public class CompressorTest
             LZ4Compressor.create(Collections.<String, String>emptyMap()),
             DeflateCompressor.create(Collections.<String, String>emptyMap()),
             SnappyCompressor.create(Collections.<String, String>emptyMap()),
-            ZstdCompressor.create(Collections.emptyMap())
+            ZSTDCompressor.create(Collections.emptyMap())
     };
 
     @Test
@@ -82,7 +82,7 @@ public class CompressorTest
 
         // need byte[] representation which direct buffers don't have
         byte[] compressedBytes = new byte[compressed.capacity()];
-        ByteBufferUtil.copyBytes(compressed, outOffset, compressedBytes, outOffset, compressed.limit() - outOffset);
+        ByteBufferUtil.arrayCopy(compressed, outOffset, compressedBytes, outOffset, compressed.limit() - outOffset);
 
         final int decompressedLength = compressor.uncompress(compressedBytes, outOffset, compressed.remaining(), restored, restoreOffset);
 
@@ -181,7 +181,7 @@ public class CompressorTest
     @Test
     public void testZstdByteBuffers() throws IOException
     {
-        compressor = ZstdCompressor.create(Collections.<String, String>emptyMap());
+        compressor = ZSTDCompressor.create(Collections.<String, String>emptyMap());
         testByteBuffers();
     }
 

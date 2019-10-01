@@ -256,7 +256,6 @@ public final class HintsService implements HintsServiceMBean
         writeExecutor.shutdownBlocking();
 
         HintsServiceDiagnostics.dispatchingShutdown(this);
-        bufferPool.close();
     }
 
     /**
