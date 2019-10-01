@@ -523,7 +523,7 @@ public class TableMetrics
                                                                  {
                                                                      public EstimatedHistogram getHistogram(SSTableReader reader)
                                                                      {
-                                                                         return reader.getEstimatedCellPerPartitionCount();
+                                                                         return reader.getEstimatedColumnCount();
                                                                      }
                                                                  });
             }

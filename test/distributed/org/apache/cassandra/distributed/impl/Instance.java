@@ -31,8 +31,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 
-import io.netty.util.concurrent.GlobalEventExecutor;
+import org.slf4j.LoggerFactory;
 
+import ch.qos.logback.classic.LoggerContext;
 import org.apache.cassandra.batchlog.BatchlogManager;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.SharedExecutorPool;
@@ -62,7 +63,6 @@ import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.hints.HintsService;
 import org.apache.cassandra.index.SecondaryIndexManager;
-import org.apache.cassandra.io.sstable.IndexSummaryManager;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
@@ -76,9 +76,6 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.PendingRangeCalculatorService;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.streaming.async.StreamingInboundHandler;
-import org.apache.cassandra.streaming.StreamReceiveTask;
-import org.apache.cassandra.streaming.StreamTransferTask;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
@@ -87,8 +84,8 @@ import org.apache.cassandra.utils.concurrent.Ref;
 import org.apache.cassandra.utils.memory.BufferPool;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
-import static org.apache.cassandra.distributed.api.Feature.GOSSIP;
-import static org.apache.cassandra.distributed.api.Feature.NETWORK;
+import static org.apache.cassandra.distributed.impl.InstanceConfig.GOSSIP;
+import static org.apache.cassandra.distributed.impl.InstanceConfig.NETWORK;
 
 public class Instance extends IsolatedExecutor implements IInvokableInstance
 {
@@ -102,14 +99,6 @@ public class Instance extends IsolatedExecutor implements IInvokableInstance
         this.config = config;
         InstanceIDDefiner.setInstanceId(config.num());
         FBUtilities.setBroadcastInetAddressAndPort(config.broadcastAddressAndPort());
-        // Set the config at instance creation, possibly before startup() has run on all other instances.
-        // setMessagingVersions below will call runOnInstance which will instantiate
-        // the MessagingService and dependencies preventing later changes to network parameters.
-        Config.setOverrideLoadConfig(() -> loadConfig(config));
-
-        // Enable streaming inbound handler tracking so they can be closed properly without leaking
-        // the blocking IO thread.
-        StreamingInboundHandler.trackInboundHandlers();
     }
 
     @Override
@@ -156,11 +145,6 @@ public class Instance extends IsolatedExecutor implements IInvokableInstance
     }
 
     public void startup()
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    public boolean isShutdown()
     {
         throw new UnsupportedOperationException();
     }
@@ -270,8 +254,9 @@ public class Instance extends IsolatedExecutor implements IInvokableInstance
                 }
 
                 mkdirs();
-
+                Config.setOverrideLoadConfig(() -> loadConfig(config));
                 DatabaseDescriptor.daemonInitialization();
+
                 DatabaseDescriptor.createAllDirectories();
 
                 // We need to persist this as soon as possible after startup checks.
@@ -408,53 +393,37 @@ public class Instance extends IsolatedExecutor implements IInvokableInstance
         }
     }
 
-    public Future<Void> shutdown()
-    {
-        return shutdown(true);
-    }
-
     @Override
-    public Future<Void> shutdown(boolean graceful)
+    public Future<Void> shutdown()
     {
         Future<?> future = async((ExecutorService executor) -> {
             Throwable error = null;
-
-            if (config.has(GOSSIP))
-            {
-                StorageService.instance.shutdownServer();
-            }
-
             error = parallelRun(error, executor,
-                                () -> Gossiper.instance.stopShutdownAndWait(1L, MINUTES),
-                                CompactionManager.instance::forceShutdown,
-                                () -> BatchlogManager.instance.shutdownAndWait(1L, MINUTES),
-                                HintsService.instance::shutdownBlocking,
-                                StreamingInboundHandler::shutdown,
-                                () -> StreamReceiveTask.shutdownAndWait(1L, MINUTES),
-                                () -> StreamTransferTask.shutdownAndWait(1L, MINUTES),
-                                () -> SecondaryIndexManager.shutdownAndWait(1L, MINUTES),
-                                () -> IndexSummaryManager.instance.shutdownAndWait(1L, MINUTES),
-                                () -> ColumnFamilyStore.shutdownExecutorsAndWait(1L, MINUTES),
-                                () -> PendingRangeCalculatorService.instance.shutdownAndWait(1L, MINUTES),
-                                () -> BufferPool.shutdownLocalCleaner(1L, MINUTES),
-                                () -> Ref.shutdownReferenceReaper(1L, MINUTES),
-                                () -> Memtable.MEMORY_POOL.shutdownAndWait(1L, MINUTES),
-                                () -> ScheduledExecutors.shutdownAndWait(1L, MINUTES),
-                                () -> SSTableReader.shutdownBlocking(1L, MINUTES),
-                                () -> shutdownAndWait(Collections.singletonList(ActiveRepairService.repairCommandExecutor)),
-                                () -> ScheduledExecutors.shutdownAndWait(1L, MINUTES)
+                    Gossiper.instance::stop,
+                    CompactionManager.instance::forceShutdown,
+                    BatchlogManager.instance::shutdown,
+                    HintsService.instance::shutdownBlocking,
+                    () -> SecondaryIndexManager.shutdownAndWait(1L, MINUTES),
+                    () -> ColumnFamilyStore.shutdownExecutorsAndWait(1L, MINUTES),
+                    () -> PendingRangeCalculatorService.instance.shutdownAndWait(1L, MINUTES),
+                    () -> BufferPool.shutdownLocalCleaner(1L, MINUTES),
+                    () -> Ref.shutdownReferenceReaper(1L, MINUTES),
+                    () -> Memtable.MEMORY_POOL.shutdown(1L, MINUTES),
+                    () -> ScheduledExecutors.shutdownAndWait(1L, MINUTES),
+                    () -> SSTableReader.shutdownBlocking(1L, MINUTES),
+                    () -> shutdownAndWait(Collections.singletonList(ActiveRepairService.repairCommandExecutor))
             );
-
             error = parallelRun(error, executor,
                                 CommitLog.instance::shutdownBlocking,
                                 () -> MessagingService.instance().shutdown(1L, MINUTES, false, true)
             );
             error = parallelRun(error, executor,
-                                () -> GlobalEventExecutor.INSTANCE.awaitInactivity(1l, MINUTES),
                                 () -> StageManager.shutdownAndWait(1L, MINUTES),
-                                () -> SharedExecutorPool.SHARED.shutdownAndWait(1L, MINUTES)
+                                () -> SharedExecutorPool.SHARED.shutdown(1L, MINUTES)
             );
 
+            LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+            loggerContext.stop();
             Throwables.maybeFail(error);
         }).apply(isolatedExecutor);
 

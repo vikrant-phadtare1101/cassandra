@@ -45,7 +45,6 @@ final class BootstrapDiagnostics
                                                address,
                                                null,
                                                allocationKeyspace,
-                                               null,
                                                numTokens,
                                                ImmutableList.copyOf(initialTokens)));
     }
@@ -56,7 +55,6 @@ final class BootstrapDiagnostics
             service.publish(new BootstrapEvent(BootstrapEventType.BOOTSTRAP_USING_RANDOM_TOKENS,
                                                address,
                                                metadata.cloneOnlyTokenMap(),
-                                               null,
                                                null,
                                                numTokens,
                                                ImmutableList.copyOf(tokens)));
@@ -70,20 +68,6 @@ final class BootstrapDiagnostics
                                                address,
                                                metadata.cloneOnlyTokenMap(),
                                                allocationKeyspace,
-                                               null,
-                                               numTokens,
-                                               ImmutableList.copyOf(tokens)));
-    }
-
-    static void tokensAllocated(InetAddressAndPort address, TokenMetadata metadata,
-                                int rf, int numTokens, Collection<Token> tokens)
-    {
-        if (isEnabled(BootstrapEventType.TOKENS_ALLOCATED))
-            service.publish(new BootstrapEvent(BootstrapEventType.TOKENS_ALLOCATED,
-                                               address,
-                                               metadata.cloneOnlyTokenMap(),
-                                               null,
-                                               rf,
                                                numTokens,
                                                ImmutableList.copyOf(tokens)));
     }
