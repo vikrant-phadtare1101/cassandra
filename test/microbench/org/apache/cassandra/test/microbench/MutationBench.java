@@ -34,6 +34,8 @@ import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -71,6 +73,7 @@ public class MutationBench
     static String keyspace = "keyspace1";
 
     private Mutation mutation;
+    private MessageOut<Mutation> messageOut;
 
     private ByteBuffer buffer;
     private DataOutputBuffer outputBuffer;
@@ -80,7 +83,7 @@ public class MutationBench
     @State(Scope.Thread)
     public static class ThreadState
     {
-        Mutation in;
+        MessageIn<Mutation> in;
         int counter = 0;
     }
 
@@ -100,18 +103,19 @@ public class MutationBench
         Schema.instance.load(ksm.withSwapped(ksm.tables.with(metadata)));
 
         mutation = (Mutation)UpdateBuilder.create(metadata, 1L).newRow(1L).add("commentid", 32L).makeMutation();
-        buffer = ByteBuffer.allocate((int) Mutation.serializer.serializedSize(mutation, MessagingService.current_version));
+        messageOut = mutation.createMessage();
+        buffer = ByteBuffer.allocate(messageOut.serializedSize(MessagingService.current_version));
         outputBuffer = new DataOutputBufferFixed(buffer);
         inputBuffer = new DataInputBuffer(buffer, false);
 
-        Mutation.serializer.serialize(mutation, outputBuffer, MessagingService.current_version);
+        messageOut.serialize(outputBuffer, MessagingService.current_version);
     }
 
     @Benchmark
     public void serialize(ThreadState state) throws IOException
     {
         buffer.rewind();
-        Mutation.serializer.serialize(mutation, outputBuffer, MessagingService.current_version);
+        messageOut.serialize(outputBuffer, MessagingService.current_version);
         state.counter++;
     }
 
@@ -119,7 +123,7 @@ public class MutationBench
     public void deserialize(ThreadState state) throws IOException
     {
         buffer.rewind();
-        state.in = Mutation.serializer.deserialize(inputBuffer, MessagingService.current_version);
+        state.in = MessageIn.read(inputBuffer, MessagingService.current_version, 0);
         state.counter++;
     }
 

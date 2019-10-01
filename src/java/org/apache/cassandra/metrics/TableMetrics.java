@@ -35,7 +35,6 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.Memtable;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
-import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.index.SecondaryIndexManager;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
@@ -202,7 +201,7 @@ public class TableMetrics
     /** Time spent waiting for free memtable space, either on- or off-heap */
     public final Histogram waitingOnFreeMemtableSpace;
 
-    @Deprecated
+    /** Dropped Mutations Count */
     public final Counter droppedMutations;
 
     private final MetricNameFactory factory;
@@ -215,8 +214,8 @@ public class TableMetrics
     public final Counter speculativeInsufficientReplicas;
     public final Gauge<Long> speculativeSampleLatencyNanos;
 
-    public final Counter additionalWrites;
-    public final Gauge<Long> additionalWriteLatencyNanos;
+    public final Counter speculativeWrites;
+    public final Gauge<Long> speculativeWriteLatencyNanos;
 
     /**
      * Metrics for inconsistencies detected between repaired data sets across replicas. These
@@ -506,11 +505,7 @@ public class TableMetrics
                                                            long memtablePartitions = 0;
                                                            for (Memtable memtable : cfs.getTracker().getView().getAllMemtables())
                                                                memtablePartitions += memtable.partitionCount();
-                                                           try(ColumnFamilyStore.RefViewFragment refViewFragment = cfs.selectAndReference(View.selectFunction(SSTableSet.CANONICAL)))
-                                                           {
-                                                               return SSTableReader.getApproximateKeyCount(refViewFragment.sstables) + memtablePartitions;
-                                                           }
-
+                                                           return SSTableReader.getApproximateKeyCount(cfs.getSSTables(SSTableSet.CANONICAL)) + memtablePartitions;
                                                        }
                                                    });
         estimatedColumnCountHistogram = Metrics.register(factory.createMetricName("EstimatedColumnCountHistogram"),
@@ -523,7 +518,7 @@ public class TableMetrics
                                                                  {
                                                                      public EstimatedHistogram getHistogram(SSTableReader reader)
                                                                      {
-                                                                         return reader.getEstimatedCellPerPartitionCount();
+                                                                         return reader.getEstimatedColumnCount();
                                                                      }
                                                                  });
             }
@@ -848,8 +843,8 @@ public class TableMetrics
         speculativeInsufficientReplicas = createTableCounter("SpeculativeInsufficientReplicas");
         speculativeSampleLatencyNanos = createTableGauge("SpeculativeSampleLatencyNanos", () -> cfs.sampleReadLatencyNanos);
 
-        additionalWrites = createTableCounter("AdditionalWrites");
-        additionalWriteLatencyNanos = createTableGauge("AdditionalWriteLatencyNanos", () -> cfs.additionalWriteLatencyNanos);
+        speculativeWrites = createTableCounter("SpeculativeWrites");
+        speculativeWriteLatencyNanos = createTableGauge("SpeculativeWriteLatencyNanos", () -> cfs.transientWriteLatencyNanos);
 
         keyCacheHitRate = Metrics.register(factory.createMetricName("KeyCacheHitRate"),
                                            aliasFactory.createMetricName("KeyCacheHitRate"),

@@ -71,8 +71,6 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.security.ThreadAwareSecurityManager;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-
 /**
  * The <code>CassandraDaemon</code> is an abstraction for a Cassandra daemon
  * service, which defines not only a way to activate and deactivate it, but also
@@ -206,15 +204,6 @@ public class CassandraDaemon
             exitOrFail(e.returnCode, e.getMessage(), e.getCause());
         }
 
-        try
-        {
-            SystemKeyspace.snapshotOnVersionChange();
-        }
-        catch (IOException e)
-        {
-            exitOrFail(3, e.getMessage(), e.getCause());
-        }
-
         // We need to persist this as soon as possible after startup checks.
         // This should be the first write to SystemKeyspace (CASSANDRA-11742)
         SystemKeyspace.persistLocalMetadata();
@@ -338,16 +327,6 @@ public class CassandraDaemon
         StorageService.instance.populateTokenMetadata();
 
         SystemKeyspace.finishStartup();
-
-        // Clean up system.size_estimates entries left lying around from missed keyspace drops (CASSANDRA-14905)
-        StorageService.instance.cleanupSizeEstimates();
-
-        // schedule periodic dumps of table size estimates into SystemKeyspace.SIZE_ESTIMATES_CF
-        // set cassandra.size_recorder_interval to 0 to disable
-        int sizeRecorderInterval = Integer.getInteger("cassandra.size_recorder_interval", 5 * 60);
-        if (sizeRecorderInterval > 0)
-            ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SizeEstimatesRecorder.instance, 30, sizeRecorderInterval, TimeUnit.SECONDS);
-
         ActiveRepairService.instance.start();
 
         // Prepared statements
@@ -433,10 +412,16 @@ public class CassandraDaemon
         // schedule periodic recomputation of speculative retry thresholds
         ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(
             () -> Keyspace.all().forEach(k -> k.getColumnFamilyStores().forEach(ColumnFamilyStore::updateSpeculationThreshold)),
-            DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
-            DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
-            NANOSECONDS
+            DatabaseDescriptor.getReadRpcTimeout(),
+            DatabaseDescriptor.getReadRpcTimeout(),
+            TimeUnit.MILLISECONDS
         );
+
+        // schedule periodic dumps of table size estimates into SystemKeyspace.SIZE_ESTIMATES_CF
+        // set cassandra.size_recorder_interval to 0 to disable
+        int sizeRecorderInterval = Integer.getInteger("cassandra.size_recorder_interval", 5 * 60);
+        if (sizeRecorderInterval > 0)
+            ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SizeEstimatesRecorder.instance, 30, sizeRecorderInterval, TimeUnit.SECONDS);
 
         // Native transport
         nativeTransportService = new NativeTransportService();
@@ -520,33 +505,9 @@ public class CassandraDaemon
      */
     public void start()
     {
-        StartupClusterConnectivityChecker connectivityChecker = StartupClusterConnectivityChecker.create(DatabaseDescriptor.getBlockForPeersTimeoutInSeconds(),
-                                                                                                         DatabaseDescriptor.getBlockForPeersInRemoteDatacenters());
-        connectivityChecker.execute(Gossiper.instance.getEndpoints(), DatabaseDescriptor.getEndpointSnitch()::getDatacenter);
-
-        // We only start transports if bootstrap has completed and we're not in survey mode,
-        // OR if we are in survey mode and streaming has completed but we're not using auth
-        // OR if we have not joined the ring yet.
-        if (StorageService.instance.hasJoined())
-        {
-            if (StorageService.instance.isSurveyMode())
-            {
-                if (StorageService.instance.isBootstrapMode() || DatabaseDescriptor.getAuthenticator().requireAuthentication())
-                {
-                    logger.info("Not starting client transports in write_survey mode as it's bootstrapping or " +
-                            "auth is enabled");
-                    return;
-                }
-            }
-            else
-            {
-                if (!SystemKeyspace.bootstrapComplete())
-                {
-                    logger.info("Not starting client transports as bootstrap has not completed");
-                    return;
-                }
-            }
-        }
+        StartupClusterConnectivityChecker connectivityChecker = StartupClusterConnectivityChecker.create(DatabaseDescriptor.getBlockForPeersPercentage(),
+                                                                                                         DatabaseDescriptor.getBlockForPeersTimeoutInSeconds());
+        connectivityChecker.execute(Gossiper.instance.getEndpoints());
 
         String nativeFlag = System.getProperty("cassandra.start_native_transport");
         if ((nativeFlag != null && Boolean.parseBoolean(nativeFlag)) || (nativeFlag == null && DatabaseDescriptor.startNativeTransport()))
@@ -608,7 +569,16 @@ public class CassandraDaemon
         {
             applyConfig();
 
-            MBeanWrapper.instance.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), MBEAN_NAME, MBeanWrapper.OnException.LOG);
+            try
+            {
+                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+                mbs.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), new ObjectName(MBEAN_NAME));
+            }
+            catch (Exception e)
+            {
+                logger.error("error registering MBean {}", MBEAN_NAME, e);
+                //Allow the server to start even if the bean can't be registered
+            }
 
             if (FBUtilities.isWindows)
             {
@@ -667,29 +637,6 @@ public class CassandraDaemon
 
     public void startNativeTransport()
     {
-        // We only start transports if bootstrap has completed and we're not in survey mode, OR if we are in
-        // survey mode and streaming has completed but we're not using auth.
-        // OR if we have not joined the ring yet.
-        if (StorageService.instance.hasJoined())
-        {
-            if (StorageService.instance.isSurveyMode())
-            {
-                if (StorageService.instance.isBootstrapMode() || DatabaseDescriptor.getAuthenticator().requireAuthentication())
-                {
-                    throw new IllegalStateException("Not starting client transports in write_survey mode as it's bootstrapping or " +
-                            "auth is enabled");
-                }
-            }
-            else
-            {
-                if (!SystemKeyspace.bootstrapComplete())
-                {
-                    throw new IllegalStateException("Node is not yet bootstrapped completely. Use nodetool to check bootstrap" +
-                            " state and resume. For more, see `nodetool help bootstrap`");
-                }
-            }
-        }
-
         if (nativeTransportService == null)
             throw new IllegalStateException("setup() must be called first for CassandraDaemon");
         else
