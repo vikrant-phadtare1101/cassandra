@@ -17,10 +17,13 @@
  */
 package org.apache.cassandra.io.sstable;
 
+import java.io.File;
 import java.util.EnumSet;
-import java.util.regex.Pattern;
 
 import com.google.common.base.Objects;
+
+import org.apache.cassandra.utils.ChecksumType;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * SSTables are made up of multiple components in separate files. Components are
@@ -33,10 +36,6 @@ public class Component
 
     final static EnumSet<Type> TYPES = EnumSet.allOf(Type.class);
 
-    /**
-     * WARNING: Be careful while changing the names or string representation of the enum
-     * members. Streaming code depends on the names during streaming (Ref: CASSANDRA-14556).
-     */
     public enum Type
     {
         // the base data for an sstable: the remaining components can be regenerated
@@ -50,22 +49,24 @@ public class Component
         COMPRESSION_INFO("CompressionInfo.db"),
         // statistical metadata about the content of the sstable
         STATS("Statistics.db"),
-        // holds CRC32 checksum of the data file
-        DIGEST("Digest.crc32"),
+        // holds adler32 checksum of the data file
+        DIGEST("Digest.crc32", "Digest.adler32", "Digest.sha1"),
         // holds the CRC32 for chunks in an a uncompressed file.
         CRC("CRC.db"),
         // holds SSTable Index Summary (sampling of Index component)
         SUMMARY("Summary.db"),
         // table of contents, stores the list of all components for the sstable
         TOC("TOC.txt"),
-        // built-in secondary index (may be multiple per sstable)
-        SECONDARY_INDEX("SI_.*.db"),
         // custom component, used by e.g. custom compaction strategy
-        CUSTOM(null);
-
-        final String repr;
-
+        CUSTOM(new String[] { null });
+        
+        final String[] repr;
         Type(String repr)
+        {
+            this(new String[] { repr });
+        }
+
+        Type(String... repr)
         {
             this.repr = repr;
         }
@@ -73,10 +74,9 @@ public class Component
         static Type fromRepresentation(String repr)
         {
             for (Type type : TYPES)
-            {
-                if (type.repr != null && Pattern.matches(type.repr, repr))
-                    return type;
-            }
+                for (String representation : type.repr)
+                    if (repr.equals(representation))
+                        return type;
             return CUSTOM;
         }
     }
@@ -87,10 +87,27 @@ public class Component
     public final static Component FILTER = new Component(Type.FILTER);
     public final static Component COMPRESSION_INFO = new Component(Type.COMPRESSION_INFO);
     public final static Component STATS = new Component(Type.STATS);
-    public final static Component DIGEST = new Component(Type.DIGEST);
+    private static final String digestCrc32 = "Digest.crc32";
+    private static final String digestAdler32 = "Digest.adler32";
+    private static final String digestSha1 = "Digest.sha1";
+    public final static Component DIGEST_CRC32 = new Component(Type.DIGEST, digestCrc32);
+    public final static Component DIGEST_ADLER32 = new Component(Type.DIGEST, digestAdler32);
+    public final static Component DIGEST_SHA1 = new Component(Type.DIGEST, digestSha1);
     public final static Component CRC = new Component(Type.CRC);
     public final static Component SUMMARY = new Component(Type.SUMMARY);
     public final static Component TOC = new Component(Type.TOC);
+
+    public static Component digestFor(ChecksumType checksumType)
+    {
+        switch (checksumType)
+        {
+            case Adler32:
+                return DIGEST_ADLER32;
+            case CRC32:
+                return DIGEST_CRC32;
+        }
+        throw new AssertionError();
+    }
 
     public final Type type;
     public final String name;
@@ -98,7 +115,8 @@ public class Component
 
     public Component(Type type)
     {
-        this(type, type.repr);
+        this(type, type.repr[0]);
+        assert type.repr.length == 1;
         assert type != Type.CUSTOM;
     }
 
@@ -119,32 +137,44 @@ public class Component
     }
 
     /**
-     * Parse the component part of a sstable filename into a {@code Component} object.
-     *
-     * @param name a string representing a sstable component.
-     * @return the component corresponding to {@code name}. Note that this always return a component as an unrecognized
-     * name is parsed into a CUSTOM component.
+     * {@code
+     * Filename of the form "<ksname>/<cfname>-[tmp-][<version>-]<gen>-<component>",
+     * }
+     * @return A Descriptor for the SSTable, and a Component for this particular file.
+     * TODO move descriptor into Component field
      */
-    public static Component parse(String name)
+    public static Pair<Descriptor,Component> fromFilename(File directory, String name)
     {
-        Type type = Type.fromRepresentation(name);
+        Pair<Descriptor,String> path = Descriptor.fromFilename(directory, name);
 
-        // Build (or retrieve singleton for) the component object
-        switch (type)
+        // parse the component suffix
+        Type type = Type.fromRepresentation(path.right);
+        // build (or retrieve singleton for) the component object
+        Component component;
+        switch(type)
         {
-            case DATA:             return Component.DATA;
-            case PRIMARY_INDEX:    return Component.PRIMARY_INDEX;
-            case FILTER:           return Component.FILTER;
-            case COMPRESSION_INFO: return Component.COMPRESSION_INFO;
-            case STATS:            return Component.STATS;
-            case DIGEST:           return Component.DIGEST;
-            case CRC:              return Component.CRC;
-            case SUMMARY:          return Component.SUMMARY;
-            case TOC:              return Component.TOC;
-            case SECONDARY_INDEX:  return new Component(Type.SECONDARY_INDEX, name);
-            case CUSTOM:           return new Component(Type.CUSTOM, name);
-            default:               throw new AssertionError();
+            case DATA:              component = Component.DATA;                         break;
+            case PRIMARY_INDEX:     component = Component.PRIMARY_INDEX;                break;
+            case FILTER:            component = Component.FILTER;                       break;
+            case COMPRESSION_INFO:  component = Component.COMPRESSION_INFO;             break;
+            case STATS:             component = Component.STATS;                        break;
+            case DIGEST:            switch (path.right)
+                                    {
+                                        case digestCrc32:   component = Component.DIGEST_CRC32;     break;
+                                        case digestAdler32: component = Component.DIGEST_ADLER32;   break;
+                                        case digestSha1:    component = Component.DIGEST_SHA1;      break;
+                                        default:            throw new IllegalArgumentException("Invalid digest component " + path.right);
+                                    }
+                                    break;
+            case CRC:               component = Component.CRC;                          break;
+            case SUMMARY:           component = Component.SUMMARY;                      break;
+            case TOC:               component = Component.TOC;                          break;
+            case CUSTOM:            component = new Component(Type.CUSTOM, path.right); break;
+            default:
+                 throw new IllegalStateException();
         }
+
+        return Pair.create(path.left, component);
     }
 
     @Override

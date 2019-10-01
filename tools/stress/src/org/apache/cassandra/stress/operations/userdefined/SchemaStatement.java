@@ -20,6 +20,8 @@ package org.apache.cassandra.stress.operations.userdefined;
  * 
  */
 
+
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,52 +32,43 @@ import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.LocalDate;
 import com.datastax.driver.core.PreparedStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.generate.Row;
 import org.apache.cassandra.stress.operations.PartitionOperation;
-import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
+import org.apache.cassandra.stress.util.Timer;
+import org.apache.cassandra.transport.SimpleClient;
 
 public abstract class SchemaStatement extends PartitionOperation
 {
-    public enum ArgSelect
-    {
-        MULTIROW, SAMEROW;
-        //TODO: FIRSTROW, LASTROW
-    }
 
     final PreparedStatement statement;
+    final Integer thriftId;
     final ConsistencyLevel cl;
     final int[] argumentIndex;
     final Object[] bindBuffer;
     final ColumnDefinitions definitions;
 
     public SchemaStatement(Timer timer, StressSettings settings, DataSpec spec,
-                           PreparedStatement statement, List<String> bindNames, ConsistencyLevel cl)
+                           PreparedStatement statement, Integer thriftId, ConsistencyLevel cl)
     {
         super(timer, settings, spec);
         this.statement = statement;
+        this.thriftId = thriftId;
         this.cl = cl;
-        argumentIndex = new int[bindNames.size()];
+        argumentIndex = new int[statement.getVariables().size()];
         bindBuffer = new Object[argumentIndex.length];
-        definitions = statement != null ? statement.getVariables() : null;
+        definitions = statement.getVariables();
         int i = 0;
-        for (String name : bindNames)
-            argumentIndex[i++] = spec.partitionGenerator.indexOf(name);
+        for (ColumnDefinitions.Definition definition : definitions)
+            argumentIndex[i++] = spec.partitionGenerator.indexOf(definition.getName());
 
-        if (statement != null)
-        {
-            if (cl.isSerialConsistency())
-                statement.setSerialConsistencyLevel(JavaDriverClient.from(cl));
-            else
-                statement.setConsistencyLevel(JavaDriverClient.from(cl));
-        }
+        statement.setConsistencyLevel(JavaDriverClient.from(cl));
     }
 
     BoundStatement bindRow(Row row)
     {
-        assert statement != null;
-
         for (int i = 0 ; i < argumentIndex.length ; i++)
         {
             Object value = row.get(argumentIndex[i]);
@@ -91,13 +84,18 @@ public abstract class SchemaStatement extends PartitionOperation
         return statement.bind(bindBuffer);
     }
 
-    List<ByteBuffer> rowArgs(Row row)
+    List<ByteBuffer> thriftRowArgs(Row row)
     {
         List<ByteBuffer> args = new ArrayList<>();
         for (int i : argumentIndex)
-            args.add(spec.partitionGenerator.convert(i,
-                        row.get(i)));
+            args.add(spec.partitionGenerator.convert(i, row.get(i)));
         return args;
+    }
+
+    @Override
+    public void run(SimpleClient client) throws IOException
+    {
+        throw new UnsupportedOperationException();
     }
 
     abstract class Runner implements RunOp

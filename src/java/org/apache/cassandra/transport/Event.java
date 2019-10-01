@@ -23,24 +23,19 @@ import java.util.Iterator;
 import java.util.List;
 
 import com.google.common.base.Objects;
-
 import io.netty.buffer.ByteBuf;
-import org.apache.cassandra.cql3.functions.UDAggregate;
-import org.apache.cassandra.cql3.functions.UDFunction;
-import org.apache.cassandra.locator.InetAddressAndPort;
 
 public abstract class Event
 {
-    public enum Type
-    {
-        TOPOLOGY_CHANGE(ProtocolVersion.V3),
-        STATUS_CHANGE(ProtocolVersion.V3),
-        SCHEMA_CHANGE(ProtocolVersion.V3),
-        TRACE_COMPLETE(ProtocolVersion.V4);
+    public enum Type {
+        TOPOLOGY_CHANGE(Server.VERSION_3),
+        STATUS_CHANGE(Server.VERSION_3),
+        SCHEMA_CHANGE(Server.VERSION_3),
+        TRACE_COMPLETE(Server.VERSION_4);
 
-        public final ProtocolVersion minimumVersion;
+        public final int minimumVersion;
 
-        Type(ProtocolVersion minimumVersion)
+        Type(int minimumVersion)
         {
             this.minimumVersion = minimumVersion;
         }
@@ -53,10 +48,10 @@ public abstract class Event
         this.type = type;
     }
 
-    public static Event deserialize(ByteBuf cb, ProtocolVersion version)
+    public static Event deserialize(ByteBuf cb, int version)
     {
         Type eventType = CBUtil.readEnumValue(Type.class, cb);
-        if (eventType.minimumVersion.isGreaterThan(version))
+        if (eventType.minimumVersion > version)
             throw new ProtocolException("Event " + eventType.name() + " not valid for protocol version " + version);
         switch (eventType)
         {
@@ -70,21 +65,21 @@ public abstract class Event
         throw new AssertionError();
     }
 
-    public void serialize(ByteBuf dest, ProtocolVersion version)
+    public void serialize(ByteBuf dest, int version)
     {
-        if (type.minimumVersion.isGreaterThan(version))
+        if (type.minimumVersion > version)
             throw new ProtocolException("Event " + type.name() + " not valid for protocol version " + version);
         CBUtil.writeEnumValue(type, dest);
         serializeEvent(dest, version);
     }
 
-    public int serializedSize(ProtocolVersion version)
+    public int serializedSize(int version)
     {
         return CBUtil.sizeOfEnumValue(type) + eventSerializedSize(version);
     }
 
-    protected abstract void serializeEvent(ByteBuf dest, ProtocolVersion version);
-    protected abstract int eventSerializedSize(ProtocolVersion version);
+    protected abstract void serializeEvent(ByteBuf dest, int version);
+    protected abstract int eventSerializedSize(int version);
 
     public static abstract class NodeEvent extends Event
     {
@@ -114,36 +109,36 @@ public abstract class Event
             this.change = change;
         }
 
-        public static TopologyChange newNode(InetAddressAndPort address)
+        public static TopologyChange newNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.NEW_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.NEW_NODE, new InetSocketAddress(host, port));
         }
 
-        public static TopologyChange removedNode(InetAddressAndPort address)
+        public static TopologyChange removedNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.REMOVED_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.REMOVED_NODE, new InetSocketAddress(host, port));
         }
 
-        public static TopologyChange movedNode(InetAddressAndPort address)
+        public static TopologyChange movedNode(InetAddress host, int port)
         {
-            return new TopologyChange(Change.MOVED_NODE, new InetSocketAddress(address.address, address.port));
+            return new TopologyChange(Change.MOVED_NODE, new InetSocketAddress(host, port));
         }
 
         // Assumes the type has already been deserialized
-        private static TopologyChange deserializeEvent(ByteBuf cb, ProtocolVersion version)
+        private static TopologyChange deserializeEvent(ByteBuf cb, int version)
         {
             Change change = CBUtil.readEnumValue(Change.class, cb);
             InetSocketAddress node = CBUtil.readInet(cb);
             return new TopologyChange(change, node);
         }
 
-        protected void serializeEvent(ByteBuf dest, ProtocolVersion version)
+        protected void serializeEvent(ByteBuf dest, int version)
         {
             CBUtil.writeEnumValue(change, dest);
             CBUtil.writeInet(node, dest);
         }
 
-        protected int eventSerializedSize(ProtocolVersion version)
+        protected int eventSerializedSize(int version)
         {
             return CBUtil.sizeOfEnumValue(change) + CBUtil.sizeOfInet(node);
         }
@@ -185,31 +180,31 @@ public abstract class Event
             this.status = status;
         }
 
-        public static StatusChange nodeUp(InetAddressAndPort address)
+        public static StatusChange nodeUp(InetAddress host, int port)
         {
-            return new StatusChange(Status.UP, new InetSocketAddress(address.address, address.port));
+            return new StatusChange(Status.UP, new InetSocketAddress(host, port));
         }
 
-        public static StatusChange nodeDown(InetAddressAndPort address)
+        public static StatusChange nodeDown(InetAddress host, int port)
         {
-            return new StatusChange(Status.DOWN, new InetSocketAddress(address.address, address.port));
+            return new StatusChange(Status.DOWN, new InetSocketAddress(host, port));
         }
 
         // Assumes the type has already been deserialized
-        private static StatusChange deserializeEvent(ByteBuf cb, ProtocolVersion version)
+        private static StatusChange deserializeEvent(ByteBuf cb, int version)
         {
             Status status = CBUtil.readEnumValue(Status.class, cb);
             InetSocketAddress node = CBUtil.readInet(cb);
             return new StatusChange(status, node);
         }
 
-        protected void serializeEvent(ByteBuf dest, ProtocolVersion version)
+        protected void serializeEvent(ByteBuf dest, int version)
         {
             CBUtil.writeEnumValue(status, dest);
             CBUtil.writeInet(node, dest);
         }
 
-        protected int eventSerializedSize(ProtocolVersion version)
+        protected int eventSerializedSize(int version)
         {
             return CBUtil.sizeOfEnumValue(status) + CBUtil.sizeOfInet(node);
         }
@@ -271,21 +266,11 @@ public abstract class Event
             this(change, Target.KEYSPACE, keyspace, null);
         }
 
-        public static SchemaChange forFunction(Change change, UDFunction function)
-        {
-            return new SchemaChange(change, Target.FUNCTION, function.name().keyspace, function.name().name, function.argumentsList());
-        }
-
-        public static SchemaChange forAggregate(Change change, UDAggregate aggregate)
-        {
-            return new SchemaChange(change, Target.AGGREGATE, aggregate.name().keyspace, aggregate.name().name, aggregate.argumentsList());
-        }
-
         // Assumes the type has already been deserialized
-        public static SchemaChange deserializeEvent(ByteBuf cb, ProtocolVersion version)
+        public static SchemaChange deserializeEvent(ByteBuf cb, int version)
         {
             Change change = CBUtil.readEnumValue(Change.class, cb);
-            if (version.isGreaterOrEqualTo(ProtocolVersion.V3))
+            if (version >= 3)
             {
                 Target target = CBUtil.readEnumValue(Target.class, cb);
                 String keyspace = CBUtil.readString(cb);
@@ -304,11 +289,11 @@ public abstract class Event
             }
         }
 
-        public void serializeEvent(ByteBuf dest, ProtocolVersion version)
+        public void serializeEvent(ByteBuf dest, int version)
         {
             if (target == Target.FUNCTION || target == Target.AGGREGATE)
             {
-                if (version.isGreaterOrEqualTo(ProtocolVersion.V4))
+                if (version >= 4)
                 {
                     // available since protocol version 4
                     CBUtil.writeEnumValue(change, dest);
@@ -321,7 +306,7 @@ public abstract class Event
                 {
                     // not available in protocol versions < 4 - just say the keyspace was updated.
                     CBUtil.writeEnumValue(Change.UPDATED, dest);
-                    if (version.isGreaterOrEqualTo(ProtocolVersion.V3))
+                    if (version >= 3)
                         CBUtil.writeEnumValue(Target.KEYSPACE, dest);
                     CBUtil.writeString(keyspace, dest);
                     CBUtil.writeString("", dest);
@@ -329,7 +314,7 @@ public abstract class Event
                 return;
             }
 
-            if (version.isGreaterOrEqualTo(ProtocolVersion.V3))
+            if (version >= 3)
             {
                 CBUtil.writeEnumValue(change, dest);
                 CBUtil.writeEnumValue(target, dest);
@@ -356,17 +341,17 @@ public abstract class Event
             }
         }
 
-        public int eventSerializedSize(ProtocolVersion version)
+        public int eventSerializedSize(int version)
         {
             if (target == Target.FUNCTION || target == Target.AGGREGATE)
             {
-                if (version.isGreaterOrEqualTo(ProtocolVersion.V4))
+                if (version >= 4)
                     return CBUtil.sizeOfEnumValue(change)
                                + CBUtil.sizeOfEnumValue(target)
                                + CBUtil.sizeOfString(keyspace)
                                + CBUtil.sizeOfString(name)
                                + CBUtil.sizeOfStringList(argTypes);
-                if (version.isGreaterOrEqualTo(ProtocolVersion.V3))
+                if (version >= 3)
                     return CBUtil.sizeOfEnumValue(Change.UPDATED)
                            + CBUtil.sizeOfEnumValue(Target.KEYSPACE)
                            + CBUtil.sizeOfString(keyspace);
@@ -375,7 +360,7 @@ public abstract class Event
                        + CBUtil.sizeOfString("");
             }
 
-            if (version.isGreaterOrEqualTo(ProtocolVersion.V3))
+            if (version >= 3)
             {
                 int size = CBUtil.sizeOfEnumValue(change)
                          + CBUtil.sizeOfEnumValue(target)

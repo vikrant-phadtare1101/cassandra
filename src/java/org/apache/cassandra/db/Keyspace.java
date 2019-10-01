@@ -32,10 +32,11 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.*;
+import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.repair.CassandraKeyspaceRepairManager;
 import org.apache.cassandra.db.view.ViewManager;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.index.Index;
@@ -44,20 +45,13 @@ import org.apache.cassandra.index.transactions.UpdateTransaction;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.metrics.KeyspaceMetrics;
-import org.apache.cassandra.repair.KeyspaceRepairManager;
 import org.apache.cassandra.schema.KeyspaceMetadata;
-import org.apache.cassandra.schema.ReplicationParams;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.TableMetadataRef;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.utils.*;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.concurrent.OpOrder;
-
-import static java.util.concurrent.TimeUnit.*;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * It represents a Keyspace.
@@ -76,7 +70,7 @@ public class Keyspace
     // proper directories here as well as in CassandraDaemon.
     static
     {
-        if (DatabaseDescriptor.isDaemonInitialized() || DatabaseDescriptor.isToolInitialized())
+        if (!Config.isClientMode())
             DatabaseDescriptor.createAllDirectories();
     }
 
@@ -87,13 +81,9 @@ public class Keyspace
     public static final OpOrder writeOrder = new OpOrder();
 
     /* ColumnFamilyStore per column family */
-    private final ConcurrentMap<TableId, ColumnFamilyStore> columnFamilyStores = new ConcurrentHashMap<>();
-
+    private final ConcurrentMap<UUID, ColumnFamilyStore> columnFamilyStores = new ConcurrentHashMap<>();
     private volatile AbstractReplicationStrategy replicationStrategy;
     public final ViewManager viewManager;
-    private final KeyspaceWriteHandler writeHandler;
-    private volatile ReplicationParams replicationParams;
-    private final KeyspaceRepairManager repairManager;
 
     public static final Function<String,Keyspace> keyspaceTransformer = new Function<String, Keyspace>()
     {
@@ -112,7 +102,7 @@ public class Keyspace
 
     public static Keyspace open(String keyspaceName)
     {
-        assert initialized || SchemaConstants.isLocalSystemKeyspace(keyspaceName);
+        assert initialized || Schema.isLocalSystemKeyspace(keyspaceName);
         return open(keyspaceName, Schema.instance, true);
     }
 
@@ -164,14 +154,9 @@ public class Keyspace
         }
     }
 
-    public static ColumnFamilyStore openAndGetStore(TableMetadataRef tableRef)
+    public static ColumnFamilyStore openAndGetStore(CFMetaData cfm)
     {
-        return open(tableRef.keyspace).getColumnFamilyStore(tableRef.id);
-    }
-
-    public static ColumnFamilyStore openAndGetStore(TableMetadata table)
-    {
-        return open(table.keyspace).getColumnFamilyStore(table.id);
+        return open(cfm.ksName).getColumnFamilyStore(cfm.cfId);
     }
 
     /**
@@ -208,13 +193,13 @@ public class Keyspace
 
     public ColumnFamilyStore getColumnFamilyStore(String cfName)
     {
-        TableMetadata table = Schema.instance.getTableMetadata(getName(), cfName);
-        if (table == null)
+        UUID id = Schema.instance.getId(getName(), cfName);
+        if (id == null)
             throw new IllegalArgumentException(String.format("Unknown keyspace/cf pair (%s.%s)", getName(), cfName));
-        return getColumnFamilyStore(table.id);
+        return getColumnFamilyStore(id);
     }
 
-    public ColumnFamilyStore getColumnFamilyStore(TableId id)
+    public ColumnFamilyStore getColumnFamilyStore(UUID id)
     {
         ColumnFamilyStore cfs = columnFamilyStores.get(id);
         if (cfs == null)
@@ -222,35 +207,9 @@ public class Keyspace
         return cfs;
     }
 
-    public boolean hasColumnFamilyStore(TableId id)
+    public boolean hasColumnFamilyStore(UUID id)
     {
         return columnFamilyStores.containsKey(id);
-    }
-
-    /**
-     * Take a snapshot of the specific column family, or the entire set of column families
-     * if columnFamily is null with a given timestamp
-     *
-     * @param snapshotName     the tag associated with the name of the snapshot.  This value may not be null
-     * @param columnFamilyName the column family to snapshot or all on null
-     * @param skipFlush Skip blocking flush of memtable
-     * @throws IOException if the column family doesn't exist
-     */
-    public void snapshot(String snapshotName, String columnFamilyName, boolean skipFlush) throws IOException
-    {
-        assert snapshotName != null;
-        boolean tookSnapShot = false;
-        for (ColumnFamilyStore cfStore : columnFamilyStores.values())
-        {
-            if (columnFamilyName == null || cfStore.name.equals(columnFamilyName))
-            {
-                tookSnapShot = true;
-                cfStore.snapshot(snapshotName, skipFlush);
-            }
-        }
-
-        if ((columnFamilyName != null) && !tookSnapShot)
-            throw new IOException("Failed taking snapshot. Table " + columnFamilyName + " does not exist.");
     }
 
     /**
@@ -263,7 +222,19 @@ public class Keyspace
      */
     public void snapshot(String snapshotName, String columnFamilyName) throws IOException
     {
-        snapshot(snapshotName, columnFamilyName, false);
+        assert snapshotName != null;
+        boolean tookSnapShot = false;
+        for (ColumnFamilyStore cfStore : columnFamilyStores.values())
+        {
+            if (columnFamilyName == null || cfStore.name.equals(columnFamilyName))
+            {
+                tookSnapShot = true;
+                cfStore.snapshot(snapshotName);
+            }
+        }
+
+        if ((columnFamilyName != null) && !tookSnapShot)
+            throw new IOException("Failed taking snapshot. Table " + columnFamilyName + " does not exist.");
     }
 
     /**
@@ -278,11 +249,6 @@ public class Keyspace
             snapshotName = snapshotName + "-" + clientSuppliedName;
         }
         return snapshotName;
-    }
-
-    public static String getTimestampedSnapshotNameWithPrefix(String clientSuppliedName, String prefix)
-    {
-        return prefix + "-" + getTimestampedSnapshotName(clientSuppliedName);
     }
 
     /**
@@ -310,7 +276,7 @@ public class Keyspace
      */
     public static void clearSnapshot(String snapshotName, String keyspace)
     {
-        List<File> snapshotDirs = Directories.getKSChildDirectories(keyspace);
+        List<File> snapshotDirs = Directories.getKSChildDirectories(keyspace, ColumnFamilyStore.getInitialDirectories());
         Directories.clearSnapshot(snapshotName, snapshotDirs);
     }
 
@@ -327,23 +293,18 @@ public class Keyspace
 
     private Keyspace(String keyspaceName, boolean loadSSTables)
     {
-        metadata = Schema.instance.getKeyspaceMetadata(keyspaceName);
+        metadata = Schema.instance.getKSMetaData(keyspaceName);
         assert metadata != null : "Unknown keyspace " + keyspaceName;
-        if (metadata.isVirtual())
-            throw new IllegalStateException("Cannot initialize Keyspace with virtual metadata " + keyspaceName);
         createReplicationStrategy(metadata);
 
         this.metric = new KeyspaceMetrics(this);
         this.viewManager = new ViewManager(this);
-        for (TableMetadata cfm : metadata.tablesAndViews())
+        for (CFMetaData cfm : metadata.tablesAndViews())
         {
-            logger.trace("Initializing {}.{}", getName(), cfm.name);
-            initCf(Schema.instance.getTableMetadataRef(cfm.id), loadSSTables);
+            logger.trace("Initializing {}.{}", getName(), cfm.cfName);
+            initCf(cfm, loadSSTables);
         }
-        this.viewManager.reload(false);
-
-        this.repairManager = new CassandraKeyspaceRepairManager(this);
-        this.writeHandler = new CassandraKeyspaceWriteHandler(this);
+        this.viewManager.reload();
     }
 
     private Keyspace(KeyspaceMetadata metadata)
@@ -352,13 +313,6 @@ public class Keyspace
         createReplicationStrategy(metadata);
         this.metric = new KeyspaceMetrics(this);
         this.viewManager = new ViewManager(this);
-        this.repairManager = new CassandraKeyspaceRepairManager(this);
-        this.writeHandler = new CassandraKeyspaceWriteHandler(this);
-    }
-
-    public KeyspaceRepairManager getRepairManager()
-    {
-        return repairManager;
     }
 
     public static Keyspace mockKS(KeyspaceMetadata metadata)
@@ -368,26 +322,23 @@ public class Keyspace
 
     private void createReplicationStrategy(KeyspaceMetadata ksm)
     {
-        logger.info("Creating replication strategy " + ksm.name + " params " + ksm.params);
-        replicationStrategy = ksm.createReplicationStrategy();
-        if (!ksm.params.replication.equals(replicationParams))
-        {
-            logger.debug("New replication settings for keyspace {} - invalidating disk boundary caches", ksm.name);
-            columnFamilyStores.values().forEach(ColumnFamilyStore::invalidateDiskBoundaries);
-        }
-        replicationParams = ksm.params.replication;
+        replicationStrategy = AbstractReplicationStrategy.createReplicationStrategy(ksm.name,
+                                                                                    ksm.params.replication.klass,
+                                                                                    StorageService.instance.getTokenMetadata(),
+                                                                                    DatabaseDescriptor.getEndpointSnitch(),
+                                                                                    ksm.params.replication.options);
     }
 
     // best invoked on the compaction mananger.
-    public void dropCf(TableId tableId)
+    public void dropCf(UUID cfId)
     {
-        assert columnFamilyStores.containsKey(tableId);
-        ColumnFamilyStore cfs = columnFamilyStores.remove(tableId);
+        assert columnFamilyStores.containsKey(cfId);
+        ColumnFamilyStore cfs = columnFamilyStores.remove(cfId);
         if (cfs == null)
             return;
 
         cfs.getCompactionStrategyManager().shutdown();
-        CompactionManager.instance.interruptCompactionForCFs(cfs.concatWithIndexes(), (sstable) -> true, true);
+        CompactionManager.instance.interruptCompactionForCFs(cfs.concatWithIndexes(), true);
         // wait for any outstanding reads/writes that might affect the CFS
         cfs.keyspace.writeOrder.awaitNewBarrier();
         cfs.readOrdering.awaitNewBarrier();
@@ -403,56 +354,27 @@ public class Keyspace
     }
 
     /**
-     * Registers a custom cf instance with this keyspace.
-     * This is required for offline tools what use non-standard directories.
-     */
-    public void initCfCustom(ColumnFamilyStore newCfs)
-    {
-        ColumnFamilyStore cfs = columnFamilyStores.get(newCfs.metadata.id);
-
-        if (cfs == null)
-        {
-            // CFS being created for the first time, either on server startup or new CF being added.
-            // We don't worry about races here; startup is safe, and adding multiple idential CFs
-            // simultaneously is a "don't do that" scenario.
-            ColumnFamilyStore oldCfs = columnFamilyStores.putIfAbsent(newCfs.metadata.id, newCfs);
-            // CFS mbean instantiation will error out before we hit this, but in case that changes...
-            if (oldCfs != null)
-                throw new IllegalStateException("added multiple mappings for cf id " + newCfs.metadata.id);
-        }
-        else
-        {
-            throw new IllegalStateException("CFS is already initialized: " + cfs.name);
-        }
-    }
-
-    public KeyspaceWriteHandler getWriteHandler()
-    {
-        return writeHandler;
-    }
-
-    /**
      * adds a cf to internal structures, ends up creating disk files).
      */
-    public void initCf(TableMetadataRef metadata, boolean loadSSTables)
+    public void initCf(CFMetaData metadata, boolean loadSSTables)
     {
-        ColumnFamilyStore cfs = columnFamilyStores.get(metadata.id);
+        ColumnFamilyStore cfs = columnFamilyStores.get(metadata.cfId);
 
         if (cfs == null)
         {
             // CFS being created for the first time, either on server startup or new CF being added.
             // We don't worry about races here; startup is safe, and adding multiple idential CFs
             // simultaneously is a "don't do that" scenario.
-            ColumnFamilyStore oldCfs = columnFamilyStores.putIfAbsent(metadata.id, ColumnFamilyStore.createColumnFamilyStore(this, metadata, loadSSTables));
+            ColumnFamilyStore oldCfs = columnFamilyStores.putIfAbsent(metadata.cfId, ColumnFamilyStore.createColumnFamilyStore(this, metadata, loadSSTables));
             // CFS mbean instantiation will error out before we hit this, but in case that changes...
             if (oldCfs != null)
-                throw new IllegalStateException("added multiple mappings for cf id " + metadata.id);
+                throw new IllegalStateException("added multiple mappings for cf id " + metadata.cfId);
         }
         else
         {
             // re-initializing an existing CF.  This will happen if you cleared the schema
             // on this node and it's getting repopulated from the rest of the cluster.
-            assert cfs.name.equals(metadata.name);
+            assert cfs.name.equals(metadata.cfName);
             cfs.reload();
         }
     }
@@ -486,16 +408,32 @@ public class Keyspace
      *
      * @param mutation       the row to write.  Must not be modified after calling apply, since commitlog append
      *                       may happen concurrently, depending on the CL Executor type.
-     * @param makeDurable    if true, don't return unless write has been made durable
+     * @param writeCommitLog false to disable commitlog append entirely
      * @param updateIndexes  false to disable index updates (used by CollationController "defragmenting")
      * @param isDroppable    true if this should throw WriteTimeoutException if it does not acquire lock within write_request_timeout_in_ms
+     * @throws ExecutionException
      */
     public void apply(final Mutation mutation,
-                      final boolean makeDurable,
+                      final boolean writeCommitLog,
                       boolean updateIndexes,
                       boolean isDroppable)
     {
-        applyInternal(mutation, makeDurable, updateIndexes, isDroppable, false, null);
+        applyInternal(mutation, writeCommitLog, updateIndexes, isDroppable, false, null);
+    }
+
+    /**
+     * Compatibility method that keeps <bold>isClReplay</bold> flag.
+     * @deprecated Use {@link this#applyFuture(Mutation, boolean, boolean, boolean, boolean)} instead
+     */
+    @Deprecated
+    public CompletableFuture<?> apply(final Mutation mutation,
+                                       final boolean writeCommitLog,
+                                       boolean updateIndexes,
+                                       boolean isClReplay,
+                                       boolean isDeferrable,
+                                       CompletableFuture<?> future)
+    {
+        return applyInternal(mutation, writeCommitLog, updateIndexes, !isClReplay, isDeferrable, future != null? future : new CompletableFuture<>());
     }
 
     /**
@@ -503,13 +441,13 @@ public class Keyspace
      *
      * @param mutation       the row to write.  Must not be modified after calling apply, since commitlog append
      *                       may happen concurrently, depending on the CL Executor type.
-     * @param makeDurable    if true, don't return unless write has been made durable
+     * @param writeCommitLog false to disable commitlog append entirely
      * @param updateIndexes  false to disable index updates (used by CollationController "defragmenting")
      * @param isDroppable    true if this should throw WriteTimeoutException if it does not acquire lock within write_request_timeout_in_ms
      * @param isDeferrable   true if caller is not waiting for future to complete, so that future may be deferred
      */
     private CompletableFuture<?> applyInternal(final Mutation mutation,
-                                               final boolean makeDurable,
+                                               final boolean writeCommitLog,
                                                boolean updateIndexes,
                                                boolean isDroppable,
                                                boolean isDeferrable,
@@ -518,108 +456,96 @@ public class Keyspace
         if (TEST_FAIL_WRITES && metadata.name.equals(TEST_FAIL_WRITES_KS))
             throw new RuntimeException("Testing write failures");
 
-        Lock[] locks = null;
-
         boolean requiresViewUpdate = updateIndexes && viewManager.updatesAffectView(Collections.singleton(mutation), false);
 
+        Lock lock = null;
         if (requiresViewUpdate)
         {
             mutation.viewLockAcquireStart.compareAndSet(0L, System.currentTimeMillis());
-
-            // the order of lock acquisition doesn't matter (from a deadlock perspective) because we only use tryLock()
-            Collection<TableId> tableIds = mutation.getTableIds();
-            Iterator<TableId> idIterator = tableIds.iterator();
-
-            locks = new Lock[tableIds.size()];
-            for (int i = 0; i < tableIds.size(); i++)
+            while (true)
             {
-                TableId tableId = idIterator.next();
-                int lockKey = Objects.hash(mutation.key().getKey(), tableId);
-                while (true)
+                if (TEST_FAIL_MV_LOCKS_COUNT == 0)
+                    lock = ViewManager.acquireLockFor(mutation.key().getKey());
+                else
+                    TEST_FAIL_MV_LOCKS_COUNT--;
+
+                if (lock == null)
                 {
-                    Lock lock = null;
-
-                    if (TEST_FAIL_MV_LOCKS_COUNT == 0)
-                        lock = ViewManager.acquireLockFor(lockKey);
-                    else
-                        TEST_FAIL_MV_LOCKS_COUNT--;
-
-                    if (lock == null)
+                    //throw WTE only if request is droppable
+                    if (isDroppable && (System.currentTimeMillis() - mutation.createdAt) > DatabaseDescriptor.getWriteRpcTimeout())
                     {
-                        //throw WTE only if request is droppable
-                        if (isDroppable && (approxTime.isAfter(mutation.approxCreatedAtNanos + DatabaseDescriptor.getWriteRpcTimeout(NANOSECONDS))))
+                        logger.trace("Could not acquire lock for {}", ByteBufferUtil.bytesToHex(mutation.key().getKey()));
+                        Tracing.trace("Could not acquire MV lock");
+                        if (future != null)
                         {
-                            for (int j = 0; j < i; j++)
-                                locks[j].unlock();
-
-                            if (logger.isTraceEnabled())
-                                logger.trace("Could not acquire lock for {} and table {}", ByteBufferUtil.bytesToHex(mutation.key().getKey()), columnFamilyStores.get(tableId).name);
-                            Tracing.trace("Could not acquire MV lock");
-                            if (future != null)
-                            {
-                                future.completeExceptionally(new WriteTimeoutException(WriteType.VIEW, ConsistencyLevel.LOCAL_ONE, 0, 1));
-                                return future;
-                            }
-                            else
-                                throw new WriteTimeoutException(WriteType.VIEW, ConsistencyLevel.LOCAL_ONE, 0, 1);
-                        }
-                        else if (isDeferrable)
-                        {
-                            for (int j = 0; j < i; j++)
-                                locks[j].unlock();
-
-                            // This view update can't happen right now. so rather than keep this thread busy
-                            // we will re-apply ourself to the queue and try again later
-                            final CompletableFuture<?> mark = future;
-                            StageManager.getStage(Stage.MUTATION).execute(() ->
-                                                                          applyInternal(mutation, makeDurable, true, isDroppable, true, mark)
-                            );
+                            future.completeExceptionally(new WriteTimeoutException(WriteType.VIEW, ConsistencyLevel.LOCAL_ONE, 0, 1));
                             return future;
                         }
                         else
                         {
-                            // Retry lock on same thread, if mutation is not deferrable.
-                            // Mutation is not deferrable, if applied from MutationStage and caller is waiting for future to finish
-                            // If blocking caller defers future, this may lead to deadlock situation with all MutationStage workers
-                            // being blocked by waiting for futures which will never be processed as all workers are blocked
-                            try
-                            {
-                                // Wait a little bit before retrying to lock
-                                Thread.sleep(10);
-                            }
-                            catch (InterruptedException e)
-                            {
-                                // Just continue
-                            }
-                            continue;
+                            throw new WriteTimeoutException(WriteType.VIEW, ConsistencyLevel.LOCAL_ONE, 0, 1);
                         }
+                    }
+                    else if (isDeferrable)
+                    {
+                        //This view update can't happen right now. so rather than keep this thread busy
+                        // we will re-apply ourself to the queue and try again later
+                        final CompletableFuture<?> mark = future;
+                        StageManager.getStage(Stage.MUTATION).execute(() ->
+                                applyInternal(mutation, writeCommitLog, true, isDroppable, true, mark)
+                        );
+
+                        return future;
                     }
                     else
                     {
-                        locks[i] = lock;
+                        // Retry lock on same thread, if mutation is not deferrable.
+                        // Mutation is not deferrable, if applied from MutationStage and caller is waiting for future to finish
+                        // If blocking caller defers future, this may lead to deadlock situation with all MutationStage workers
+                        // being blocked by waiting for futures which will never be processed as all workers are blocked
+                        try
+                        {
+                            // Wait a little bit before retrying to lock
+                            Thread.sleep(10);
+                        }
+                        catch (InterruptedException e)
+                        {
+                            // Just continue
+                        }
+                        // continue in while loop
+                    }
+                }
+                else
+                {
+                    long acquireTime = System.currentTimeMillis() - mutation.viewLockAcquireStart.get();
+                    // Metrics are only collected for droppable write operations
+                    // Bulk non-droppable operations (e.g. commitlog replay, hint delivery) are not measured
+                    if (isDroppable)
+                    {
+                        for (UUID cfid : mutation.getColumnFamilyIds())
+                            columnFamilyStores.get(cfid).metric.viewLockAcquireTime.update(acquireTime, TimeUnit.MILLISECONDS);
                     }
                     break;
                 }
             }
-
-            long acquireTime = System.currentTimeMillis() - mutation.viewLockAcquireStart.get();
-            // Metrics are only collected for droppable write operations
-            // Bulk non-droppable operations (e.g. commitlog replay, hint delivery) are not measured
-            if (isDroppable)
-            {
-                for(TableId tableId : tableIds)
-                    columnFamilyStores.get(tableId).metric.viewLockAcquireTime.update(acquireTime, MILLISECONDS);
-            }
         }
         int nowInSec = FBUtilities.nowInSeconds();
-        try (WriteContext ctx = getWriteHandler().beginWrite(mutation, makeDurable))
+        try (OpOrder.Group opGroup = writeOrder.start())
         {
+            // write the mutation to the commitlog and memtables
+            ReplayPosition replayPosition = null;
+            if (writeCommitLog)
+            {
+                Tracing.trace("Appending to commitlog");
+                replayPosition = CommitLog.instance.add(mutation);
+            }
+
             for (PartitionUpdate upd : mutation.getPartitionUpdates())
             {
-                ColumnFamilyStore cfs = columnFamilyStores.get(upd.metadata().id);
+                ColumnFamilyStore cfs = columnFamilyStores.get(upd.metadata().cfId);
                 if (cfs == null)
                 {
-                    logger.error("Attempting to mutate non-existant table {} ({}.{})", upd.metadata().id, upd.metadata().keyspace, upd.metadata().name);
+                    logger.error("Attempting to mutate non-existant table {} ({}.{})", upd.metadata().cfId, upd.metadata().ksName, upd.metadata().cfName);
                     continue;
                 }
                 AtomicLong baseComplete = new AtomicLong(Long.MAX_VALUE);
@@ -629,22 +555,22 @@ public class Keyspace
                     try
                     {
                         Tracing.trace("Creating materialized view mutations from base table replica");
-                        viewManager.forTable(upd.metadata().id).pushViewReplicaUpdates(upd, makeDurable, baseComplete);
+                        viewManager.forTable(upd.metadata()).pushViewReplicaUpdates(upd, writeCommitLog, baseComplete);
                     }
                     catch (Throwable t)
                     {
                         JVMStabilityInspector.inspectThrowable(t);
-                        logger.error(String.format("Unknown exception caught while attempting to update MaterializedView! %s",
-                                                   upd.metadata().toString()), t);
+                        logger.error(String.format("Unknown exception caught while attempting to update MaterializedView! %s.%s",
+                                     upd.metadata().ksName, upd.metadata().cfName), t);
                         throw t;
                     }
                 }
 
+                Tracing.trace("Adding to {} memtable", upd.metadata().cfName);
                 UpdateTransaction indexTransaction = updateIndexes
-                                                     ? cfs.indexManager.newUpdateTransaction(upd, ctx, nowInSec)
+                                                     ? cfs.indexManager.newUpdateTransaction(upd, opGroup, nowInSec)
                                                      : UpdateTransaction.NO_OP;
-                cfs.getWriteHandler().write(upd, ctx, indexTransaction);
-
+                cfs.apply(upd, indexTransaction, opGroup, replayPosition);
                 if (requiresViewUpdate)
                     baseComplete.set(System.currentTimeMillis());
             }
@@ -656,12 +582,8 @@ public class Keyspace
         }
         finally
         {
-            if (locks != null)
-            {
-                for (Lock lock : locks)
-                    if (lock != null)
-                        lock.unlock();
-            }
+            if (lock != null)
+                lock.unlock();
         }
     }
 
@@ -713,7 +635,7 @@ public class Keyspace
                 Index index = baseCfs.indexManager.getIndexByName(indexName);
                 if (index == null)
                     throw new IllegalArgumentException(String.format("Invalid index specified: %s/%s.",
-                                                                     baseCfs.metadata.name,
+                                                                     baseCfs.metadata.cfName,
                                                                      indexName));
 
                 if (index.getBackingTable().isPresent())
@@ -736,7 +658,7 @@ public class Keyspace
         Set<ColumnFamilyStore> stores = new HashSet<>();
         for (ColumnFamilyStore indexCfs : baseCfs.indexManager.getAllIndexColumnFamilyStores())
         {
-            logger.info("adding secondary index table {} to operation", indexCfs.metadata.name);
+            logger.info("adding secondary index table {} to operation", indexCfs.metadata.cfName);
             stores.add(indexCfs);
         }
         return stores;
@@ -759,7 +681,7 @@ public class Keyspace
 
     public static Iterable<Keyspace> system()
     {
-        return Iterables.transform(SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES, keyspaceTransformer);
+        return Iterables.transform(Schema.LOCAL_SYSTEM_KEYSPACE_NAMES, keyspaceTransformer);
     }
 
     @Override

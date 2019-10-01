@@ -26,6 +26,8 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.*;
 import org.junit.Test;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.restrictions.StatementRestrictions;
@@ -37,9 +39,6 @@ import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.rows.Unfiltered;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -109,7 +108,7 @@ public class CassandraIndexTest extends CQLTester
                         .target("k1")
                         .withFirstRow(row(0, 0, 0, 0, 0))
                         .withSecondRow(row(1, 1, 1, 1, 1))
-                        .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
+                        .missingIndexMessage("Partition key parts: k2 must be restricted as other parts are")
                         .firstQueryExpression("k1=0")
                         .secondQueryExpression("k1=1")
                         .run();
@@ -123,7 +122,7 @@ public class CassandraIndexTest extends CQLTester
                         .target("k2")
                         .withFirstRow(row(0, 0, 0, 0, 0))
                         .withSecondRow(row(1, 1, 1, 1, 1))
-                        .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
+                        .missingIndexMessage("Partition key parts: k1 must be restricted as other parts are")
                         .firstQueryExpression("k2=0")
                         .secondQueryExpression("k2=1")
                         .run();
@@ -325,29 +324,18 @@ public class CassandraIndexTest extends CQLTester
     }
 
     @Test
-    public void indexOnStaticColumn() throws Throwable
+    public void indexOnRegularColumnWithCompactStorage() throws Throwable
     {
-        Object[] row1 = row("k0", "c0", "s0");
-        Object[] row2 = row("k0", "c1", "s0");
-        Object[] row3 = row("k1", "c0", "s1");
-        Object[] row4 = row("k1", "c1", "s1");
-
-        createTable("CREATE TABLE %s (k text, c text, s text static, PRIMARY KEY (k, c));");
-        createIndex("CREATE INDEX sc_index on %s(s)");
-
-        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row1);
-        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row2);
-        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row3);
-        execute("INSERT INTO %s (k, c, s) VALUES (?, ?, ?)", row4);
-
-        assertRows(execute("SELECT * FROM %s WHERE s = ?", "s0"), row1, row2);
-        assertRows(execute("SELECT * FROM %s WHERE s = ?", "s1"), row3, row4);
-
-        assertRows(execute("SELECT * FROM %s WHERE s = ? AND token(k) >= token(?)", "s0", "k0"), row1, row2);
-        assertRows(execute("SELECT * FROM %s WHERE s = ? AND token(k) >= token(?)", "s1", "k1"), row3, row4);
-
-        assertEmpty(execute("SELECT * FROM %s WHERE s = ? AND token(k) < token(?)", "s0", "k0"));
-        assertEmpty(execute("SELECT * FROM %s WHERE s = ? AND token(k) < token(?)", "s1", "k1"));
+        new TestScript().tableDefinition("CREATE TABLE %s (k int, v int, PRIMARY KEY (k)) WITH COMPACT STORAGE;")
+                        .target("v")
+                        .withFirstRow(row(0, 0))
+                        .withSecondRow(row(1,1))
+                        .missingIndexMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE)
+                        .firstQueryExpression("v=0")
+                        .secondQueryExpression("v=1")
+                        .updateExpression("SET v=2")
+                        .postUpdateQueryExpression("v=2")
+                        .run();
     }
 
     @Test
@@ -496,37 +484,36 @@ public class CassandraIndexTest extends CQLTester
         createIndex(String.format("CREATE INDEX %s ON %%s(c)", indexName));
         waitForIndex(KEYSPACE, tableName, indexName);
         // check that there are no other rows in the built indexes table
-        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BUILT_INDEXES)),
-                   row(KEYSPACE, indexName, null));
+        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SystemKeyspace.NAME, SystemKeyspace.BUILT_INDEXES)),
+                   row(KEYSPACE, indexName));
 
         // rebuild the index and verify the built status table
         getCurrentColumnFamilyStore().rebuildSecondaryIndex(indexName);
         waitForIndex(KEYSPACE, tableName, indexName);
 
         // check that there are no other rows in the built indexes table
-        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BUILT_INDEXES)),
-                   row(KEYSPACE, indexName, null ));
+        assertRows(execute(String.format("SELECT * FROM %s.\"%s\"", SystemKeyspace.NAME, SystemKeyspace.BUILT_INDEXES)),
+                   row(KEYSPACE, indexName));
     }
 
-
     // this is slightly annoying, but we cannot read rows from the methods in Util as
-    // ReadCommand#executeLocally uses metadata retrieved via the tableId, which the index
+    // ReadCommand#executeInternal uses metadata retrieved via the cfId, which the index
     // CFS inherits from the base CFS. This has the 'wrong' partitioner (the index table
     // uses LocalPartition, the base table a real one, so we cannot read from the index
-    // table with executeLocally
+    // table with executeInternal
     private void assertIndexRowTtl(ColumnFamilyStore indexCfs, int indexedValue, int ttl) throws Throwable
     {
         DecoratedKey indexKey = indexCfs.decorateKey(ByteBufferUtil.bytes(indexedValue));
-        ClusteringIndexFilter filter = new ClusteringIndexSliceFilter(Slices.with(indexCfs.metadata().comparator,
+        ClusteringIndexFilter filter = new ClusteringIndexSliceFilter(Slices.with(indexCfs.metadata.comparator,
                                                                                   Slice.ALL),
                                                                       false);
-        SinglePartitionReadCommand command = SinglePartitionReadCommand.create(indexCfs.metadata(),
+        SinglePartitionReadCommand command = SinglePartitionReadCommand.create(indexCfs.metadata,
                                                                                FBUtilities.nowInSeconds(),
                                                                                indexKey,
-                                                                               ColumnFilter.all(indexCfs.metadata()),
+                                                                               ColumnFilter.all(indexCfs.metadata),
                                                                                filter);
-        try (ReadExecutionController executionController = command.executionController();
-             UnfilteredRowIterator iter = command.queryMemtableAndDisk(indexCfs, executionController))
+        try (ReadOrderGroup orderGroup = ReadOrderGroup.forCommand(command);
+             UnfilteredRowIterator iter = command.queryMemtableAndDisk(indexCfs, orderGroup.indexReadOpOrderGroup()))
         {
             while( iter.hasNext())
             {
@@ -621,7 +608,7 @@ public class CassandraIndexTest extends CQLTester
             if (updateExpression != null)
                 assertNotNull(postUpdateQueryExpression);
 
-            // first, create the table as we need the Tablemetadata to build the other cql statements
+            // first, create the table as we need the CFMetaData to build the other cql statements
             String tableName = createTable(tableDefinition);
 
             indexName = String.format("index_%s_%d", tableName, indexCounter++);
@@ -724,7 +711,7 @@ public class CassandraIndexTest extends CQLTester
         private void assertPrimaryKeyColumnsOnly(UntypedResultSet resultSet, Object[] row)
         {
             assertFalse(resultSet.isEmpty());
-            TableMetadata cfm = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             int columnCount = cfm.partitionKeyColumns().size();
             if (cfm.isCompound())
                 columnCount += cfm.clusteringColumns().size();
@@ -734,12 +721,14 @@ public class CassandraIndexTest extends CQLTester
 
         private String getInsertCql()
         {
-            TableMetadata metadata = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             String columns = Joiner.on(", ")
-                                   .join(Iterators.transform(metadata.allColumnsInSelectOrder(),
+                                   .join(Iterators.transform(cfm.allColumnsInSelectOrder(),
                                                              (column) -> column.name.toString()));
-            String markers = Joiner.on(", ").join(Iterators.transform(metadata.allColumnsInSelectOrder(),
-                                                                      (column) -> "?"));
+            String markers = Joiner.on(", ").join(Iterators.transform(cfm.allColumnsInSelectOrder(),
+                                                                      (column) -> {
+                                                                          return "?";
+                                                                      }));
             return String.format("INSERT INTO %%s (%s) VALUES (%s)", columns, markers);
         }
 
@@ -758,15 +747,15 @@ public class CassandraIndexTest extends CQLTester
 
         private String getDeletePartitionCql()
         {
-            TableMetadata cfm = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             return StreamSupport.stream(cfm.partitionKeyColumns().spliterator(), false)
                                 .map(column -> column.name.toString() + "=?")
                                 .collect(Collectors.joining(" AND ", "DELETE FROM %s WHERE ", ""));
         }
 
-        private Stream<ColumnMetadata> getPrimaryKeyColumns()
+        private Stream<ColumnDefinition> getPrimaryKeyColumns()
         {
-            TableMetadata cfm = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             if (cfm.isCompactTable())
                 return cfm.partitionKeyColumns().stream();
             else
@@ -775,7 +764,7 @@ public class CassandraIndexTest extends CQLTester
 
         private Object[] getPrimaryKeyValues(Object[] row)
         {
-            TableMetadata cfm = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             if (cfm.isCompactTable())
                 return getPartitionKeyValues(row);
 
@@ -784,7 +773,7 @@ public class CassandraIndexTest extends CQLTester
 
         private Object[] getPartitionKeyValues(Object[] row)
         {
-            TableMetadata cfm = getCurrentColumnFamilyStore().metadata();
+            CFMetaData cfm = getCurrentColumnFamilyStore().metadata;
             return copyValuesFromRow(row, cfm.partitionKeyColumns().size());
         }
 

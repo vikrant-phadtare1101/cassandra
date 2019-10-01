@@ -18,8 +18,8 @@
  */
 package org.apache.cassandra.tools;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
@@ -29,7 +29,6 @@ import org.apache.commons.cli.*;
 import java.io.File;
 import java.io.IOException;
 import java.util.function.BiFunction;
-import java.util.function.BiPredicate;
 
 import static org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
 
@@ -49,10 +48,9 @@ public class StandaloneSSTableUtil
         try
         {
             // load keyspace descriptions.
-            Util.initDatabaseDescriptor();
             Schema.instance.loadFromDisk(false);
 
-            TableMetadata metadata = Schema.instance.getTableMetadata(options.keyspaceName, options.cfName);
+            CFMetaData metadata = Schema.instance.getCFMetaData(options.keyspaceName, options.cfName);
             if (metadata == null)
                 throw new IllegalArgumentException(String.format("Unknown keyspace/table %s.%s",
                                                                  options.keyspaceName,
@@ -82,9 +80,9 @@ public class StandaloneSSTableUtil
         }
     }
 
-    private static void listFiles(Options options, TableMetadata metadata, OutputHandler handler) throws IOException
+    private static void listFiles(Options options, CFMetaData metadata, OutputHandler handler) throws IOException
     {
-        Directories directories = new Directories(metadata);
+        Directories directories = new Directories(metadata, ColumnFamilyStore.getInitialDirectories());
 
         for (File dir : directories.getCFDirectories())
         {
@@ -93,7 +91,7 @@ public class StandaloneSSTableUtil
         }
     }
 
-    private static BiPredicate<File, Directories.FileType> getFilter(Options options)
+    private static BiFunction<File, Directories.FileType, Boolean> getFilter(Options options)
     {
         return (file, type) ->
         {

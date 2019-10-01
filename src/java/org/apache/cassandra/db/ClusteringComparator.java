@@ -18,6 +18,7 @@
 package org.apache.cassandra.db;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -28,8 +29,10 @@ import com.google.common.collect.ImmutableList;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FastByteOperations;
 
-import org.apache.cassandra.io.sstable.IndexInfo;
+import static org.apache.cassandra.io.sstable.IndexHelper.IndexInfo;
 
 /**
  * A comparator of clustering prefixes (or more generally of {@link Clusterable}}.
@@ -53,7 +56,7 @@ public class ClusteringComparator implements Comparator<Clusterable>
         this(ImmutableList.copyOf(clusteringTypes));
     }
 
-    public ClusteringComparator(Iterable<AbstractType<?>> clusteringTypes)
+    public ClusteringComparator(List<AbstractType<?>> clusteringTypes)
     {
         // copy the list to ensure despatch is monomorphic
         this.clusteringTypes = ImmutableList.copyOf(clusteringTypes);
@@ -62,7 +65,7 @@ public class ClusteringComparator implements Comparator<Clusterable>
         this.indexReverseComparator = (o1, o2) -> ClusteringComparator.this.compare(o1.firstName, o2.firstName);
         this.reverseComparator = (c1, c2) -> ClusteringComparator.this.compare(c2, c1);
         for (AbstractType<?> type : clusteringTypes)
-            type.checkComparable(); // this should already be enforced by TableMetadata.Builder.addColumn, but we check again for other constructors
+            type.checkComparable(); // this should already be enforced by CFMetaData.rebuild, but we check again for other constructors
     }
 
     /**
@@ -144,21 +147,7 @@ public class ClusteringComparator implements Comparator<Clusterable>
 
     public int compare(Clustering c1, Clustering c2)
     {
-        return compare(c1, c2, size());
-    }
-
-    /**
-     * Compares the specified part of the specified clusterings.
-     *
-     * @param c1 the first clustering
-     * @param c2 the second clustering
-     * @param size the number of components to compare
-     * @return a negative integer, zero, or a positive integer as the first argument is less than,
-     * equal to, or greater than the second.
-     */
-    public int compare(Clustering c1, Clustering c2, int size)
-    {
-        for (int i = 0; i < size; i++)
+        for (int i = 0; i < size(); i++)
         {
             int cmp = compareComponent(i, c1.get(i), c2.get(i));
             if (cmp != 0)

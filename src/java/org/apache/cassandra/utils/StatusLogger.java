@@ -17,15 +17,21 @@
  */
 package org.apache.cassandra.utils;
 
-import java.util.concurrent.locks.ReentrantLock;
+import java.lang.management.ManagementFactory;
+import java.util.Map;
+import java.util.Set;
+import javax.management.*;
+
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.cache.*;
-import org.apache.cassandra.metrics.CassandraMetricsRegistry;
-import org.apache.cassandra.metrics.ThreadPoolMetrics;
 
+import org.apache.cassandra.concurrent.Stage;
+import org.apache.cassandra.metrics.ThreadPoolMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.RowIndexEntry;
@@ -36,43 +42,24 @@ import org.apache.cassandra.service.CacheService;
 public class StatusLogger
 {
     private static final Logger logger = LoggerFactory.getLogger(StatusLogger.class);
-    private static final ReentrantLock busyMonitor = new ReentrantLock();
+
 
     public static void log()
     {
-        // avoid logging more than once at the same time. throw away any attempts to log concurrently, as it would be
-        // confusing and noisy for operators - and don't bother logging again, immediately as it'll just be the same data
-        if (busyMonitor.tryLock())
-        {
-            try
-            {
-                logStatus();
-            }
-            finally
-            {
-                busyMonitor.unlock();
-            }
-        }
-        else
-        {
-            logger.trace("StatusLogger is busy");
-        }
-    }
+        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
 
-    private static void logStatus()
-    {
         // everything from o.a.c.concurrent
-        logger.info(String.format("%-28s%10s%10s%15s%10s%18s", "Pool Name", "Active", "Pending", "Completed", "Blocked", "All Time Blocked"));
+        logger.info(String.format("%-25s%10s%10s%15s%10s%18s", "Pool Name", "Active", "Pending", "Completed", "Blocked", "All Time Blocked"));
 
-        for (ThreadPoolMetrics tpool : CassandraMetricsRegistry.Metrics.allThreadPoolMetrics())
+        for (Map.Entry<String, String> tpool : ThreadPoolMetrics.getJmxThreadPools(server).entries())
         {
-            logger.info(String.format("%-28s%10s%10s%15s%10s%18s",
-                                      tpool.poolName,
-                                      tpool.activeTasks.getValue(),
-                                      tpool.pendingTasks.getValue(),
-                                      tpool.completedTasks.getValue(),
-                                      tpool.currentBlocked.getCount(),
-                                      tpool.totalBlocked.getCount()));
+            logger.info(String.format("%-25s%10s%10s%15s%10s%18s%n",
+                                      tpool.getValue(),
+                                      ThreadPoolMetrics.getJmxMetric(server, tpool.getKey(), tpool.getValue(), "ActiveTasks"),
+                                      ThreadPoolMetrics.getJmxMetric(server, tpool.getKey(), tpool.getValue(), "PendingTasks"),
+                                      ThreadPoolMetrics.getJmxMetric(server, tpool.getKey(), tpool.getValue(), "CompletedTasks"),
+                                      ThreadPoolMetrics.getJmxMetric(server, tpool.getKey(), tpool.getValue(), "CurrentlyBlockedTasks"),
+                                      ThreadPoolMetrics.getJmxMetric(server, tpool.getKey(), tpool.getValue(), "TotalBlockedTasks")));
         }
 
         // one offs

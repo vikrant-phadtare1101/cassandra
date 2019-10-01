@@ -22,11 +22,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Arrays;
 
-import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.compress.CompressionMetadata;
-import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.Throwables;
 import org.apache.cassandra.utils.concurrent.RefCounted;
 import org.apache.cassandra.utils.concurrent.SharedCloseableImpl;
@@ -91,11 +88,6 @@ public class MmappedRegions extends SharedCloseableImpl
         return new MmappedRegions(channel, null, 0);
     }
 
-    /**
-     * @param channel file to map. the MmappedRegions instance will hold shared copy of given channel.
-     * @param metadata
-     * @return new instance
-     */
     public static MmappedRegions map(ChannelProxy channel, CompressionMetadata metadata)
     {
         if (metadata == null)
@@ -198,20 +190,8 @@ public class MmappedRegions extends SharedCloseableImpl
         assert !isCleanedUp() : "Attempted to use closed region";
         return state.floor(position);
     }
-    
-    public void closeQuietly()
-    {
-        Throwable err = close(null);
-        if (err != null)
-        {
-            JVMStabilityInspector.inspectThrowable(err);
 
-            // This is not supposed to happen
-            LoggerFactory.getLogger(getClass()).error("Error while closing mmapped regions", err);
-        }
-    }
-
-    public static final class Region implements Rebufferer.BufferHolder
+    public static final class Region
     {
         public final long offset;
         public final ByteBuffer buffer;
@@ -222,24 +202,14 @@ public class MmappedRegions extends SharedCloseableImpl
             this.buffer = buffer;
         }
 
-        public ByteBuffer buffer()
-        {
-            return buffer.duplicate();
-        }
-
-        public long offset()
+        public long bottom()
         {
             return offset;
         }
 
-        public long end()
+        public long top()
         {
             return offset + buffer.capacity();
-        }
-
-        public void release()
-        {
-            // only released after no readers are present
         }
     }
 
@@ -290,7 +260,7 @@ public class MmappedRegions extends SharedCloseableImpl
 
         private Region floor(long position)
         {
-            assert 0 <= position && position <= length : String.format("%d > %d", position, length);
+            assert 0 <= position && position < length : String.format("%d >= %d", position, length);
 
             int idx = Arrays.binarySearch(offsets, 0, last +1, position);
             assert idx != -1 : String.format("Bad position %d for regions %s, last %d in %s", position, Arrays.toString(offsets), last, channel);
@@ -324,6 +294,14 @@ public class MmappedRegions extends SharedCloseableImpl
         private Throwable close(Throwable accumulate)
         {
             accumulate = channel.close(accumulate);
+
+            /*
+             * Try forcing the unmapping of segments using undocumented unsafe sun APIs.
+             * If this fails (non Sun JVM), we'll have to wait for the GC to finalize the mapping.
+             * If this works and a thread tries to access any segment, hell will unleash on earth.
+             */
+            if (!FileUtils.isCleanerAvailable())
+                return accumulate;
 
             return perform(accumulate, channel.filePath(), Throwables.FileOpType.READ,
                            of(buffers)

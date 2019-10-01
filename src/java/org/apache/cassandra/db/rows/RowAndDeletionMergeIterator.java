@@ -20,7 +20,7 @@ package org.apache.cassandra.db.rows;
 import java.util.Comparator;
 import java.util.Iterator;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 
@@ -51,7 +51,7 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
     // The currently open tombstone. Note that unless this is null, there is no point in checking nextRange.
     private RangeTombstone openRange;
 
-    public RowAndDeletionMergeIterator(TableMetadata metadata,
+    public RowAndDeletionMergeIterator(CFMetaData metadata,
                                        DecoratedKey partitionKey,
                                        DeletionTime partitionLevelDeletion,
                                        ColumnFilter selection,
@@ -70,7 +70,7 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
         this.ranges = ranges;
     }
 
-    private Unfiltered computeNextInternal()
+    protected Unfiltered computeNext()
     {
         while (true)
         {
@@ -109,44 +109,6 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
                 if (row != null)
                     return row;
             }
-        }
-    }
-
-    /**
-     * RangeTombstoneList doesn't correctly merge multiple superseded rts, or overlapping rts with the
-     * same ts. This causes it to emit noop boundary markers which can cause unneeded read repairs and
-     * repair over streaming. This should technically be fixed in RangeTombstoneList. However, fixing
-     * it isn't trivial and that class is already so complicated that the fix would have a good chance
-     * of adding a worse bug. So we just swallow the noop boundary markers here. See CASSANDRA-14894
-     */
-    private static boolean shouldSkip(Unfiltered unfiltered)
-    {
-        if (unfiltered == null || !unfiltered.isRangeTombstoneMarker())
-            return false;
-
-        RangeTombstoneMarker marker = (RangeTombstoneMarker) unfiltered;
-
-        if (!marker.isBoundary())
-            return false;
-
-        DeletionTime open = marker.openDeletionTime(false);
-        DeletionTime close = marker.closeDeletionTime(false);
-
-        return open.equals(close);
-
-    }
-
-    @Override
-    protected Unfiltered computeNext()
-    {
-        while (true)
-        {
-            Unfiltered next = computeNextInternal();
-
-            if (shouldSkip(next))
-                continue;
-
-            return next;
         }
     }
 
@@ -191,12 +153,12 @@ public class RowAndDeletionMergeIterator extends AbstractUnfilteredRowIterator
         return range;
     }
 
-    private ClusteringBound openBound(RangeTombstone range)
+    private Slice.Bound openBound(RangeTombstone range)
     {
         return range.deletedSlice().open(isReverseOrder());
     }
 
-    private ClusteringBound closeBound(RangeTombstone range)
+    private Slice.Bound closeBound(RangeTombstone range)
     {
         return range.deletedSlice().close(isReverseOrder());
     }

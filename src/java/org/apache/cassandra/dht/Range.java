@@ -19,7 +19,6 @@ package org.apache.cassandra.dht;
 
 import java.io.Serializable;
 import java.util.*;
-import java.util.function.Predicate;
 
 import org.apache.commons.lang3.ObjectUtils;
 
@@ -167,7 +166,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
         boolean thatwraps = isWrapAround(that.left, that.right);
         if (!thiswraps && !thatwraps)
         {
-            // neither wraps:  the straightforward case.
+            // neither wraps.  the straightforward case.
             if (!(left.compareTo(that.right) < 0 && that.left.compareTo(right) < 0))
                 return Collections.emptySet();
             return rangeSet(new Range<T>(ObjectUtils.max(this.left, that.left),
@@ -175,7 +174,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
         }
         if (thiswraps && thatwraps)
         {
-            //both wrap: if the starts are the same, one contains the other, which we have already ruled out.
+            // if the starts are the same, one contains the other, which we have already ruled out.
             assert !this.left.equals(that.left);
             // two wrapping ranges always intersect.
             // since we have already determined that neither this nor that contains the other, we have 2 cases,
@@ -189,9 +188,9 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
                    ? intersectionBothWrapping(this, that)
                    : intersectionBothWrapping(that, this);
         }
-        if (thiswraps) // this wraps, that does not wrap
+        if (thiswraps && !thatwraps)
             return intersectionOneWrapping(this, that);
-        // the last case: this does not wrap, that wraps
+        assert (!thiswraps && thatwraps);
         return intersectionOneWrapping(that, this);
     }
 
@@ -257,14 +256,6 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
     }
 
     /**
-     * Tells if the given range covers the entire ring
-     */
-    private static <T extends RingPosition<T>> boolean isFull(T left, T right)
-    {
-        return left.equals(right);
-    }
-
-    /**
      * Note: this class has a natural ordering that is inconsistent with equals
      */
     public int compareTo(Range<T> rhs)
@@ -283,24 +274,13 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
      * Subtracts a portion of this range.
      * @param contained The range to subtract from this. It must be totally
      * contained by this range.
-     * @return A List of the Ranges left after subtracting contained
+     * @return An ArrayList of the Ranges left after subtracting contained
      * from this.
      */
-    private List<Range<T>> subtractContained(Range<T> contained)
+    private ArrayList<Range<T>> subtractContained(Range<T> contained)
     {
-        // both ranges cover the entire ring, their difference is an empty set
-        if(isFull(left, right) && isFull(contained.left, contained.right))
-        {
-            return Collections.emptyList();
-        }
+        ArrayList<Range<T>> difference = new ArrayList<Range<T>>(2);
 
-        // a range is subtracted from another range that covers the entire ring
-        if(isFull(left, right))
-        {
-            return Collections.singletonList(new Range<>(contained.right, contained.left));
-        }
-
-        List<Range<T>> difference = new ArrayList<>(2);
         if (!left.equals(contained.left))
             difference.add(new Range<T>(left, contained.left));
         if (!right.equals(contained.right))
@@ -366,7 +346,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
                 // intersections.length must be 2
                 Range<T> first = intersections[0];
                 Range<T> second = intersections[1];
-                List<Range<T>> temp = rhs.subtractContained(first);
+                ArrayList<Range<T>> temp = rhs.subtractContained(first);
 
                 // Because there are two intersections, subtracting only one of them
                 // will yield a single Range.
@@ -516,23 +496,6 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
         return new Range<T>(left, newRight);
     }
 
-    public static <T extends RingPosition<T>> List<Range<T>> sort(Collection<Range<T>> ranges)
-    {
-        List<Range<T>> output = new ArrayList<>(ranges.size());
-        for (Range<T> r : ranges)
-            output.addAll(r.unwrap());
-        // sort by left
-        Collections.sort(output, new Comparator<Range<T>>()
-        {
-            public int compare(Range<T> b1, Range<T> b2)
-            {
-                return b1.left.compareTo(b2.left);
-            }
-        });
-        return output;
-    }
-
-
     /**
      * Compute a range of keys corresponding to a given range of token.
      */
@@ -549,7 +512,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
     /**
      * Helper class to check if a token is contained within a given collection of ranges
      */
-    public static class OrderedRangeContainmentChecker implements Predicate<Token>
+    public static class OrderedRangeContainmentChecker
     {
         private final Iterator<Range<Token>> normalizedRangesIterator;
         private Token lastToken = null;
@@ -570,8 +533,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
          * @param t token to check, must be larger than or equal to the last token passed
          * @return true if the token is contained within the ranges given to the constructor.
          */
-        @Override
-        public boolean test(Token t)
+        public boolean contains(Token t)
         {
             assert lastToken == null || lastToken.compareTo(t) <= 0;
             lastToken = t;
@@ -585,27 +547,6 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
                 if (!normalizedRangesIterator.hasNext())
                     return false;
                 currentRange = normalizedRangesIterator.next();
-            }
-        }
-    }
-
-    public static <T extends RingPosition<T>> void assertNormalized(List<Range<T>> ranges)
-    {
-        Range<T> lastRange = null;
-        for (Range<T> range : ranges)
-        {
-            if (lastRange == null)
-            {
-                lastRange = range;
-            }
-            else if (lastRange.left.compareTo(range.left) >= 0 || lastRange.intersects(range))
-            {
-                throw new AssertionError(String.format("Ranges aren't properly normalized. lastRange %s, range %s, compareTo %d, intersects %b, all ranges %s%n",
-                                                       lastRange,
-                                                       range,
-                                                       lastRange.compareTo(range),
-                                                       lastRange.intersects(range),
-                                                       ranges));
             }
         }
     }

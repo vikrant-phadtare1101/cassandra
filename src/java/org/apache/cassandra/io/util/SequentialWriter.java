@@ -17,18 +17,23 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.ByteBuffer;
+import java.io.*;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.utils.SyncUtil;
+import org.apache.cassandra.io.compress.BufferType;
+import org.apache.cassandra.io.compress.CompressedSequentialWriter;
+import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.utils.concurrent.Transactional;
 
 import static org.apache.cassandra.utils.Throwables.merge;
+
+import org.apache.cassandra.utils.SyncUtil;
 
 /**
  * Adds buffering, mark, and fsyncing to OutputStream.  We always fsync on close; we may also
@@ -36,6 +41,8 @@ import static org.apache.cassandra.utils.Throwables.merge;
  */
 public class SequentialWriter extends BufferedDataOutputStreamPlus implements Transactional
 {
+    private static final int DEFAULT_BUFFER_SIZE = 64 * 1024;
+
     // absolute path to the given file
     private final String filePath;
 
@@ -44,18 +51,10 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
 
     protected final FileChannel fchannel;
 
-    //Allow derived classes to specify writing to the channel
-    //directly shouldn't happen because they intercept via doFlush for things
-    //like compression or checksumming
-    //Another hack for this value is that it also indicates that flushing early
-    //should not occur, flushes aligned with buffer size are desired
-    //Unless... it's the last flush. Compression and checksum formats
-    //expect block (same as buffer size) alignment for everything except the last block
-    private final boolean strictFlushing;
-
     // whether to do trickling fsync() to avoid sudden bursts of dirty buffer flushing by kernel causing read
     // latency spikes
-    private final SequentialWriterOption option;
+    private boolean trickleFsync;
+    private int trickleFsyncByteInterval;
     private int bytesSinceTrickleFsync = 0;
 
     protected long lastFlushOffset;
@@ -63,6 +62,8 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     protected Runnable runPostFlush;
 
     private final TransactionalProxy txnProxy = txnProxy();
+    private boolean finishOnClose;
+    protected Descriptor descriptor;
 
     // due to lack of multiple-inheritance, we proxy our transactional implementation
     protected class TransactionalProxy extends AbstractTransactional
@@ -101,8 +102,7 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     }
 
     // TODO: we should specify as a parameter if we permit an existing file or not
-    private static FileChannel openChannel(File file)
-    {
+    private static FileChannel openChannel(File file) {
         try
         {
             if (file.exists())
@@ -130,49 +130,43 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         }
     }
 
-    /**
-     * Create heap-based, non-compressed SequenialWriter with default buffer size(64k).
-     *
-     * @param file File to write
-     */
-    public SequentialWriter(File file)
+    public SequentialWriter(File file, int bufferSize, BufferType bufferType)
     {
-       this(file, SequentialWriterOption.DEFAULT);
+        super(openChannel(file), bufferType.allocate(bufferSize));
+        strictFlushing = true;
+        fchannel = (FileChannel)channel;
+
+        filePath = file.getAbsolutePath();
+
+        this.trickleFsync = DatabaseDescriptor.getTrickleFsync();
+        this.trickleFsyncByteInterval = DatabaseDescriptor.getTrickleFsyncIntervalInKb() * 1024;
     }
 
     /**
-     * Create SequentialWriter for given file with specific writer option.
-     *
-     * @param file File to write
-     * @param option Writer option
+     * Open a heap-based, non-compressed SequentialWriter
      */
-    public SequentialWriter(File file, SequentialWriterOption option)
+    public static SequentialWriter open(File file)
     {
-        this(file, option, true);
+        return new SequentialWriter(file, DEFAULT_BUFFER_SIZE, BufferType.ON_HEAP);
     }
 
-    /**
-     * Create SequentialWriter for given file with specific writer option.
-     * @param file
-     * @param option
-     * @param strictFlushing
-     */
-    public SequentialWriter(File file, SequentialWriterOption option, boolean strictFlushing)
+    public static ChecksummedSequentialWriter open(File file, File crcPath)
     {
-        super(openChannel(file), option.allocateBuffer());
-        this.strictFlushing = strictFlushing;
-        this.fchannel = (FileChannel)channel;
-
-        this.filePath = file.getAbsolutePath();
-
-        this.option = option;
+        return new ChecksummedSequentialWriter(file, DEFAULT_BUFFER_SIZE, crcPath);
     }
 
-    public void skipBytes(int numBytes) throws IOException
+    public static CompressedSequentialWriter open(String dataFilePath,
+                                                  String offsetsPath,
+                                                  CompressionParams parameters,
+                                                  MetadataCollector sstableMetadataCollector)
     {
-        flush();
-        fchannel.position(fchannel.position() + numBytes);
-        bufferOffset = fchannel.position();
+        return new CompressedSequentialWriter(new File(dataFilePath), offsetsPath, parameters, sstableMetadataCollector);
+    }
+
+    public SequentialWriter finishOnClose()
+    {
+        finishOnClose = true;
+        return this;
     }
 
     /**
@@ -211,10 +205,10 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     {
         flushData();
 
-        if (option.trickleFsync())
+        if (trickleFsync)
         {
             bytesSinceTrickleFsync += buffer.position();
-            if (bytesSinceTrickleFsync >= option.trickleFsyncByteInterval())
+            if (bytesSinceTrickleFsync >= trickleFsyncByteInterval)
             {
                 syncDataOnlyInternal();
                 bytesSinceTrickleFsync = 0;
@@ -273,11 +267,6 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     public long getOnDiskFilePointer()
     {
         return position();
-    }
-
-    public long getEstimatedOnDiskBytesWritten()
-    {
-        return getOnDiskFilePointer();
     }
 
     public long length()
@@ -347,7 +336,6 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
             throw new FSReadError(e, getPath());
         }
 
-        bufferOffset = truncateTarget;
         resetBuffer();
     }
 
@@ -361,7 +349,6 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
         try
         {
             fchannel.truncate(toSize);
-            lastFlushOffset = toSize;
         }
         catch (IOException e)
         {
@@ -372,6 +359,12 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     public boolean isOpen()
     {
         return channel.isOpen();
+    }
+
+    public SequentialWriter setDescriptor(Descriptor descriptor)
+    {
+        this.descriptor = descriptor;
+        return this;
     }
 
     public final void prepareToCommit()
@@ -392,19 +385,10 @@ public class SequentialWriter extends BufferedDataOutputStreamPlus implements Tr
     @Override
     public final void close()
     {
-        if (option.finishOnClose())
+        if (finishOnClose)
             txnProxy.finish();
         else
             txnProxy.close();
-    }
-
-    public int writeDirectlyToChannel(ByteBuffer buf) throws IOException
-    {
-        if (strictFlushing)
-            throw new UnsupportedOperationException();
-        // Don't allow writes to the underlying channel while data is buffered
-        flush();
-        return channel.write(buf);
     }
 
     public final void finish()

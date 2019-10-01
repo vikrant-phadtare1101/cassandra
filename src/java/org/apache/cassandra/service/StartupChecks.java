@@ -30,28 +30,25 @@ import java.util.stream.Collectors;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.cql3.QueryProcessor;
-import org.apache.cassandra.cql3.UntypedResultSet;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.auth.AuthKeyspace;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Directories;
-import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.StartupException;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.NativeLibrary;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JavaUtils;
-import org.apache.cassandra.utils.SigarLibrary;
+import org.apache.cassandra.schema.SchemaKeyspace;
+import org.apache.cassandra.utils.*;
 
 /**
  * Verifies that the system and environment is in a fit state to be started.
@@ -85,7 +82,6 @@ public class StartupChecks
     private final List<StartupCheck> DEFAULT_TESTS = ImmutableList.of(checkJemalloc,
                                                                       checkValidLaunchDate,
                                                                       checkJMXPorts,
-                                                                      checkJMXProperties,
                                                                       inspectJvmOptions,
                                                                       checkNativeLibraryInitialization,
                                                                       initSigarLibrary,
@@ -126,9 +122,9 @@ public class StartupChecks
 
     public static final StartupCheck checkJemalloc = new StartupCheck()
     {
-        public void execute()
+        public void execute() throws StartupException
         {
-            if (FBUtilities.isWindows)
+            if (FBUtilities.isWindows())
                 return;
             String jemalloc = System.getProperty("cassandra.libjemalloc");
             if (jemalloc == null)
@@ -152,9 +148,8 @@ public class StartupChecks
         {
             long now = System.currentTimeMillis();
             if (now < EARLIEST_LAUNCH_DATE)
-                throw new StartupException(StartupException.ERR_WRONG_MACHINE_STATE,
-                                           String.format("current machine time is %s, but that is seemingly incorrect. exiting now.",
-                                                         new Date(now).toString()));
+                throw new StartupException(1, String.format("current machine time is %s, but that is seemingly incorrect. exiting now.",
+                                                            new Date(now).toString()));
         }
     };
 
@@ -162,7 +157,7 @@ public class StartupChecks
     {
         public void execute()
         {
-            String jmxPort = System.getProperty("cassandra.jmx.remote.port");
+            String jmxPort = System.getProperty("com.sun.management.jmxremote.port");
             if (jmxPort == null)
             {
                 logger.warn("JMX is not enabled to receive remote connections. Please see cassandra-env.sh for more info.");
@@ -172,19 +167,7 @@ public class StartupChecks
             }
             else
             {
-                logger.info("JMX is enabled to receive remote connections on port: {}", jmxPort);
-            }
-        }
-    };
-
-    public static final StartupCheck checkJMXProperties = new StartupCheck()
-    {
-        public void execute()
-        {
-            if (System.getProperty("com.sun.management.jmxremote.port") != null)
-            {
-                logger.warn("Use of com.sun.management.jmxremote.port at startup is deprecated. " +
-                            "Please use cassandra.jmx.remote.port instead.");
+                logger.info("JMX is enabled to receive remote connections on port: " + jmxPort);
             }
         }
     };
@@ -198,7 +181,13 @@ public class StartupChecks
                 logger.warn("32bit JVM detected.  It is recommended to run Cassandra on a 64bit JVM for better performance.");
 
             String javaVmName = System.getProperty("java.vm.name");
-            if (!(javaVmName.contains("HotSpot") || javaVmName.contains("OpenJDK")))
+            if (javaVmName.contains("OpenJDK"))
+            {
+                // There is essentially no QA done on OpenJDK builds, and
+                // clusters running OpenJDK have seen many heap and load issues.
+                logger.warn("OpenJDK is not recommended. Please upgrade to the newest Oracle Java release");
+            }
+            else if (!javaVmName.contains("HotSpot"))
             {
                 logger.warn("Non-Oracle JVM detected.  Some features, such as immediate unmap of compacted SSTables, may not work as intended");
             }
@@ -254,7 +243,7 @@ public class StartupChecks
         {
             // Fail-fast if the native library could not be linked.
             if (!NativeLibrary.isAvailable())
-                throw new StartupException(StartupException.ERR_WRONG_MACHINE_STATE, "The native library could not be initialized properly. ");
+                throw new StartupException(3, "The native library could not be initialized properly. ");
         }
     };
 
@@ -298,7 +287,7 @@ public class StartupChecks
 
         public void execute()
         {
-            if (!FBUtilities.isLinux)
+            if (!FBUtilities.hasProcFS())
                 return;
 
             if (DatabaseDescriptor.getDiskAccessMode() == Config.DiskAccessMode.standard &&
@@ -331,14 +320,12 @@ public class StartupChecks
                 logger.warn("Directory {} doesn't exist", dataDir);
                 // if they don't, failing their creation, stop cassandra.
                 if (!dir.mkdirs())
-                    throw new StartupException(StartupException.ERR_WRONG_DISK_STATE,
-                                               "Has no permission to create directory "+ dataDir);
+                    throw new StartupException(3, "Has no permission to create directory "+ dataDir);
             }
 
             // if directories exist verify their permissions
             if (!Directories.verifyFullPermissions(dir, dataDir))
-                throw new StartupException(StartupException.ERR_WRONG_DISK_STATE,
-                                           "Insufficient permissions on directory " + dataDir);
+                throw new StartupException(3, "Insufficient permissions on directory " + dataDir);
         }
     };
 
@@ -354,15 +341,14 @@ public class StartupChecks
 
             FileVisitor<Path> sstableVisitor = new SimpleFileVisitor<Path>()
             {
-                public FileVisitResult visitFile(Path path, BasicFileAttributes attrs)
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
                 {
-                    File file = path.toFile();
-                    if (!Descriptor.isValidFile(file))
+                    if (!Descriptor.isValidFile(file.getFileName().toString()))
                         return FileVisitResult.CONTINUE;
 
                     try
                     {
-                        if (!Descriptor.fromFilename(file).isCompatible())
+                        if (!Descriptor.fromFilename(file.toString()).isCompatible())
                             invalid.add(file.toString());
                     }
                     catch (Exception e)
@@ -396,12 +382,11 @@ public class StartupChecks
             }
 
             if (!invalid.isEmpty())
-                throw new StartupException(StartupException.ERR_WRONG_DISK_STATE,
-                                           String.format("Detected unreadable sstables %s, please check " +
-                                                         "NEWS.txt and ensure that you have upgraded through " +
-                                                         "all required intermediate versions, running " +
-                                                         "upgradesstables",
-                                                         Joiner.on(",").join(invalid)));
+                throw new StartupException(3, String.format("Detected unreadable sstables %s, please check " +
+                                                            "NEWS.txt and ensure that you have upgraded through " +
+                                                            "all required intermediate versions, running " +
+                                                            "upgradesstables",
+                                                            Joiner.on(",").join(invalid)));
 
         }
     };
@@ -414,7 +399,7 @@ public class StartupChecks
             // we do a one-off scrub of the system keyspace first; we can't load the list of the rest of the keyspaces,
             // until system keyspace is opened.
 
-            for (TableMetadata cfm : Schema.instance.getTablesAndViews(SchemaConstants.SYSTEM_KEYSPACE_NAME))
+            for (CFMetaData cfm : Schema.instance.getTablesAndViews(SystemKeyspace.NAME))
                 ColumnFamilyStore.scrubDataDirectories(cfm);
 
             try
@@ -423,7 +408,7 @@ public class StartupChecks
             }
             catch (ConfigurationException e)
             {
-                throw new StartupException(StartupException.ERR_WRONG_CONFIG, "Fatal exception during initialization", e);
+                throw new StartupException(100, "Fatal exception during initialization", e);
             }
         }
     };
@@ -437,13 +422,13 @@ public class StartupChecks
                 String storedDc = SystemKeyspace.getDatacenter();
                 if (storedDc != null)
                 {
-                    String currentDc = DatabaseDescriptor.getEndpointSnitch().getLocalDatacenter();
+                    String currentDc = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddress());
                     if (!storedDc.equals(currentDc))
                     {
                         String formatMessage = "Cannot start node if snitch's data center (%s) differs from previous data center (%s). " +
                                                "Please fix the snitch configuration, decommission and rebootstrap this node or use the flag -Dcassandra.ignore_dc=true.";
 
-                        throw new StartupException(StartupException.ERR_WRONG_CONFIG, String.format(formatMessage, currentDc, storedDc));
+                        throw new StartupException(100, String.format(formatMessage, currentDc, storedDc));
                     }
                 }
             }
@@ -459,42 +444,39 @@ public class StartupChecks
                 String storedRack = SystemKeyspace.getRack();
                 if (storedRack != null)
                 {
-                    String currentRack = DatabaseDescriptor.getEndpointSnitch().getLocalRack();
+                    String currentRack = DatabaseDescriptor.getEndpointSnitch().getRack(FBUtilities.getBroadcastAddress());
                     if (!storedRack.equals(currentRack))
                     {
                         String formatMessage = "Cannot start node if snitch's rack (%s) differs from previous rack (%s). " +
                                                "Please fix the snitch configuration, decommission and rebootstrap this node or use the flag -Dcassandra.ignore_rack=true.";
 
-                        throw new StartupException(StartupException.ERR_WRONG_CONFIG, String.format(formatMessage, currentRack, storedRack));
+                        throw new StartupException(100, String.format(formatMessage, currentRack, storedRack));
                     }
                 }
             }
         }
     };
 
-    public static final StartupCheck checkLegacyAuthTables = () ->
-    {
-        Optional<String> errMsg = checkLegacyAuthTablesMessage();
-        if (errMsg.isPresent())
-            throw new StartupException(StartupException.ERR_WRONG_CONFIG, errMsg.get());
-    };
+    public static final StartupCheck checkLegacyAuthTables = () -> checkLegacyAuthTablesMessage().ifPresent(logger::warn);
+
+    static final Set<String> LEGACY_AUTH_TABLES = ImmutableSet.of("credentials", "users", "permissions");
 
     @VisibleForTesting
     static Optional<String> checkLegacyAuthTablesMessage()
     {
-        List<String> existing = new ArrayList<>(SchemaConstants.LEGACY_AUTH_TABLES).stream().filter((legacyAuthTable) ->
+        List<String> existing = new ArrayList<>(LEGACY_AUTH_TABLES).stream().filter((legacyAuthTable) ->
             {
                 UntypedResultSet result = QueryProcessor.executeOnceInternal(String.format("SELECT table_name FROM %s.%s WHERE keyspace_name='%s' AND table_name='%s'",
-                                                                                           SchemaConstants.SCHEMA_KEYSPACE_NAME,
+                                                                                           SchemaKeyspace.NAME,
                                                                                            "tables",
-                                                                                           SchemaConstants.AUTH_KEYSPACE_NAME,
+                                                                                           AuthKeyspace.NAME,
                                                                                            legacyAuthTable));
                 return result != null && !result.isEmpty();
             }).collect(Collectors.toList());
 
         if (!existing.isEmpty())
             return Optional.of(String.format("Legacy auth tables %s in keyspace %s still exist and have not been properly migrated.",
-                        Joiner.on(", ").join(existing), SchemaConstants.AUTH_KEYSPACE_NAME));
+                        Joiner.on(", ").join(existing), AuthKeyspace.NAME));
         else
             return Optional.empty();
     };

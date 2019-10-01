@@ -53,12 +53,7 @@ public final class JVMStabilityInspector
      * @param t
      *      The Throwable to check for server-stop conditions
      */
-    public static void inspectThrowable(Throwable t) throws OutOfMemoryError
-    {
-        inspectThrowable(t, true);
-    }
-
-    public static void inspectThrowable(Throwable t, boolean propagateOutOfMemory) throws OutOfMemoryError
+    public static void inspectThrowable(Throwable t)
     {
         boolean isUnstable = false;
         if (t instanceof OutOfMemoryError)
@@ -81,9 +76,6 @@ public final class JVMStabilityInspector
             StorageService.instance.removeShutdownHook();
             // We let the JVM handle the error. The startup checks should have warned the user if it did not configure
             // the JVM behavior in case of OOM (CASSANDRA-13006).
-            if (!propagateOutOfMemory)
-                return;
-
             throw (OutOfMemoryError) t;
         }
 
@@ -105,12 +97,11 @@ public final class JVMStabilityInspector
 
     public static void inspectCommitLogThrowable(Throwable t)
     {
-        if (!StorageService.instance.isDaemonSetupCompleted())
+        if (!StorageService.instance.isSetupCompleted())
         {
             logger.error("Exiting due to error while processing commit log during initialization.", t);
             killer.killCurrentJVM(t, true);
-        }
-        else if (DatabaseDescriptor.getCommitFailurePolicy() == Config.CommitFailurePolicy.die)
+        } else if (DatabaseDescriptor.getCommitFailurePolicy() == Config.CommitFailurePolicy.die)
             killer.killCurrentJVM(t);
         else
             inspectThrowable(t);
@@ -139,8 +130,7 @@ public final class JVMStabilityInspector
     }
 
     @VisibleForTesting
-    public static Killer replaceKiller(Killer newKiller)
-    {
+    public static Killer replaceKiller(Killer newKiller) {
         Killer oldKiller = JVMStabilityInspector.killer;
         JVMStabilityInspector.killer = newKiller;
         return oldKiller;

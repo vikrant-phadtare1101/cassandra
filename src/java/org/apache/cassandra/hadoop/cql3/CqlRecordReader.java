@@ -248,8 +248,7 @@ public class CqlRecordReader extends RecordReader<Long, Row>
      * Return native version protocol of the cluster connection
      * @return serialization protocol version.
      */
-    public int getNativeProtocolVersion() 
-    {
+    public int getNativeProtocolVersion() {
         return nativeProtocolVersion;
     }
 

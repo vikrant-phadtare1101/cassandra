@@ -19,6 +19,7 @@ package org.apache.cassandra.cql3.validation.operations;
 
 import java.io.File;
 import java.util.List;
+import java.util.UUID;
 
 import org.junit.Test;
 
@@ -29,7 +30,6 @@ import org.apache.cassandra.exceptions.AlreadyExistsException;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.TableId;
 
 public class DropRecreateAndRestoreTest extends CQLTester
 {
@@ -43,7 +43,7 @@ public class DropRecreateAndRestoreTest extends CQLTester
 
 
         long time = System.currentTimeMillis();
-        TableId id = currentTableMetadata().id;
+        UUID id = currentTableMetadata().cfId;
         assertRows(execute("SELECT * FROM %s"), row(0, 0, 0), row(0, 1, 1));
         Thread.sleep(5);
 
@@ -84,7 +84,7 @@ public class DropRecreateAndRestoreTest extends CQLTester
     public void testCreateWithIdDuplicate() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY(a, b))");
-        TableId id = currentTableMetadata().id;
+        UUID id = currentTableMetadata().cfId;
         execute(String.format("CREATE TABLE %%s (a int, b int, c int, PRIMARY KEY(a, b)) WITH ID = %s", id));
     }
 
@@ -98,7 +98,7 @@ public class DropRecreateAndRestoreTest extends CQLTester
     public void testAlterWithId() throws Throwable
     {
         createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY(a, b))");
-        TableId id = currentTableMetadata().id;
+        UUID id = currentTableMetadata().cfId;
         execute(String.format("ALTER TABLE %%s WITH ID = %s", id));
     }
 }

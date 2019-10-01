@@ -18,8 +18,6 @@
 
 package org.apache.cassandra.utils;
 
-import java.util.Collections;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,7 +27,7 @@ import com.sun.jna.Pointer;
 
 /**
  * A {@code NativeLibraryWrapper} implementation for Windows.
- * <p> This implementation only offers support for the {@code callGetpid} method
+ * <p> This implementation only offer support for the {@code callGetpid} method
  * using the Windows/Kernel32 library.</p>
  *
  * @see org.apache.cassandra.utils.NativeLibraryWrapper
@@ -37,15 +35,15 @@ import com.sun.jna.Pointer;
  */
 public class NativeLibraryWindows implements NativeLibraryWrapper
 {
-    private static final Logger logger = LoggerFactory.getLogger(NativeLibraryWindows.class);
-
     private static boolean available;
+
+    private static final Logger logger = LoggerFactory.getLogger(NativeLibraryWindows.class);
 
     static
     {
         try
         {
-            Native.register(com.sun.jna.NativeLibrary.getInstance("kernel32", Collections.emptyMap()));
+            Native.register("kernel32");
             available = true;
         }
         catch (NoClassDefFoundError e)
