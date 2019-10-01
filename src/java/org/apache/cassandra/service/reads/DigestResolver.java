@@ -33,15 +33,16 @@ import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.ReplicaPlan;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.service.reads.repair.NoopReadRepair;
+import org.apache.cassandra.service.reads.repair.ReadRepair;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static com.google.common.collect.Iterables.any;
 
 public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>> extends ResponseResolver<E, P>
 {
-    private volatile Message<ReadResponse> dataResponse;
+    private volatile MessageIn<ReadResponse> dataResponse;
 
     public DigestResolver(ReadCommand command, ReplicaPlan.Shared<E, P> replicaPlan, long queryStartNanoTime)
     {
@@ -51,10 +52,10 @@ public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRea
     }
 
     @Override
-    public void preprocess(Message<ReadResponse> message)
+    public void preprocess(MessageIn<ReadResponse> message)
     {
         super.preprocess(message);
-        Replica replica = replicaPlan().getReplicaFor(message.from());
+        Replica replica = replicaPlan().getReplicaFor(message.from);
         if (dataResponse == null && !message.payload.isDigestResponse() && replica.isFull())
             dataResponse = message;
     }
@@ -65,18 +66,18 @@ public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRea
         return hasTransientResponse(responses.snapshot());
     }
 
-    private boolean hasTransientResponse(Collection<Message<ReadResponse>> responses)
+    private boolean hasTransientResponse(Collection<MessageIn<ReadResponse>> responses)
     {
         return any(responses,
                 msg -> !msg.payload.isDigestResponse()
-                        && replicaPlan().getReplicaFor(msg.from()).isTransient());
+                        && replicaPlan().getReplicaFor(msg.from).isTransient());
     }
 
     public PartitionIterator getData()
     {
         assert isDataPresent();
 
-        Collection<Message<ReadResponse>> responses = this.responses.snapshot();
+        Collection<MessageIn<ReadResponse>> responses = this.responses.snapshot();
 
         if (!hasTransientResponse(responses))
         {
@@ -91,9 +92,9 @@ public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRea
 
             dataResolver.preprocess(dataResponse);
             // Reconcile with transient replicas
-            for (Message<ReadResponse> response : responses)
+            for (MessageIn<ReadResponse> response : responses)
             {
-                Replica replica = replicaPlan().getReplicaFor(response.from());
+                Replica replica = replicaPlan().getReplicaFor(response.from);
                 if (replica.isTransient())
                     dataResolver.preprocess(response);
             }
@@ -108,14 +109,9 @@ public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRea
 
         // validate digests against each other; return false immediately on mismatch.
         ByteBuffer digest = null;
-        Collection<Message<ReadResponse>> snapshot = responses.snapshot();
-        if (snapshot.size() <= 1)
-            return true;
-
-        // TODO: should also not calculate if only one full node
-        for (Message<ReadResponse> message : snapshot)
+        for (MessageIn<ReadResponse> message : responses.snapshot())
         {
-            if (replicaPlan().getReplicaFor(message.from()).isTransient())
+            if (replicaPlan().getReplicaFor(message.from).isTransient())
                 continue;
 
             ByteBuffer newDigest = message.payload.digest(command);
@@ -142,10 +138,10 @@ public class DigestResolver<E extends Endpoints<E>, P extends ReplicaPlan.ForRea
         DigestResolverDebugResult[] ret = new DigestResolverDebugResult[responses.size()];
         for (int i = 0; i < responses.size(); i++)
         {
-            Message<ReadResponse> message = responses.get(i);
+            MessageIn<ReadResponse> message = responses.get(i);
             ReadResponse response = message.payload;
             String digestHex = ByteBufferUtil.bytesToHex(response.digest(command));
-            ret[i] = new DigestResolverDebugResult(message.from(), digestHex, message.payload.isDigestResponse());
+            ret[i] = new DigestResolverDebugResult(message.from, digestHex, message.payload.isDigestResponse());
         }
         return ret;
     }

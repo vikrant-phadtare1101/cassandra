@@ -20,7 +20,6 @@ package org.apache.cassandra.distributed.impl;
 
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.SimpleSeedProvider;
@@ -31,7 +30,6 @@ import java.lang.reflect.Field;
 import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -46,8 +44,6 @@ public class InstanceConfig implements IInstanceConfig
     public final UUID hostId;
     public UUID hostId() { return hostId; }
     private final Map<String, Object> params = new TreeMap<>();
-
-    private EnumSet featureFlags;
 
     private volatile InetAddressAndPort broadcastAddressAndPort;
 
@@ -101,15 +97,15 @@ public class InstanceConfig implements IInstanceConfig
                 .set("concurrent_compactors", 1)
                 .set("memtable_heap_space_in_mb", 10)
                 .set("commitlog_sync", "batch")
-                .set("storage_port", 7012)
+                .set("storage_port", 7010)
                 .set("endpoint_snitch", SimpleSnitch.class.getName())
                 .set("seed_provider", new ParameterizedClass(SimpleSeedProvider.class.getName(),
-                        Collections.singletonMap("seeds", "127.0.0.1:7012")))
+                        Collections.singletonMap("seeds", "127.0.0.1:7010")))
                 // required settings for dtest functionality
                 .set("diagnostic_events_enabled", true)
                 // legacy parameters
                 .forceSet("commitlog_sync_batch_window_in_ms", 1.0);
-        this.featureFlags = EnumSet.noneOf(Feature.class);
+                //
     }
 
     private InstanceConfig(InstanceConfig copy)
@@ -117,18 +113,6 @@ public class InstanceConfig implements IInstanceConfig
         this.num = copy.num;
         this.params.putAll(copy.params);
         this.hostId = copy.hostId;
-        this.featureFlags = copy.featureFlags;
-    }
-
-    public InstanceConfig with(Feature featureFlag)
-    {
-        featureFlags.add(featureFlag);
-        return this;
-    }
-
-    public boolean has(Feature featureFlag)
-    {
-        return featureFlags.contains(featureFlag);
     }
 
     public InstanceConfig set(String fieldName, Object value)
@@ -219,14 +203,13 @@ public class InstanceConfig implements IInstanceConfig
         return (String)params.get(name);
     }
 
-    public static InstanceConfig generate(int nodeNum, int subnet, File root, String token)
+    public static InstanceConfig generate(int nodeNum, File root, String token)
     {
-        String ipPrefix = "127.0." + subnet + ".";
         return new InstanceConfig(nodeNum,
-                                  ipPrefix + nodeNum,
-                                  ipPrefix + nodeNum,
-                                  ipPrefix + nodeNum,
-                                  ipPrefix + nodeNum,
+                                  "127.0.0." + nodeNum,
+                                  "127.0.0." + nodeNum,
+                                  "127.0.0." + nodeNum,
+                                  "127.0.0." + nodeNum,
                                   String.format("%s/node%d/saved_caches", root, nodeNum),
                                   new String[] { String.format("%s/node%d/data", root, nodeNum) },
                                   String.format("%s/node%d/commitlog", root, nodeNum),
