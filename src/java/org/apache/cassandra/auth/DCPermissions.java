@@ -31,15 +31,7 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 
 public abstract class DCPermissions
 {
-    /**
-     * returns true if the user can access the given dc
-     */
     public abstract boolean canAccess(String dc);
-
-    /**
-     * Indicates whether the permissions object explicitly allow access to
-     * some dcs (true) or if it implicitly allows access to all dcs (false)
-     */
     public abstract boolean restrictsAccess();
     public abstract Set<String> allowedDCs();
     public abstract void validate();
@@ -93,6 +85,8 @@ public abstract class DCPermissions
 
         public void validate()
         {
+            Datacenters.getValidDatacenters();
+
             Set<String> unknownDcs = Sets.difference(subset, Datacenters.getValidDatacenters());
             if (!unknownDcs.isEmpty())
             {

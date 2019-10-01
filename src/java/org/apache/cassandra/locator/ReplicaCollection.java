@@ -18,148 +18,135 @@
 
 package org.apache.cassandra.locator;
 
-import java.util.Comparator;
-import java.util.Iterator;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Stream;
+
+import com.google.common.collect.Collections2;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
+
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 
 /**
- * A collection like class for Replica objects. Represents both a well defined order on the contained Replica objects,
- * and efficient methods for accessing the contained Replicas, directly and as a projection onto their endpoints and ranges.
+ * A collection like class for Replica objects. Since the Replica class contains inetaddress, range, and
+ * transient replication status, basic contains and remove methods can be ambiguous. Replicas forces you
+ * to be explicit about what you're checking the container for, or removing from it.
  */
-public interface ReplicaCollection<C extends ReplicaCollection<C>> extends Iterable<Replica>
+public abstract class ReplicaCollection implements Iterable<Replica>
 {
-    /**
-     * @return a Set of the endpoints of the contained Replicas.
-     * Iteration order is maintained where there is a 1:1 relationship between endpoint and Replica
-     * Typically this collection offers O(1) access methods, and this is true for all but ReplicaList.
-     */
-    public abstract Set<InetAddressAndPort> endpoints();
 
-    /**
-     * @param i a value in the range [0..size())
-     * @return the i'th Replica, in our iteration order
-     */
-    public abstract Replica get(int i);
-
-    /**
-     * @return the number of Replica contained
-     */
+    public abstract boolean add(Replica replica);
+    public abstract void addAll(Iterable<Replica> replicas);
+    public abstract void removeEndpoint(InetAddressAndPort endpoint);
+    public abstract void removeReplica(Replica replica);
     public abstract int size();
+    protected abstract Collection<Replica> getUnmodifiableCollection();
 
-    /**
-     * @return true iff size() == 0
-     */
-    public abstract boolean isEmpty();
-
-    /**
-     * @return true iff a Replica in this collection is equal to the provided Replica.
-     * Typically this method is expected to take O(1) time, and this is true for all but ReplicaList.
-     */
-    public abstract boolean contains(Replica replica);
-
-    /**
-     * @return the number of replicas that match the predicate
-     */
-    public abstract int count(Predicate<Replica> predicate);
-
-    /**
-     * @return a *eagerly constructed* copy of this collection containing the Replica that match the provided predicate.
-     * An effort will be made to either return ourself, or a subList, where possible.
-     * It is guaranteed that no changes to any upstream Builder will affect the state of the result.
-     */
-    public abstract C filter(Predicate<Replica> predicate);
-
-    /**
-     * @return a *eagerly constructed* copy of this collection containing the Replica that match the provided predicate.
-     * An effort will be made to either return ourself, or a subList, where possible.
-     * It is guaranteed that no changes to any upstream Builder will affect the state of the result.
-     * Only the first maxSize items will be returned.
-     */
-    public abstract C filter(Predicate<Replica> predicate, int maxSize);
-
-    /**
-     * @return a *lazily constructed* Iterable over this collection, containing the Replica that match the provided predicate.
-     */
-    public abstract Iterable<Replica> filterLazily(Predicate<Replica> predicate);
-
-    /**
-     * @return a *lazily constructed* Iterable over this collection, containing the Replica that match the provided predicate.
-     * Only the first maxSize matching items will be returned.
-     */
-    public abstract Iterable<Replica> filterLazily(Predicate<Replica> predicate, int maxSize);
-
-    /**
-     * @return an *eagerly constructed* copy of this collection containing the Replica at positions [start..end);
-     * An effort will be made to either return ourself, or a subList, where possible.
-     * It is guaranteed that no changes to any upstream Builder will affect the state of the result.
-     */
-    public abstract C subList(int start, int end);
-
-    /**
-     * @return an *eagerly constructed* copy of this collection containing the Replica re-ordered according to this comparator
-     * It is guaranteed that no changes to any upstream Builder will affect the state of the result.
-     */
-    public abstract C sorted(Comparator<Replica> comparator);
-
-    public abstract Iterator<Replica> iterator();
-    public abstract Stream<Replica> stream();
-
-    public abstract boolean equals(Object o);
-    public abstract int hashCode();
-    public abstract String toString();
-
-    /**
-     * A mutable (append-only) extension of a ReplicaCollection.
-     * All methods besides add() will return an immutable snapshot of the collection, or the matching items.
-     */
-    public interface Builder<C extends ReplicaCollection<C>> extends ReplicaCollection<C>
+    public Iterable<InetAddressAndPort> asEndpoints()
     {
-        /**
-         * @return an Immutable clone that assumes this Builder will never be modified again,
-         * so its contents can be reused.
-         *
-         * This Builder should enforce that it is no longer modified.
-         */
-        public C build();
+        return Iterables.transform(this, Replica::getEndpoint);
+    }
 
-        /**
-         * Passed to add() and addAll() as ignoreConflicts parameter. The meaning of conflict varies by collection type
-         * (for Endpoints, it is a duplicate InetAddressAndPort; for RangesAtEndpoint it is a duplicate Range).
-         */
-        enum Conflict
+    public Set<InetAddressAndPort> asEndpointSet()
+    {
+        Set<InetAddressAndPort> result = Sets.newHashSetWithExpectedSize(size());
+        for (Replica replica: this)
         {
-            /** fail on addition of any such conflict */
-            NONE,
-            /** fail on addition of any such conflict where the contents differ (first occurrence and position wins) */
-            DUPLICATE,
-            /** ignore all conflicts (the first occurrence and position wins) */
-            ALL
+            result.add(replica.getEndpoint());
         }
+        return result;
+    }
 
-        /**
-         * @param replica add this replica to the end of the collection
-         * @param ignoreConflict conflicts to ignore, see {@link Conflict}
-         */
-        Builder<C> add(Replica replica, Conflict ignoreConflict);
-
-        default public Builder<C> add(Replica replica)
+    public List<InetAddressAndPort> asEndpointList()
+    {
+        List<InetAddressAndPort> result = new ArrayList<>(size());
+        for (Replica replica: this)
         {
-            return add(replica, Conflict.NONE);
+            result.add(replica.getEndpoint());
         }
+        return result;
+    }
 
-        default public Builder<C> addAll(Iterable<Replica> replicas, Conflict ignoreConflicts)
+    public Collection<InetAddressAndPort> asUnmodifiableEndpointCollection()
+    {
+        return Collections2.transform(getUnmodifiableCollection(), Replica::getEndpoint);
+    }
+
+    public Iterable<Range<Token>> asRanges()
+    {
+        return Iterables.transform(this, Replica::getRange);
+    }
+
+    public Set<Range<Token>> asRangeSet()
+    {
+        Set<Range<Token>> result = Sets.newHashSetWithExpectedSize(size());
+        for (Replica replica: this)
         {
-            for (Replica replica : replicas)
-                add(replica, ignoreConflicts);
-            return this;
+            result.add(replica.getRange());
         }
+        return result;
+    }
 
-        default public Builder<C> addAll(Iterable<Replica> replicas)
+    public Collection<Range<Token>> asUnmodifiableRangeCollection()
+    {
+        return Collections2.transform(getUnmodifiableCollection(), Replica::getRange);
+    }
+
+    public Iterable<Range<Token>> fullRanges()
+    {
+        return Iterables.transform(Iterables.filter(this, Replica::isFull), Replica::getRange);
+    }
+
+    public boolean containsEndpoint(InetAddressAndPort endpoint)
+    {
+        for (Replica replica: this)
         {
-            return addAll(replicas, Conflict.NONE);
+            if (replica.getEndpoint().equals(endpoint))
+                return true;
+        }
+        return false;
+    }
+
+    /**
+     * Remove by endpoint. Ranges are ignored when determining what to remove
+     */
+    public void removeEndpoints(ReplicaCollection toRemove)
+    {
+        if (Iterables.all(this, Replica::isFull) && Iterables.all(toRemove, Replica::isFull))
+        {
+            for (Replica remove: toRemove)
+            {
+                removeEndpoint(remove.getEndpoint());
+            }
+        }
+        else
+        {
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
         }
     }
 
+    public void removeReplicas(ReplicaCollection toRemove)
+    {
+        if (Iterables.all(this, Replica::isFull) && Iterables.all(toRemove, Replica::isFull))
+        {
+            for (Replica remove: toRemove)
+            {
+                removeReplica(remove);
+            }
+        }
+        else
+        {
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
+        }
+    }
+
+    public boolean isEmpty()
+    {
+        return size() == 0;
+    }
 }

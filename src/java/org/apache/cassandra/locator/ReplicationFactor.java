@@ -18,70 +18,41 @@
 
 package org.apache.cassandra.locator;
 
-import java.util.List;
 import java.util.Objects;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicates;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.utils.FBUtilities;
 
 public class ReplicationFactor
 {
     public static final ReplicationFactor ZERO = new ReplicationFactor(0);
 
-    public final int allReplicas;
-    public final int fullReplicas;
+    public final int trans;
+    public final int replicas;
+    public transient final int full;
 
-    private ReplicationFactor(int allReplicas, int transientReplicas)
+    private ReplicationFactor(int replicas, int trans)
     {
-        validate(allReplicas, transientReplicas);
-        this.allReplicas = allReplicas;
-        this.fullReplicas = allReplicas - transientReplicas;
+        validate(replicas, trans);
+        this.replicas = replicas;
+        this.trans = trans;
+        this.full = replicas - trans;
     }
 
-    public int transientReplicas()
+    private ReplicationFactor(int replicas)
     {
-        return allReplicas - fullReplicas;
+        this(replicas, 0);
     }
 
-    public boolean hasTransientReplicas()
+    static void validate(int replicas, int trans)
     {
-        return allReplicas != fullReplicas;
-    }
-
-    private ReplicationFactor(int allReplicas)
-    {
-        this(allReplicas, 0);
-    }
-
-    static void validate(int totalRF, int transientRF)
-    {
-        Preconditions.checkArgument(transientRF == 0 || DatabaseDescriptor.isTransientReplicationEnabled(),
+        Preconditions.checkArgument(trans == 0 || DatabaseDescriptor.isTransientReplicationEnabled(),
                                     "Transient replication is not enabled on this node");
-        Preconditions.checkArgument(totalRF >= 0,
-                                    "Replication factor must be non-negative, found %s", totalRF);
-        Preconditions.checkArgument(transientRF == 0 || transientRF < totalRF,
-                                    "Transient replicas must be zero, or less than total replication factor. For %s/%s", totalRF, transientRF);
-        if (transientRF > 0)
-        {
-            Preconditions.checkArgument(DatabaseDescriptor.getNumTokens() == 1,
-                                        "Transient nodes are not allowed with multiple tokens");
-            Stream<InetAddressAndPort> endpoints = Stream.concat(Gossiper.instance.getLiveMembers().stream(), Gossiper.instance.getUnreachableMembers().stream());
-            List<InetAddressAndPort> badVersionEndpoints = endpoints.filter(Predicates.not(FBUtilities.getBroadcastAddressAndPort()::equals))
-                                                                    .filter(endpoint -> Gossiper.instance.getReleaseVersion(endpoint) != null && Gossiper.instance.getReleaseVersion(endpoint).major < 4)
-                                                                    .collect(Collectors.toList());
-            if (!badVersionEndpoints.isEmpty())
-                throw new AssertionError("Transient replication is not supported in mixed version clusters with nodes < 4.0. Bad nodes: " + badVersionEndpoints);
-        }
-        else if (transientRF < 0)
-        {
-            throw new AssertionError(String.format("Amount of transient nodes should be strictly positive, but was: '%d'", transientRF));
-        }
+        Preconditions.checkArgument(replicas >= 0,
+                                    "Replication factor must be non-negative, found %s", replicas);
+        Preconditions.checkArgument(trans == 0 || trans < replicas,
+                                    "Transient replicas must be zero, or less than total replication factor. For %s/%s", replicas, trans);
     }
 
     public boolean equals(Object o)
@@ -89,22 +60,24 @@ public class ReplicationFactor
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         ReplicationFactor that = (ReplicationFactor) o;
-        return allReplicas == that.allReplicas && fullReplicas == that.fullReplicas;
+        return full == that.full &&
+               trans == that.trans &&
+               replicas == that.replicas;
     }
 
     public int hashCode()
     {
-        return Objects.hash(allReplicas, fullReplicas);
+        return Objects.hash(full, trans, replicas);
     }
 
-    public static ReplicationFactor fullOnly(int totalReplicas)
+    public static ReplicationFactor rf(int replicas)
     {
-        return new ReplicationFactor(totalReplicas);
+        return new ReplicationFactor(replicas);
     }
 
-    public static ReplicationFactor withTransient(int totalReplicas, int transientReplicas)
+    public static ReplicationFactor rf(int replicas, int trans)
     {
-        return new ReplicationFactor(totalReplicas, transientReplicas);
+        return new ReplicationFactor(replicas, trans);
     }
 
     public static ReplicationFactor fromString(String s)
@@ -122,14 +95,27 @@ public class ReplicationFactor
         }
     }
 
-    public String toParseableString()
+    public String toString(boolean verbose)
     {
-        return String.valueOf(allReplicas) + (hasTransientReplicas() ? "/" + transientReplicas() : "");
+        StringBuilder sb = new StringBuilder();
+
+        if (verbose)
+            sb.append("rf(");
+
+        sb.append(Integer.toString(replicas));
+
+        if (trans > 0)
+            sb.append('/').append(Integer.toString(trans));
+
+        if (verbose)
+            sb.append(')');
+
+        return sb.toString();
     }
 
     @Override
     public String toString()
     {
-        return "rf(" + toParseableString() + ')';
+        return toString(true);
     }
 }

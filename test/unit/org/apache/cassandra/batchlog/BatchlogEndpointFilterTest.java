@@ -28,12 +28,9 @@ import org.junit.Test;
 import org.junit.matchers.JUnitMatchers;
 
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.ReplicaPlan;
-import org.apache.cassandra.locator.ReplicaPlans;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
 
 public class BatchlogEndpointFilterTest
 {
@@ -50,10 +47,10 @@ public class BatchlogEndpointFilterTest
                 .put("2", InetAddressAndPort.getByName("2"))
                 .put("2", InetAddressAndPort.getByName("22"))
                 .build();
-        Collection<InetAddressAndPort> result = filterBatchlogEndpoints(endpoints);
+        Collection<InetAddressAndPort> result = new TestEndpointFilter(LOCAL, endpoints).filter();
         assertThat(result.size(), is(2));
-        assertTrue(result.contains(InetAddressAndPort.getByName("11")));
-        assertTrue(result.contains(InetAddressAndPort.getByName("22")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("11")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("22")));
     }
 
     @Test
@@ -64,10 +61,10 @@ public class BatchlogEndpointFilterTest
                 .put(LOCAL, InetAddressAndPort.getByName("00"))
                 .put("1", InetAddressAndPort.getByName("1"))
                 .build();
-        Collection<InetAddressAndPort> result = filterBatchlogEndpoints(endpoints);
+        Collection<InetAddressAndPort> result = new TestEndpointFilter(LOCAL, endpoints).filter();
         assertThat(result.size(), is(2));
-        assertTrue(result.contains(InetAddressAndPort.getByName("1")));
-        assertTrue(result.contains(InetAddressAndPort.getByName("0")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("1")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("0")));
     }
 
     @Test
@@ -76,9 +73,9 @@ public class BatchlogEndpointFilterTest
         Multimap<String, InetAddressAndPort> endpoints = ImmutableMultimap.<String, InetAddressAndPort> builder()
                 .put(LOCAL, InetAddressAndPort.getByName("0"))
                 .build();
-        Collection<InetAddressAndPort> result = filterBatchlogEndpoints(endpoints);
+        Collection<InetAddressAndPort> result = new TestEndpointFilter(LOCAL, endpoints).filter();
         assertThat(result.size(), is(1));
-        assertTrue(result.contains(InetAddressAndPort.getByName("0")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("0")));
     }
 
     @Test
@@ -91,12 +88,12 @@ public class BatchlogEndpointFilterTest
                 .put("1", InetAddressAndPort.getByName("11"))
                 .put("1", InetAddressAndPort.getByName("111"))
                 .build();
-        Collection<InetAddressAndPort> result = filterBatchlogEndpoints(endpoints);
+        Collection<InetAddressAndPort> result = new TestEndpointFilter(LOCAL, endpoints).filter();
         // result should be the last two non-local replicas
         // (Collections.shuffle has been replaced with Collections.reverse for testing)
         assertThat(result.size(), is(2));
-        assertTrue(result.contains(InetAddressAndPort.getByName("11")));
-        assertTrue(result.contains(InetAddressAndPort.getByName("111")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("11")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("111")));
     }
 
     @Test
@@ -108,22 +105,40 @@ public class BatchlogEndpointFilterTest
                 .put(LOCAL, InetAddressAndPort.getByName("111"))
                 .put(LOCAL, InetAddressAndPort.getByName("1111"))
                 .build();
-        Collection<InetAddressAndPort> result = filterBatchlogEndpoints(endpoints);
+        Collection<InetAddressAndPort> result = new TestEndpointFilter(LOCAL, endpoints).filter();
         // result should be the last two non-local replicas
         // (Collections.shuffle has been replaced with Collections.reverse for testing)
         assertThat(result.size(), is(2));
-        assertTrue(result.contains(InetAddressAndPort.getByName("111")));
-        assertTrue(result.contains(InetAddressAndPort.getByName("1111")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("111")));
+        assertThat(result, JUnitMatchers.hasItem(InetAddressAndPort.getByName("1111")));
     }
 
-    private Collection<InetAddressAndPort> filterBatchlogEndpoints(Multimap<String, InetAddressAndPort> endpoints)
+    private static class TestEndpointFilter extends BatchlogManager.EndpointFilter
     {
-        return ReplicaPlans.filterBatchlogEndpoints(LOCAL, endpoints,
-                                                    // Reverse instead of shuffle
-                                                    Collections::reverse,
-                                                    // Always alive
-                                                    (addr) -> true,
-                                                    // Always pick the last
-                                                    (size) -> size - 1);
+        TestEndpointFilter(String localRack, Multimap<String, InetAddressAndPort> endpoints)
+        {
+            super(localRack, endpoints);
+        }
+
+        @Override
+        protected boolean isValid(InetAddressAndPort input)
+        {
+            // We will use always alive non-localhost endpoints
+            return true;
+        }
+
+        @Override
+        protected int getRandomInt(int bound)
+        {
+            // We don't need random behavior here
+            return bound - 1;
+        }
+
+        @Override
+        protected void shuffle(List<?> list)
+        {
+            // We don't need random behavior here
+            Collections.reverse(list);
+        }
     }
 }

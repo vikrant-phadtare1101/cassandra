@@ -27,7 +27,7 @@ import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.restrictions.SingleColumnRestriction.ContainsRestriction;
 import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.index.IndexRegistry;
+import org.apache.cassandra.index.SecondaryIndexManager;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
@@ -74,10 +74,10 @@ final class RestrictionSet implements Restrictions, Iterable<SingleRestriction>
     }
 
     @Override
-    public void addRowFilterTo(RowFilter filter, IndexRegistry indexRegistry, QueryOptions options) throws InvalidRequestException
+    public void addRowFilterTo(RowFilter filter, SecondaryIndexManager indexManager, QueryOptions options) throws InvalidRequestException
     {
         for (Restriction restriction : restrictions.values())
-            restriction.addRowFilterTo(filter, indexRegistry, options);
+            restriction.addRowFilterTo(filter, indexManager, options);
     }
 
     @Override
@@ -184,11 +184,11 @@ final class RestrictionSet implements Restrictions, Iterable<SingleRestriction>
     }
 
     @Override
-    public final boolean hasSupportingIndex(IndexRegistry indexRegistry)
+    public final boolean hasSupportingIndex(SecondaryIndexManager indexManager)
     {
         for (Restriction restriction : restrictions.values())
         {
-            if (restriction.hasSupportingIndex(indexRegistry))
+            if (restriction.hasSupportingIndex(indexManager))
                 return true;
         }
         return false;

@@ -109,7 +109,7 @@ public class SSTableLoaderTest
         {
             this.keyspace = keyspace;
             for (Replica replica : StorageService.instance.getLocalReplicas(KEYSPACE1))
-                addRangeForEndpoint(replica.range(), FBUtilities.getBroadcastAddressAndPort());
+                addRangeForEndpoint(replica.getRange(), FBUtilities.getBroadcastAddressAndPort());
         }
 
         public TableMetadataRef getTableMetadata(String tableName)

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+
 import org.apache.cassandra.auth.DataResource;
 import org.apache.cassandra.auth.IResource;
 import org.apache.cassandra.cql3.CQLStatement;
@@ -30,11 +31,17 @@ import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
-public abstract class AuthorizationStatement extends CQLStatement.Raw implements CQLStatement
+public abstract class AuthorizationStatement extends ParsedStatement implements CQLStatement
 {
-    public AuthorizationStatement prepare(ClientState state)
+    @Override
+    public Prepared prepare()
     {
-        return this;
+        return new Prepared(this);
+    }
+
+    public int getBoundTerms()
+    {
+        return 0;
     }
 
     public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime)
@@ -45,9 +52,9 @@ public abstract class AuthorizationStatement extends CQLStatement.Raw implements
 
     public abstract ResultMessage execute(ClientState state) throws RequestValidationException, RequestExecutionException;
 
-    public ResultMessage executeLocally(QueryState state, QueryOptions options)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
-        // executeLocally is for local query only, thus altering permission doesn't make sense and is not supported
+        // executeInternal is for local query only, thus altering permission doesn't make sense and is not supported
         throw new UnsupportedOperationException();
     }
 

@@ -20,143 +20,255 @@ package org.apache.cassandra.locator;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
-import java.util.function.Predicate;
 
-import com.carrotsearch.hppc.ObjectIntOpenHashMap;
-import com.carrotsearch.hppc.ObjectObjectOpenHashMap;
+import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
-import org.apache.cassandra.config.DatabaseDescriptor;
+import com.google.common.collect.Iterators;
 
-import static com.google.common.collect.Iterables.all;
+import org.apache.cassandra.utils.FBUtilities;
 
 public class Replicas
 {
-
-    public static int countFull(ReplicaCollection<?> replicas)
+    private static abstract class ImmutableReplicaContainer extends ReplicaCollection
     {
-        int count = 0;
-        for (Replica replica : replicas)
-            if (replica.isFull())
-                ++count;
-        return count;
-    }
-
-    public static class ReplicaCount
-    {
-        int fullReplicas;
-        int transientReplicas;
-
-        public int allReplicas()
+        @Override
+        public boolean add(Replica replica)
         {
-            return fullReplicas + transientReplicas;
+            throw new UnsupportedOperationException();
         }
 
-        public int fullReplicas()
+        @Override
+        public void addAll(Iterable<Replica> replicas)
         {
-            return fullReplicas;
+            throw new UnsupportedOperationException();
         }
 
-        public int transientReplicas()
+        @Override
+        public void removeEndpoint(InetAddressAndPort endpoint)
         {
-            return transientReplicas;
+            throw new UnsupportedOperationException();
         }
 
-        public void increment(Replica replica)
+        @Override
+        public void removeReplica(Replica replica)
         {
-            if (replica.isFull()) ++fullReplicas;
-            else ++transientReplicas;
-        }
-
-        public boolean hasAtleast(int allReplicas, int fullReplicas)
-        {
-            return this.fullReplicas >= fullReplicas
-                    && this.allReplicas() >= allReplicas;
+            throw new UnsupportedOperationException();
         }
     }
 
-    public static ReplicaCount countInOurDc(ReplicaCollection<?> replicas)
+    public static ReplicaCollection filter(ReplicaCollection source, Predicate<Replica> predicate)
     {
-        ReplicaCount count = new ReplicaCount();
-        Predicate<Replica> inOurDc = InOurDcTester.replicas();
-        for (Replica replica : replicas)
-            if (inOurDc.test(replica))
-                count.increment(replica);
-        return count;
+        Iterable<Replica> iterable = Iterables.filter(source, predicate);
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return Iterables.size(iterable);
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return iterable.iterator();
+            }
+
+            @Override
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                return Collections.unmodifiableCollection(source.getUnmodifiableCollection());
+            }
+        };
+    }
+
+    public static ReplicaCollection filterOnEndpoints(ReplicaCollection source, Predicate<InetAddressAndPort> predicate)
+    {
+        Iterable<Replica> iterable = Iterables.filter(source, r -> predicate.apply(r.getEndpoint()));
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return Iterables.size(iterable);
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return iterable.iterator();
+            }
+
+            @Override
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                return Collections.unmodifiableCollection(source.getUnmodifiableCollection());
+            }
+        };
+    }
+
+    public static ReplicaCollection filterLocalEndpoint(ReplicaCollection replicas)
+    {
+        InetAddressAndPort local = FBUtilities.getBroadcastAddressAndPort();
+        return filterOnEndpoints(replicas, e -> !e.equals(local));
+    }
+
+    public static ReplicaCollection concatNaturalAndPending(ReplicaCollection natural, ReplicaCollection pending)
+    {
+        Iterable<Replica> iterable;
+        if (Iterables.all(natural, Replica::isFull) && Iterables.all(pending, Replica::isFull))
+        {
+            iterable = Iterables.concat(natural, pending);
+        }
+        else
+        {
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
+        }
+
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return natural.size() + pending.size();
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return iterable.iterator();
+            }
+
+            @Override
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    public static ReplicaCollection concat(Iterable<ReplicaCollection> replicasIterable)
+    {
+        Iterable<Replica> iterable = Iterables.concat(replicasIterable);
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return Iterables.size(iterable);
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return iterable.iterator();
+            }
+
+            @Override
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    public static ReplicaCollection of(Replica replica)
+    {
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return 1;
+            }
+
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                return Collections.singleton(replica);
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return Iterators.singletonIterator(replica);
+            }
+        };
+    }
+
+    public static ReplicaCollection of(Collection<Replica> replicas)
+    {
+        return new ImmutableReplicaContainer()
+        {
+            public int size()
+            {
+                return replicas.size();
+            }
+
+            public Iterator<Replica> iterator()
+            {
+                return replicas.iterator();
+            }
+
+            @Override
+            protected Collection<Replica> getUnmodifiableCollection()
+            {
+                return Collections.unmodifiableCollection(replicas);
+            }
+        };
+    }
+
+    private static ReplicaCollection EMPTY = new ImmutableReplicaContainer()
+    {
+        public int size()
+        {
+            return 0;
+        }
+
+        protected Collection<Replica> getUnmodifiableCollection()
+        {
+            return Collections.emptyList();
+        }
+
+        public Iterator<Replica> iterator()
+        {
+            return Collections.emptyIterator();
+        }
+    };
+
+    public static ReplicaCollection empty()
+    {
+        return EMPTY;
+    }
+
+    public static ReplicaCollection singleton(Replica replica)
+    {
+        return of(replica);
     }
 
     /**
-     * count the number of full and transient replicas, separately, for each DC
+     * Basically a placeholder for places new logic for transient replicas should go
      */
-    public static ObjectObjectOpenHashMap<String, ReplicaCount> countPerDc(Collection<String> dataCenters, Iterable<Replica> replicas)
-    {
-        ObjectObjectOpenHashMap<String, ReplicaCount> perDc = new ObjectObjectOpenHashMap<>(dataCenters.size());
-        for (String dc: dataCenters)
-            perDc.put(dc, new ReplicaCount());
-
-        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-        for (Replica replica : replicas)
-        {
-            String dc = snitch.getDatacenter(replica);
-            perDc.get(dc).increment(replica);
-        }
-        return perDc;
-    }
-
-    /**
-     * increment each of the map's DC entries for each matching replica provided
-     */
-    public static void addToCountPerDc(ObjectIntOpenHashMap<String> perDc, Iterable<Replica> replicas, int add)
-    {
-        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-        for (Replica replica : replicas)
-        {
-            String dc = snitch.getDatacenter(replica);
-            perDc.addTo(dc, add);
-        }
-    }
-
-    /**
-     * A placeholder for areas of the code that cannot yet handle transient replicas, but should do so in future
-     */
-    public static void temporaryAssertFull(Replica replica)
+    public static void checkFull(Replica replica)
     {
         if (!replica.isFull())
         {
-            throw new UnsupportedOperationException("transient replicas are currently unsupported: " + replica);
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
         }
     }
 
     /**
-     * A placeholder for areas of the code that cannot yet handle transient replicas, but should do so in future
+     * Basically a placeholder for places new logic for transient replicas should go
      */
-    public static void temporaryAssertFull(Iterable<Replica> replicas)
+    public static void checkFull(Iterable<Replica> replicas)
     {
-        if (!all(replicas, Replica::isFull))
+        if (!Iterables.all(replicas, Replica::isFull))
         {
-            throw new UnsupportedOperationException("transient replicas are currently unsupported: " + Iterables.toString(replicas));
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
         }
     }
 
-    /**
-     * For areas of the code that should never see a transient replica
-     */
-    public static void assertFull(Iterable<Replica> replicas)
-    {
-        if (!all(replicas, Replica::isFull))
-        {
-            throw new UnsupportedOperationException("transient replicas are currently unsupported: " + Iterables.toString(replicas));
-        }
-    }
-
-    public static List<String> stringify(ReplicaCollection<?> replicas, boolean withPort)
+    public static List<String> stringify(ReplicaCollection replicas, boolean withPort)
     {
         List<String> stringEndpoints = new ArrayList<>(replicas.size());
         for (Replica replica: replicas)
         {
-            stringEndpoints.add(replica.endpoint().getHostAddress(withPort));
+            stringEndpoints.add(replica.getEndpoint().getHostAddress(withPort));
         }
         return stringEndpoints;
     }
-
 }

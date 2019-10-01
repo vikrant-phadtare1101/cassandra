@@ -25,10 +25,8 @@ import java.util.Map.Entry;
 import io.airlift.airline.Command;
 import io.airlift.airline.Option;
 
-import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.db.compaction.OperationType;
-import org.apache.cassandra.db.compaction.CompactionInfo.Unit;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
@@ -82,17 +80,16 @@ public class CompactionStats extends NodeToolCmd
             table.add("id", "compaction type", "keyspace", "table", "completed", "total", "unit", "progress");
             for (Map<String, String> c : compactions)
             {
-                long total = Long.parseLong(c.get(CompactionInfo.TOTAL));
-                long completed = Long.parseLong(c.get(CompactionInfo.COMPLETED));
-                String taskType = c.get(CompactionInfo.TASK_TYPE);
-                String keyspace = c.get(CompactionInfo.KEYSPACE);
-                String columnFamily = c.get(CompactionInfo.COLUMNFAMILY);
-                String unit = c.get(CompactionInfo.UNIT);
-                boolean toFileSize = humanReadable && Unit.isFileSize(unit);
-                String completedStr = toFileSize ? FileUtils.stringifyFileSize(completed) : Long.toString(completed);
-                String totalStr = toFileSize ? FileUtils.stringifyFileSize(total) : Long.toString(total);
+                long total = Long.parseLong(c.get("total"));
+                long completed = Long.parseLong(c.get("completed"));
+                String taskType = c.get("taskType");
+                String keyspace = c.get("keyspace");
+                String columnFamily = c.get("columnfamily");
+                String completedStr = humanReadable ? FileUtils.stringifyFileSize(completed) : Long.toString(completed);
+                String totalStr = humanReadable ? FileUtils.stringifyFileSize(total) : Long.toString(total);
+                String unit = c.get("unit");
                 String percentComplete = total == 0 ? "n/a" : new DecimalFormat("0.00").format((double) completed / total * 100) + "%";
-                String id = c.get(CompactionInfo.COMPACTION_ID);
+                String id = c.get("compactionId");
                 table.add(id, taskType, keyspace, columnFamily, completedStr, totalStr, unit, percentComplete);
                 if (taskType.equals(OperationType.COMPACTION.toString()))
                     remainingBytes += total - completed;

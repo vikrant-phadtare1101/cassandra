@@ -29,19 +29,18 @@ import org.apache.cassandra.utils.FBUtilities;
 
 public class LocalStrategy extends AbstractReplicationStrategy
 {
-    private static final ReplicationFactor RF = ReplicationFactor.fullOnly(1);
-    private final EndpointsForRange replicas;
+    private static final ReplicationFactor RF = ReplicationFactor.rf(1);
+    private final ReplicaList replicas;
 
     public LocalStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions)
     {
         super(keyspaceName, tokenMetadata, snitch, configOptions);
-        replicas = EndpointsForRange.of(
-                new Replica(FBUtilities.getBroadcastAddressAndPort(),
-                        DatabaseDescriptor.getPartitioner().getMinimumToken(),
-                        DatabaseDescriptor.getPartitioner().getMinimumToken(),
-                        true
-                )
-        );
+
+        replicas = new ReplicaList(1);
+        replicas.add(new Replica(FBUtilities.getBroadcastAddressAndPort(),
+                                 DatabaseDescriptor.getPartitioner().getMinimumToken(),
+                                 DatabaseDescriptor.getPartitioner().getMinimumToken(),
+                                 true));
     }
 
     /**
@@ -50,12 +49,12 @@ public class LocalStrategy extends AbstractReplicationStrategy
      * LocalStrategy may be used before tokens are set up.
      */
     @Override
-    public EndpointsForRange getNaturalReplicas(RingPosition searchPosition)
+    public ReplicaList getNaturalReplicas(RingPosition searchPosition)
     {
         return replicas;
     }
 
-    public EndpointsForRange calculateNaturalReplicas(Token token, TokenMetadata metadata)
+    public ReplicaList calculateNaturalReplicas(Token token, TokenMetadata metadata)
     {
         return replicas;
     }

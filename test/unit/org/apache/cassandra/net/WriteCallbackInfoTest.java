@@ -23,19 +23,19 @@ import java.util.UUID;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.RegularAndStaticColumns;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.locator.ReplicaUtils;
+import org.apache.cassandra.net.MessagingService.Verb;
 import org.apache.cassandra.schema.MockSchema;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.paxos.Commit;
 import org.apache.cassandra.utils.ByteBufferUtil;
-
-import static org.apache.cassandra.locator.ReplicaUtils.full;
 
 public class WriteCallbackInfoTest
 {
@@ -48,8 +48,8 @@ public class WriteCallbackInfoTest
     @Test
     public void testShouldHint() throws Exception
     {
-        testShouldHint(Verb.COUNTER_MUTATION_REQ, ConsistencyLevel.ALL, true, false);
-        for (Verb verb : new Verb[] { Verb.PAXOS_COMMIT_REQ, Verb.MUTATION_REQ })
+        testShouldHint(Verb.COUNTER_MUTATION, ConsistencyLevel.ALL, true, false);
+        for (Verb verb : new Verb[] { Verb.PAXOS_COMMIT, Verb.MUTATION })
         {
             testShouldHint(verb, ConsistencyLevel.ALL, true, true);
             testShouldHint(verb, ConsistencyLevel.ANY, true, false);
@@ -60,11 +60,11 @@ public class WriteCallbackInfoTest
     private void testShouldHint(Verb verb, ConsistencyLevel cl, boolean allowHints, boolean expectHint) throws Exception
     {
         TableMetadata metadata = MockSchema.newTableMetadata("", "");
-        Object payload = verb == Verb.PAXOS_COMMIT_REQ
+        Object payload = verb == Verb.PAXOS_COMMIT
                          ? new Commit(UUID.randomUUID(), new PartitionUpdate.Builder(metadata, ByteBufferUtil.EMPTY_BYTE_BUFFER, RegularAndStaticColumns.NONE, 1).build())
                          : new Mutation(PartitionUpdate.simpleBuilder(metadata, "").build());
 
-        RequestCallbacks.WriteCallbackInfo wcbi = new RequestCallbacks.WriteCallbackInfo(Message.out(verb, payload), full(InetAddressAndPort.getByName("192.168.1.1")), null, cl, allowHints);
+        WriteCallbackInfo wcbi = new WriteCallbackInfo(ReplicaUtils.full(InetAddressAndPort.getByName("192.168.1.1")), null, new MessageOut(verb, payload, null), null, cl, allowHints);
         Assert.assertEquals(expectHint, wcbi.shouldHint());
         if (expectHint)
         {

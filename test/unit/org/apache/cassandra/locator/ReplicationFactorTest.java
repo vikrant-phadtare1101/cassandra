@@ -23,7 +23,6 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.gms.Gossiper;
 
 public class ReplicationFactorTest
 {
@@ -33,7 +32,6 @@ public class ReplicationFactorTest
     {
         DatabaseDescriptor.daemonInitialization();
         DatabaseDescriptor.setTransientReplicationEnabledUnsafe(true);
-        Gossiper.instance.start(1);
     }
 
     private static void assertRfParseFailure(String s)
@@ -52,9 +50,9 @@ public class ReplicationFactorTest
     private static void assertRfParse(String s, int expectedReplicas, int expectedTrans)
     {
         ReplicationFactor rf = ReplicationFactor.fromString(s);
-        Assert.assertEquals(expectedReplicas, rf.allReplicas);
-        Assert.assertEquals(expectedTrans, rf.transientReplicas());
-        Assert.assertEquals(expectedReplicas - expectedTrans, rf.fullReplicas);
+        Assert.assertEquals(expectedReplicas, rf.replicas);
+        Assert.assertEquals(expectedTrans, rf.trans);
+        Assert.assertEquals(expectedReplicas - expectedTrans, rf.full);
     }
 
     @Test
@@ -69,15 +67,5 @@ public class ReplicationFactorTest
         assertRfParseFailure("-1");
         assertRfParseFailure("3/3");
         assertRfParseFailure("3/4");
-    }
-
-    @Test
-    public void roundTripParseTest()
-    {
-        String input = "3";
-        Assert.assertEquals(input, ReplicationFactor.fromString(input).toParseableString());
-
-        String transientInput = "3/1";
-        Assert.assertEquals(transientInput, ReplicationFactor.fromString(transientInput).toParseableString());
     }
 }

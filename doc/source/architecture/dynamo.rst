@@ -90,17 +90,7 @@ NetworkTopologyStrategy can be configured to transiently replicate data. You con
 as ``<total_replicas>/<transient_replicas`` Both SimpleStrategy and NetworkTopologyStrategy support configuring transient
 replication.
 
-Transiently replicated keyspaces only support tables created with read_repair set to NONE and monotonic reads are not currently supported.
-You also can't use LWT, logged batches, and counters in 4.0. You will possibly never be able to use materialized views
-with transiently replicated keyspaces and probably never be able to use 2i with them.
-
-Transient replication is an experimental feature that may not be ready for production use. The expected audienced is experienced
-users of Cassandra capable of fully validating a deployment of their particular application. That means being able check
-that operations like reads, writes, decommission, remove, rebuild, repair, and replace all work with your queries, data,
-configuration, operational practices, and availability requirements.
-
-It is anticipated that 4.next will support monotonic reads with transient replication as well as LWT, logged batches, and
-counters.
+Transient replication is an experimental feature that may not be ready for production use.
 
 
 Tunable Consistency

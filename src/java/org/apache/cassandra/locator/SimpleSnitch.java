@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.locator;
 
+import java.util.List;
+
 /**
  * A simple endpoint snitch implementation that treats Strategy order as proximity,
  * allowing non-read-repaired reads to prefer a single endpoint, which improves
@@ -35,10 +37,9 @@ public class SimpleSnitch extends AbstractEndpointSnitch
     }
 
     @Override
-    public <C extends ReplicaCollection<? extends C>> C sortedByProximity(final InetAddressAndPort address, C unsortedAddress)
+    public void sortByProximity(final InetAddressAndPort address, ReplicaList addresses)
     {
         // Optimization to avoid walking the list
-        return unsortedAddress;
     }
 
     @Override

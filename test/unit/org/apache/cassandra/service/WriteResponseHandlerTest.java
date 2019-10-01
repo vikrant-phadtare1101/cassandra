@@ -24,10 +24,6 @@ import java.net.UnknownHostException;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.base.Predicates;
-import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.locator.EndpointsForToken;
-import org.apache.cassandra.locator.ReplicaPlans;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -42,14 +38,12 @@ import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaCollection;
+import org.apache.cassandra.locator.ReplicaList;
 import org.apache.cassandra.locator.ReplicaUtils;
 import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.Verb;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
-import static org.apache.cassandra.net.NoPayload.noPayload;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -57,8 +51,7 @@ public class WriteResponseHandlerTest
 {
     static Keyspace ks;
     static ColumnFamilyStore cfs;
-    static EndpointsForToken targets;
-    static EndpointsForToken pending;
+    static ReplicaList targets;
 
     private static Replica full(String name)
     {
@@ -76,7 +69,6 @@ public class WriteResponseHandlerTest
     public static void setUpClass() throws Throwable
     {
         SchemaLoader.loadSchema();
-        DatabaseDescriptor.setPartitionerUnsafe(Murmur3Partitioner.instance);
         // Register peers with expected DC for NetworkTopologyStrategy.
         TokenMetadata metadata = StorageService.instance.getTokenMetadata();
         metadata.clearUnsafe();
@@ -99,9 +91,14 @@ public class WriteResponseHandlerTest
                     return "datacenter2";
             }
 
-            public <C extends ReplicaCollection<? extends C>> C sortedByProximity(InetAddressAndPort address, C replicas)
+            public ReplicaList getSortedListByProximity(InetAddressAndPort address, ReplicaCollection unsortedAddress)
             {
-                return replicas;
+                return null;
+            }
+
+            public void sortByProximity(InetAddressAndPort address, ReplicaList replicas)
+            {
+
             }
 
             public int compareEndpoints(InetAddressAndPort target, Replica a1, Replica a2)
@@ -114,7 +111,7 @@ public class WriteResponseHandlerTest
 
             }
 
-            public boolean isWorthMergingForRangeQuery(ReplicaCollection<?> merged, ReplicaCollection<?> l1, ReplicaCollection<?> l2)
+            public boolean isWorthMergingForRangeQuery(ReplicaList merged, ReplicaList l1, ReplicaList l2)
             {
                 return false;
             }
@@ -123,10 +120,8 @@ public class WriteResponseHandlerTest
         SchemaLoader.createKeyspace("Foo", KeyspaceParams.nts("datacenter1", 3, "datacenter2", 3), SchemaLoader.standardCFMD("Foo", "Bar"));
         ks = Keyspace.open("Foo");
         cfs = ks.getColumnFamilyStore("Bar");
-        targets = EndpointsForToken.of(DatabaseDescriptor.getPartitioner().getToken(ByteBufferUtil.bytes(0)),
-                                       full("127.1.0.255"), full("127.1.0.254"), full("127.1.0.253"),
-                                       full("127.2.0.255"), full("127.2.0.254"), full("127.2.0.253"));
-        pending = EndpointsForToken.empty(DatabaseDescriptor.getPartitioner().getToken(ByteBufferUtil.bytes(0)));
+        targets = ReplicaList.immutableCopyOf(full("127.1.0.255"), full("127.1.0.254"), full("127.1.0.253"),
+                                              full("127.2.0.255"), full("127.2.0.254"), full("127.2.0.253"));
     }
 
     @Before
@@ -148,11 +143,11 @@ public class WriteResponseHandlerTest
         AbstractWriteResponseHandler awr = createWriteResponseHandler(ConsistencyLevel.LOCAL_QUORUM, ConsistencyLevel.EACH_QUORUM, System.nanoTime() - TimeUnit.DAYS.toNanos(1));
 
         //dc1
-        awr.onResponse(createDummyMessage(0));
-        awr.onResponse(createDummyMessage(1));
+        awr.response(createDummyMessage(0));
+        awr.response(createDummyMessage(1));
         //dc2
-        awr.onResponse(createDummyMessage(4));
-        awr.onResponse(createDummyMessage(5));
+        awr.response(createDummyMessage(4));
+        awr.response(createDummyMessage(5));
 
         //Don't need the others
         awr.expired();
@@ -174,13 +169,13 @@ public class WriteResponseHandlerTest
         AbstractWriteResponseHandler awr = createWriteResponseHandler(ConsistencyLevel.LOCAL_QUORUM, ConsistencyLevel.ALL);
 
         //dc1
-        awr.onResponse(createDummyMessage(0));
-        awr.onResponse(createDummyMessage(1));
-        awr.onResponse(createDummyMessage(2));
+        awr.response(createDummyMessage(0));
+        awr.response(createDummyMessage(1));
+        awr.response(createDummyMessage(2));
         //dc2
-        awr.onResponse(createDummyMessage(3));
-        awr.onResponse(createDummyMessage(4));
-        awr.onResponse(createDummyMessage(5));
+        awr.response(createDummyMessage(3));
+        awr.response(createDummyMessage(4));
+        awr.response(createDummyMessage(5));
 
         assertEquals(0,  ks.metric.writeFailedIdealCL.getCount());
         assertEquals(startingCount + 1, ks.metric.idealCLWriteLatency.latency.getCount());
@@ -197,13 +192,13 @@ public class WriteResponseHandlerTest
         AbstractWriteResponseHandler awr = createWriteResponseHandler(ConsistencyLevel.ONE, ConsistencyLevel.LOCAL_QUORUM);
 
         //dc1
-        awr.onResponse(createDummyMessage(0));
-        awr.onResponse(createDummyMessage(1));
-        awr.onResponse(createDummyMessage(2));
+        awr.response(createDummyMessage(0));
+        awr.response(createDummyMessage(1));
+        awr.response(createDummyMessage(2));
         //dc2
-        awr.onResponse(createDummyMessage(3));
-        awr.onResponse(createDummyMessage(4));
-        awr.onResponse(createDummyMessage(5));
+        awr.response(createDummyMessage(3));
+        awr.response(createDummyMessage(4));
+        awr.response(createDummyMessage(5));
 
         assertEquals(0,  ks.metric.writeFailedIdealCL.getCount());
         assertEquals(startingCount + 1, ks.metric.idealCLWriteLatency.latency.getCount());
@@ -216,13 +211,13 @@ public class WriteResponseHandlerTest
     @Test
     public void failedIdealCLIncrementsStat() throws Throwable
     {
-        ks.metric.idealCLWriteLatency.totalLatency.dec(ks.metric.idealCLWriteLatency.totalLatency.getCount());
+
         AbstractWriteResponseHandler awr = createWriteResponseHandler(ConsistencyLevel.LOCAL_QUORUM, ConsistencyLevel.EACH_QUORUM);
 
         //Succeed in local DC
-        awr.onResponse(createDummyMessage(0));
-        awr.onResponse(createDummyMessage(1));
-        awr.onResponse(createDummyMessage(2));
+        awr.response(createDummyMessage(0));
+        awr.response(createDummyMessage(1));
+        awr.response(createDummyMessage(2));
 
         //Fail in remote DC
         awr.expired();
@@ -239,14 +234,16 @@ public class WriteResponseHandlerTest
 
     private static AbstractWriteResponseHandler createWriteResponseHandler(ConsistencyLevel cl, ConsistencyLevel ideal, long queryStartTime)
     {
-        return ks.getReplicationStrategy().getWriteResponseHandler(ReplicaPlans.forWrite(ks, cl, targets, pending, Predicates.alwaysTrue(), ReplicaPlans.writeAll),
-                                                                   null, WriteType.SIMPLE, queryStartTime, ideal);
+        return ks.getReplicationStrategy().getWriteResponseHandler(targets, ReplicaList.of(), cl, new Runnable() {
+            public void run()
+            {
+
+            }
+        }, WriteType.SIMPLE, queryStartTime, ideal);
     }
 
-    private static Message createDummyMessage(int target)
+    private static MessageIn createDummyMessage(int target)
     {
-        return Message.builder(Verb.ECHO_REQ, noPayload)
-                      .from(targets.get(target).endpoint())
-                      .build();
+        return MessageIn.create(targets.get(target).getEndpoint(), null, null,  null, 0, 0L);
     }
 }
