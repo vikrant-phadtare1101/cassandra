@@ -29,14 +29,13 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
 import com.google.common.collect.MapDifference;
 
 import org.apache.cassandra.diag.DiagnosticEvent;
 import org.apache.cassandra.utils.Pair;
 
-public final class SchemaEvent extends DiagnosticEvent
+final class SchemaEvent extends DiagnosticEvent
 {
     private final SchemaEventType type;
 
@@ -63,7 +62,7 @@ public final class SchemaEvent extends DiagnosticEvent
     @Nullable
     private final MapDifference<String,TableMetadata> indexesDiff;
 
-    public enum SchemaEventType
+    enum SchemaEventType
     {
         KS_METADATA_LOADED,
         KS_METADATA_RELOADED,
