@@ -20,7 +20,6 @@ package org.apache.cassandra.hints;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
@@ -65,10 +64,10 @@ final class HintsCatalog
      */
     static HintsCatalog load(File hintsDirectory, ImmutableMap<String, Object> writerParams)
     {
-        try(Stream<Path> list = Files.list(hintsDirectory.toPath()))
+        try
         {
             Map<UUID, List<HintsDescriptor>> stores =
-                     list
+                Files.list(hintsDirectory.toPath())
                      .filter(HintsDescriptor::isHintFileName)
                      .map(HintsDescriptor::readFromFileQuietly)
                      .filter(Optional::isPresent)
