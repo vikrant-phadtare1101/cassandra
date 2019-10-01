@@ -122,11 +122,11 @@ public class QueryProcessor implements QueryHandler
     {
         INSTANCE;
 
-        private final ClientState clientState;
+        private final QueryState queryState;
 
         InternalStateInstance()
         {
-            clientState = ClientState.forInternalCalls(SchemaConstants.SYSTEM_KEYSPACE_NAME);
+            queryState = new QueryState(ClientState.forInternalCalls(SchemaConstants.SYSTEM_KEYSPACE_NAME));
         }
     }
 
@@ -162,10 +162,9 @@ public class QueryProcessor implements QueryHandler
             SystemKeyspace.resetPreparedStatements();
     }
 
-    @VisibleForTesting
-    public static QueryState internalQueryState()
+    private static QueryState internalQueryState()
     {
-        return new QueryState(InternalStateInstance.INSTANCE.clientState);
+        return InternalStateInstance.INSTANCE.queryState;
     }
 
     private QueryProcessor()
@@ -203,18 +202,7 @@ public class QueryProcessor implements QueryHandler
         statement.authorize(clientState);
         statement.validate(clientState);
 
-        ResultMessage result;
-        if (options.getConsistency() == ConsistencyLevel.NODE_LOCAL)
-        {
-            assert Boolean.getBoolean("cassandra.enable_nodelocal_queries") : "Node local consistency level is highly dangerous and should be used only for debugging purposes";
-            assert statement instanceof SelectStatement : "Only SELECT statements are permitted for node-local execution";
-            logger.info("Statement {} executed with NODE_LOCAL consistency level.", statement);
-            result = statement.executeLocally(queryState, options);
-        }
-        else
-        {
-            result = statement.execute(queryState, options, queryStartNanoTime);
-        }
+        ResultMessage result = statement.execute(queryState, options, queryStartNanoTime);
         return result == null ? new ResultMessage.Void() : result;
     }
 
@@ -266,8 +254,7 @@ public class QueryProcessor implements QueryHandler
             return null;
     }
 
-    @VisibleForTesting
-    public static QueryOptions makeInternalOptions(CQLStatement prepared, Object[] values)
+    private static QueryOptions makeInternalOptions(CQLStatement prepared, Object[] values)
     {
         return makeInternalOptions(prepared, values, ConsistencyLevel.ONE);
     }

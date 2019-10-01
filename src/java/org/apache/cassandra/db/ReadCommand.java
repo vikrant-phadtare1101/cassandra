@@ -18,32 +18,20 @@
 package org.apache.cassandra.db;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BiFunction;
 import java.util.function.LongPredicate;
 
 import javax.annotation.Nullable;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Sets;
-import com.google.common.hash.Hasher;
-import com.google.common.hash.Hashing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.net.MessageFlag;
-import org.apache.cassandra.net.Verb;
-import org.apache.cassandra.utils.ApproximateTime;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundCloser;
 import org.apache.cassandra.db.transform.RTBoundValidator;
-import org.apache.cassandra.db.transform.RTBoundValidator.Stage;
 import org.apache.cassandra.db.transform.StoppingTransformation;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.exceptions.UnknownIndexException;
@@ -51,27 +39,18 @@ import org.apache.cassandra.index.Index;
 import org.apache.cassandra.index.IndexNotAvailableException;
 import org.apache.cassandra.index.IndexRegistry;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.service.ClientWarn;
 import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.HashingUtils;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.filter;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * General interface for storage-engine read commands (common to both range and
@@ -88,26 +67,8 @@ public abstract class ReadCommand extends AbstractReadQuery
     private final Kind kind;
 
     private final boolean isDigestQuery;
-    private final boolean acceptsTransient;
     // if a digest query, the version for which the digest is expected. Ignored if not a digest.
     private int digestVersion;
-
-    // for data queries, coordinators may request information on the repaired data used in constructing the response
-    private boolean trackRepairedStatus = false;
-    // tracker for repaired data, initialized to singelton null object
-    private static final RepairedDataInfo NULL_REPAIRED_DATA_INFO = new RepairedDataInfo()
-    {
-        void trackPartitionKey(DecoratedKey key){}
-        void trackDeletion(DeletionTime deletion){}
-        void trackRangeTombstoneMarker(RangeTombstoneMarker marker){}
-        void trackRow(Row row){}
-        boolean isConclusive(){ return true; }
-        ByteBuffer getDigest(){ return ByteBufferUtil.EMPTY_BYTE_BUFFER; }
-    };
-
-    private RepairedDataInfo repairedDataInfo = NULL_REPAIRED_DATA_INFO;
-
-    int oldestUnrepairedTombstone = Integer.MAX_VALUE;
 
     @Nullable
     private final IndexMetadata index;
@@ -118,7 +79,6 @@ public abstract class ReadCommand extends AbstractReadQuery
                                                 int version,
                                                 boolean isDigest,
                                                 int digestVersion,
-                                                boolean acceptsTransient,
                                                 TableMetadata metadata,
                                                 int nowInSec,
                                                 ColumnFilter columnFilter,
@@ -143,7 +103,6 @@ public abstract class ReadCommand extends AbstractReadQuery
     protected ReadCommand(Kind kind,
                           boolean isDigestQuery,
                           int digestVersion,
-                          boolean acceptsTransient,
                           TableMetadata metadata,
                           int nowInSec,
                           ColumnFilter columnFilter,
@@ -152,13 +111,9 @@ public abstract class ReadCommand extends AbstractReadQuery
                           IndexMetadata index)
     {
         super(metadata, nowInSec, columnFilter, rowFilter, limits);
-        if (acceptsTransient && isDigestQuery)
-            throw new IllegalArgumentException("Attempted to issue a digest response to transient replica");
-
         this.kind = kind;
         this.isDigestQuery = isDigestQuery;
         this.digestVersion = digestVersion;
-        this.acceptsTransient = acceptsTransient;
         this.index = index;
     }
 
@@ -166,8 +121,6 @@ public abstract class ReadCommand extends AbstractReadQuery
     protected abstract long selectionSerializedSize(int version);
 
     public abstract boolean isLimitedToOnePartition();
-
-    public abstract boolean isRangeRequest();
 
     /**
      * Creates a new <code>ReadCommand</code> instance with new limits.
@@ -182,7 +135,7 @@ public abstract class ReadCommand extends AbstractReadQuery
      *
      * @return the configured timeout for this command.
      */
-    public abstract long getTimeout(TimeUnit unit);
+    public abstract long getTimeout();
 
     /**
      * Whether this query is a digest one or not.
@@ -222,76 +175,6 @@ public abstract class ReadCommand extends AbstractReadQuery
     }
 
     /**
-     * @return Whether this query expects only a transient data response, or a full response
-     */
-    public boolean acceptsTransient()
-    {
-        return acceptsTransient;
-    }
-
-    /**
-     * Activates repaired data tracking for this command.
-     *
-     * When active, a digest will be created from data read from repaired SSTables. The digests
-     * from each replica can then be compared on the coordinator to detect any divergence in their
-     * repaired datasets. In this context, an sstable is considered repaired if it is marked
-     * repaired or has a pending repair session which has been committed.
-     * In addition to the digest, a set of ids for any pending but as yet uncommitted repair sessions
-     * is recorded and returned to the coordinator. This is to help reduce false positives caused
-     * by compaction lagging which can leave sstables from committed sessions in the pending state
-     * for a time.
-     */
-    public void trackRepairedStatus()
-    {
-        trackRepairedStatus = true;
-    }
-
-    /**
-     * Whether or not repaired status of any data read is being tracked or not
-     *
-     * @return Whether repaired status tracking is active for this command
-     */
-    public boolean isTrackingRepairedStatus()
-    {
-        return trackRepairedStatus;
-    }
-
-    /**
-     * Returns a digest of the repaired data read in the execution of this command.
-     *
-     * If either repaired status tracking is not active or the command has not yet been
-     * executed, then this digest will be an empty buffer.
-     * Otherwise, it will contain a digest* of the repaired data read, or empty buffer
-     * if no repaired data was read.
-     * @return digest of the repaired data read in the execution of the command
-     */
-    public ByteBuffer getRepairedDataDigest()
-    {
-        return repairedDataInfo.getDigest();
-    }
-
-    /**
-     * Returns a boolean indicating whether any relevant sstables were skipped during the read
-     * that produced the repaired data digest.
-     *
-     * If true, then no pending repair sessions or partition deletes have influenced the extent
-     * of the repaired sstables that went into generating the digest.
-     * This indicates whether or not the digest can reliably be used to infer consistency
-     * issues between the repaired sets across replicas.
-     *
-     * If either repaired status tracking is not active or the command has not yet been
-     * executed, then this will always return true.
-     *
-     * @return boolean to indicate confidence in the dwhether or not the digest of the repaired data can be
-     * reliably be used to infer inconsistency issues between the repaired sets across
-     * replicas.
-     */
-    public boolean isRepairedDataDigestConclusive()
-    {
-        return repairedDataInfo.isConclusive();
-    }
-
-    /**
      * Index (metadata) chosen for this query. Can be null.
      *
      * @return index (metadata) chosen for this query
@@ -323,64 +206,20 @@ public abstract class ReadCommand extends AbstractReadQuery
     public abstract ReadCommand copy();
 
     /**
-     * Returns a copy of this command with acceptsTransient set to true.
-     */
-    public ReadCommand copyAsTransientQuery(Replica replica)
-    {
-        Preconditions.checkArgument(replica.isTransient(),
-                                    "Can't make a transient request on a full replica: " + replica);
-        return copyAsTransientQuery();
-    }
-
-    /**
-     * Returns a copy of this command with acceptsTransient set to true.
-     */
-    public ReadCommand copyAsTransientQuery(Iterable<Replica> replicas)
-    {
-        if (any(replicas, Replica::isFull))
-            throw new IllegalArgumentException("Can't make a transient request on full replicas: " + Iterables.toString(filter(replicas, Replica::isFull)));
-        return copyAsTransientQuery();
-    }
-
-    protected abstract ReadCommand copyAsTransientQuery();
-
-    /**
      * Returns a copy of this command with isDigestQuery set to true.
      */
-    public ReadCommand copyAsDigestQuery(Replica replica)
-    {
-        Preconditions.checkArgument(replica.isFull(),
-                                    "Can't make a digest request on a transient replica " + replica);
-        return copyAsDigestQuery();
-    }
-
-    /**
-     * Returns a copy of this command with isDigestQuery set to true.
-     */
-    public ReadCommand copyAsDigestQuery(Iterable<Replica> replicas)
-    {
-        if (any(replicas, Replica::isTransient))
-            throw new IllegalArgumentException("Can't make a digest request on a transient replica " + Iterables.toString(filter(replicas, Replica::isTransient)));
-
-        return copyAsDigestQuery();
-    }
-
-    protected abstract ReadCommand copyAsDigestQuery();
+    public abstract ReadCommand copyAsDigestQuery();
 
     protected abstract UnfilteredPartitionIterator queryStorage(ColumnFamilyStore cfs, ReadExecutionController executionController);
 
-    protected int oldestUnrepairedTombstone()
-    {
-        return oldestUnrepairedTombstone;
-    }
-
+    protected abstract int oldestUnrepairedTombstone();
 
     @SuppressWarnings("resource")
     public ReadResponse createResponse(UnfilteredPartitionIterator iterator)
     {
         // validate that the sequence of RT markers is correct: open is followed by close, deletion times for both
         // ends equal, and there are no dangling RT bound in any partition.
-        iterator = RTBoundValidator.validate(iterator, Stage.PROCESSED, true);
+        iterator = Transformation.apply(iterator, new RTBoundValidator(true));
 
         return isDigestQuery()
              ? ReadResponse.createDigestResponse(iterator, this)
@@ -453,16 +292,12 @@ public abstract class ReadCommand extends AbstractReadQuery
             Tracing.trace("Executing read on {}.{} using index {}", cfs.metadata.keyspace, cfs.metadata.name, index.getIndexMetadata().name);
         }
 
-        if (isTrackingRepairedStatus())
-            repairedDataInfo = new RepairedDataInfo();
-
         UnfilteredPartitionIterator iterator = (null == searcher) ? queryStorage(cfs, executionController) : searcher.search(executionController);
-        iterator = RTBoundValidator.validate(iterator, Stage.MERGED, false);
 
         try
         {
             iterator = withStateTracking(iterator);
-            iterator = RTBoundValidator.validate(withoutPurgeableTombstones(iterator, cfs), Stage.PURGED, false);
+            iterator = withoutPurgeableTombstones(iterator, cfs);
             iterator = withMetricsRecording(iterator, cfs.metric, startTimeNanos);
 
             // If we've used a 2ndary index, we know the result already satisfy the primary expression used, so
@@ -482,7 +317,9 @@ public abstract class ReadCommand extends AbstractReadQuery
             iterator = limits().filter(iterator, nowInSec(), selectsFullPartition());
 
             // because of the above, we need to append an aritifical end bound if the source iterator was stopped short by a counter.
-            return RTBoundCloser.close(iterator);
+            iterator = Transformation.apply(iterator, new RTBoundCloser());
+
+            return iterator;
         }
         catch (RuntimeException | Error e)
         {
@@ -633,15 +470,14 @@ public abstract class ReadCommand extends AbstractReadQuery
         private boolean maybeAbort()
         {
             /**
-             * TODO: this is not a great way to abort early; why not expressly limit checks to 10ms intervals?
-             * The value returned by approxTime.now() is updated only every
-             * {@link org.apache.cassandra.utils.MonotonicClock.SampledClock.CHECK_INTERVAL_MS}, by default 2 millis. Since MonitorableImpl
-             * relies on approxTime, we don't need to check unless the approximate time has elapsed.
+             * The value returned by ApproximateTime.currentTimeMillis() is updated only every
+             * {@link ApproximateTime.CHECK_INTERVAL_MS}, by default 10 millis. Since MonitorableImpl
+             * relies on ApproximateTime, we don't need to check unless the approximate time has elapsed.
              */
-            if (lastChecked == approxTime.now())
+            if (lastChecked == ApproximateTime.currentTimeMillis())
                 return false;
 
-            lastChecked = approxTime.now();
+            lastChecked = ApproximateTime.currentTimeMillis();
 
             if (isAborted())
             {
@@ -667,14 +503,7 @@ public abstract class ReadCommand extends AbstractReadQuery
     /**
      * Creates a message for this command.
      */
-    public Message<ReadCommand> createMessage(boolean trackRepairedData)
-    {
-        return trackRepairedData
-             ? Message.outWithFlags(verb(), this, MessageFlag.CALL_BACK_ON_FAILURE, MessageFlag.TRACK_REPAIRED_DATA)
-             : Message.outWithFlag (verb(), this, MessageFlag.CALL_BACK_ON_FAILURE);
-    }
-
-    public abstract Verb verb();
+    public abstract MessageOut<ReadCommand> createMessage();
 
     protected abstract void appendCQLWhereClause(StringBuilder sb);
 
@@ -727,253 +556,6 @@ public abstract class ReadCommand extends AbstractReadQuery
         return toCQLString();
     }
 
-    private static UnfilteredPartitionIterator withRepairedDataInfo(final UnfilteredPartitionIterator iterator,
-                                                               final RepairedDataInfo repairedDataInfo)
-    {
-        class WithRepairedDataTracking extends Transformation<UnfilteredRowIterator>
-        {
-            protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
-            {
-                return withRepairedDataInfo(partition, repairedDataInfo);
-            }
-        }
-
-        return Transformation.apply(iterator, new WithRepairedDataTracking());
-    }
-
-    private static UnfilteredRowIterator withRepairedDataInfo(final UnfilteredRowIterator iterator,
-                                                              final RepairedDataInfo repairedDataInfo)
-    {
-        class WithTracking extends Transformation
-        {
-            protected DecoratedKey applyToPartitionKey(DecoratedKey key)
-            {
-                repairedDataInfo.trackPartitionKey(key);
-                return key;
-            }
-
-            protected DeletionTime applyToDeletion(DeletionTime deletionTime)
-            {
-                repairedDataInfo.trackDeletion(deletionTime);
-                return deletionTime;
-            }
-
-            protected RangeTombstoneMarker applyToMarker(RangeTombstoneMarker marker)
-            {
-                repairedDataInfo.trackRangeTombstoneMarker(marker);
-                return marker;
-            }
-
-            protected Row applyToStatic(Row row)
-            {
-                repairedDataInfo.trackRow(row);
-                return row;
-            }
-
-            protected Row applyToRow(Row row)
-            {
-                repairedDataInfo.trackRow(row);
-                return row;
-            }
-        }
-
-        return Transformation.apply(iterator, new WithTracking());
-    }
-
-    private static class RepairedDataInfo
-    {
-        private Hasher hasher;
-        private boolean isConclusive = true;
-
-        ByteBuffer getDigest()
-        {
-            return hasher == null
-                   ? ByteBufferUtil.EMPTY_BYTE_BUFFER
-                   : ByteBuffer.wrap(getHasher().hash().asBytes());
-        }
-
-        boolean isConclusive()
-        {
-            return isConclusive;
-        }
-
-        void markInconclusive()
-        {
-            isConclusive = false;
-        }
-
-        void trackPartitionKey(DecoratedKey key)
-        {
-            HashingUtils.updateBytes(getHasher(), key.getKey().duplicate());
-        }
-
-        void trackDeletion(DeletionTime deletion)
-        {
-            deletion.digest(getHasher());
-        }
-
-        void trackRangeTombstoneMarker(RangeTombstoneMarker marker)
-        {
-            marker.digest(getHasher());
-        }
-
-        void trackRow(Row row)
-        {
-            row.digest(getHasher());
-        }
-
-        private Hasher getHasher()
-        {
-            if (hasher == null)
-                hasher = Hashing.crc32c().newHasher();
-
-            return hasher;
-        }
-    }
-
-    @SuppressWarnings("resource") // resultant iterators are closed by their callers
-    InputCollector<UnfilteredRowIterator> iteratorsForPartition(ColumnFamilyStore.ViewFragment view)
-    {
-        BiFunction<List<UnfilteredRowIterator>, RepairedDataInfo, UnfilteredRowIterator> merge =
-            (unfilteredRowIterators, repairedDataInfo) ->
-                withRepairedDataInfo(UnfilteredRowIterators.merge(unfilteredRowIterators), repairedDataInfo);
-
-        return new InputCollector<>(view, repairedDataInfo, merge, isTrackingRepairedStatus());
-    }
-
-    @SuppressWarnings("resource") // resultant iterators are closed by their callers
-    InputCollector<UnfilteredPartitionIterator> iteratorsForRange(ColumnFamilyStore.ViewFragment view)
-    {
-        BiFunction<List<UnfilteredPartitionIterator>, RepairedDataInfo, UnfilteredPartitionIterator> merge =
-            (unfilteredPartitionIterators, repairedDataInfo) ->
-                withRepairedDataInfo(UnfilteredPartitionIterators.merge(unfilteredPartitionIterators, UnfilteredPartitionIterators.MergeListener.NOOP), repairedDataInfo);
-
-        return new InputCollector<>(view, repairedDataInfo, merge, isTrackingRepairedStatus());
-    }
-
-    /**
-     * Handles the collation of unfiltered row or partition iterators that comprise the
-     * input for a query. Separates them according to repaired status and of repaired
-     * status is being tracked, handles the merge and wrapping in a digest generator of
-     * the repaired iterators.
-     *
-     * Intentionally not AutoCloseable so we don't mistakenly use this in ARM blocks
-     * as this prematurely closes the underlying iterators
-     */
-    static class InputCollector<T extends AutoCloseable>
-    {
-        final RepairedDataInfo repairedDataInfo;
-        private final boolean isTrackingRepairedStatus;
-        Set<SSTableReader> repairedSSTables;
-        BiFunction<List<T>, RepairedDataInfo, T> repairedMerger;
-        List<T> repairedIters;
-        List<T> unrepairedIters;
-
-        InputCollector(ColumnFamilyStore.ViewFragment view,
-                       RepairedDataInfo repairedDataInfo,
-                       BiFunction<List<T>, RepairedDataInfo, T> repairedMerger,
-                       boolean isTrackingRepairedStatus)
-        {
-            this.repairedDataInfo = repairedDataInfo;
-            this.isTrackingRepairedStatus = isTrackingRepairedStatus;
-            if (isTrackingRepairedStatus)
-            {
-                for (SSTableReader sstable : view.sstables)
-                {
-                    if (considerRepairedForTracking(sstable))
-                    {
-                        if (repairedSSTables == null)
-                            repairedSSTables = Sets.newHashSetWithExpectedSize(view.sstables.size());
-                        repairedSSTables.add(sstable);
-                    }
-                }
-            }
-            if (repairedSSTables == null)
-            {
-                repairedIters = Collections.emptyList();
-                unrepairedIters = new ArrayList<>(view.sstables.size());
-            }
-            else
-            {
-                repairedIters = new ArrayList<>(repairedSSTables.size());
-                // when we're done collating, we'll merge the repaired iters and add the
-                // result to the unrepaired list, so size that list accordingly
-                unrepairedIters = new ArrayList<>((view.sstables.size() - repairedSSTables.size()) + Iterables.size(view.memtables) + 1);
-            }
-            this.repairedMerger = repairedMerger;
-        }
-
-        void addMemtableIterator(T iter)
-        {
-            unrepairedIters.add(iter);
-        }
-
-        void addSSTableIterator(SSTableReader sstable, T iter)
-        {
-            if (repairedSSTables != null && repairedSSTables.contains(sstable))
-                repairedIters.add(iter);
-            else
-                unrepairedIters.add(iter);
-        }
-
-        List<T> finalizeIterators()
-        {
-            if (repairedIters.isEmpty())
-                return unrepairedIters;
-
-            // merge the repaired data before returning, wrapping in a digest generator
-            unrepairedIters.add(repairedMerger.apply(repairedIters, repairedDataInfo));
-            return unrepairedIters;
-        }
-
-        boolean isEmpty()
-        {
-            return repairedIters.isEmpty() && unrepairedIters.isEmpty();
-        }
-
-        // For tracking purposes we consider data repaired if the sstable is either:
-        // * marked repaired
-        // * marked pending, but the local session has been committed. This reduces the window
-        //   whereby the tracking is affected by compaction backlog causing repaired sstables to
-        //   remain in the pending state
-        // If an sstable is involved in a pending repair which is not yet committed, we mark the
-        // repaired data info inconclusive, as the same data on other replicas may be in a
-        // slightly different state.
-        private boolean considerRepairedForTracking(SSTableReader sstable)
-        {
-            if (!isTrackingRepairedStatus)
-                return false;
-
-            UUID pendingRepair = sstable.getPendingRepair();
-            if (pendingRepair != ActiveRepairService.NO_PENDING_REPAIR)
-            {
-                if (ActiveRepairService.instance.consistent.local.isSessionFinalized(pendingRepair))
-                    return true;
-
-                // In the edge case where compaction is backed up long enough for the session to
-                // timeout and be purged by LocalSessions::cleanup, consider the sstable unrepaired
-                // as it will be marked unrepaired when compaction catches up
-                if (!ActiveRepairService.instance.consistent.local.sessionExists(pendingRepair))
-                    return false;
-
-                repairedDataInfo.markInconclusive();
-            }
-
-            return sstable.isRepaired();
-        }
-
-        void markInconclusive()
-        {
-            repairedDataInfo.markInconclusive();
-        }
-
-        public void close() throws Exception
-        {
-            FBUtilities.closeAll(unrepairedIters);
-            FBUtilities.closeAll(repairedIters);
-        }
-    }
-
     private static class Serializer implements IVersionedSerializer<ReadCommand>
     {
         private static int digestFlag(boolean isDigest)
@@ -984,16 +566,6 @@ public abstract class ReadCommand extends AbstractReadQuery
         private static boolean isDigest(int flags)
         {
             return (flags & 0x01) != 0;
-        }
-
-        private static boolean acceptsTransient(int flags)
-        {
-            return (flags & 0x08) != 0;
-        }
-
-        private static int acceptsTransientFlag(boolean acceptsTransient)
-        {
-            return acceptsTransient ? 0x08 : 0;
         }
 
         // We don't set this flag anymore, but still look if we receive a
@@ -1019,11 +591,7 @@ public abstract class ReadCommand extends AbstractReadQuery
         public void serialize(ReadCommand command, DataOutputPlus out, int version) throws IOException
         {
             out.writeByte(command.kind.ordinal());
-            out.writeByte(
-                    digestFlag(command.isDigestQuery())
-                    | indexFlag(null != command.indexMetadata())
-                    | acceptsTransientFlag(command.acceptsTransient())
-            );
+            out.writeByte(digestFlag(command.isDigestQuery()) | indexFlag(null != command.indexMetadata()));
             if (command.isDigestQuery())
                 out.writeUnsignedVInt(command.digestVersion());
             command.metadata().id.serialize(out);
@@ -1042,7 +610,6 @@ public abstract class ReadCommand extends AbstractReadQuery
             Kind kind = Kind.values()[in.readByte()];
             int flags = in.readByte();
             boolean isDigest = isDigest(flags);
-            boolean acceptsTransient = acceptsTransient(flags);
             // Shouldn't happen or it's a user error (see comment above) but
             // better complain loudly than doing the wrong thing.
             if (isForThrift(flags))
@@ -1060,7 +627,7 @@ public abstract class ReadCommand extends AbstractReadQuery
             DataLimits limits = DataLimits.serializer.deserialize(in, version,  metadata.comparator);
             IndexMetadata index = hasIndex ? deserializeIndexMetadata(in, version, metadata) : null;
 
-            return kind.selectionDeserializer.deserialize(in, version, isDigest, digestVersion, acceptsTransient, metadata, nowInSec, columnFilter, rowFilter, limits, index);
+            return kind.selectionDeserializer.deserialize(in, version, isDigest, digestVersion, metadata, nowInSec, columnFilter, rowFilter, limits, index);
         }
 
         private IndexMetadata deserializeIndexMetadata(DataInputPlus in, int version, TableMetadata metadata) throws IOException

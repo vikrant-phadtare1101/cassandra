@@ -56,7 +56,7 @@ import static org.apache.cassandra.utils.concurrent.Refs.selfRefs;
  * action to occur at the beginning of the commit phase, but also *requires* that the prepareToCommit() phase only take
  * actions that can be rolled back.
  */
-public class LifecycleTransaction extends Transactional.AbstractTransactional implements ILifecycleTransaction
+public class LifecycleTransaction extends Transactional.AbstractTransactional
 {
     private static final Logger logger = LoggerFactory.getLogger(LifecycleTransaction.class);
 
@@ -177,7 +177,6 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
         return log;
     }
 
-    @Override //LifecycleNewTracker
     public OperationType opType()
     {
         return log.type();
@@ -281,6 +280,11 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
     public boolean isOffline()
     {
         return tracker.isDummy();
+    }
+
+    public void permitRedundantTransitions()
+    {
+        super.permitRedundantTransitions();
     }
 
     /**
@@ -520,15 +524,11 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
         return getFirst(originals, null);
     }
 
-    // LifecycleNewTracker
-
-    @Override
     public void trackNew(SSTable table)
     {
         log.trackNew(table);
     }
 
-    @Override
     public void untrackNew(SSTable table)
     {
         log.untrackNew(table);

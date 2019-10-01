@@ -261,11 +261,8 @@ public class BatchStatement implements CQLStatement
         return statements;
     }
 
-    private List<? extends IMutation> getMutations(BatchQueryOptions options,
-                                                         boolean local,
-                                                         long batchTimestamp,
-                                                         int nowInSeconds,
-                                                         long queryStartNanoTime)
+    private Collection<? extends IMutation> getMutations(BatchQueryOptions options, boolean local, long now, long queryStartNanoTime)
+    throws RequestExecutionException, RequestValidationException
     {
         Set<String> tablesWithZeroGcGs = null;
         BatchUpdatesCollector collector = new BatchUpdatesCollector(updatedColumns, updatedRows());
@@ -279,8 +276,8 @@ public class BatchStatement implements CQLStatement
                 tablesWithZeroGcGs.add(statement.metadata.toString());
             }
             QueryOptions statementOptions = options.forStatement(i);
-            long timestamp = attrs.getTimestamp(batchTimestamp, statementOptions);
-            statement.addUpdates(collector, statementOptions, local, timestamp, nowInSeconds, queryStartNanoTime);
+            long timestamp = attrs.getTimestamp(now, statementOptions);
+            statement.addUpdates(collector, statementOptions, local, timestamp, queryStartNanoTime);
         }
 
         if (tablesWithZeroGcGs != null)
@@ -375,16 +372,19 @@ public class BatchStatement implements CQLStatement
     }
 
 
-    public ResultMessage execute(QueryState queryState, QueryOptions options, long queryStartNanoTime)
+    public ResultMessage execute(QueryState queryState, QueryOptions options, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
     {
         return execute(queryState, BatchQueryOptions.withoutPerStatementVariables(options), queryStartNanoTime);
     }
 
-    public ResultMessage execute(QueryState queryState, BatchQueryOptions options, long queryStartNanoTime)
+    public ResultMessage execute(QueryState queryState, BatchQueryOptions options, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
     {
-        long timestamp = options.getTimestamp(queryState);
-        int nowInSeconds = options.getNowInSeconds(queryState);
+        return execute(queryState, options, false, options.getTimestamp(queryState), queryStartNanoTime);
+    }
 
+    private ResultMessage execute(QueryState queryState, BatchQueryOptions options, boolean local, long now, long queryStartNanoTime)
+    throws RequestExecutionException, RequestValidationException
+    {
         if (options.getConsistency() == null)
             throw new InvalidRequestException("Invalid empty consistency level");
         if (options.getSerialConsistency() == null)
@@ -396,12 +396,12 @@ public class BatchStatement implements CQLStatement
         if (updatesVirtualTables)
             executeInternalWithoutCondition(queryState, options, queryStartNanoTime);
         else    
-            executeWithoutConditions(getMutations(options, false, timestamp, nowInSeconds, queryStartNanoTime), options.getConsistency(), queryStartNanoTime);
+            executeWithoutConditions(getMutations(options, local, now, queryStartNanoTime), options.getConsistency(), queryStartNanoTime);
 
         return new ResultMessage.Void();
     }
 
-    private void executeWithoutConditions(List<? extends IMutation> mutations, ConsistencyLevel cl, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
+    private void executeWithoutConditions(Collection<? extends IMutation> mutations, ConsistencyLevel cl, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
     {
         if (mutations.isEmpty())
             return;
@@ -427,6 +427,7 @@ public class BatchStatement implements CQLStatement
     }
 
     private ResultMessage executeWithConditions(BatchQueryOptions options, QueryState state, long queryStartNanoTime)
+    throws RequestExecutionException, RequestValidationException
     {
         Pair<CQL3CasRequest, Set<ColumnMetadata>> p = makeCasRequest(options, state);
         CQL3CasRequest casRequest = p.left;
@@ -442,23 +443,21 @@ public class BatchStatement implements CQLStatement
                                                    options.getSerialConsistency(),
                                                    options.getConsistency(),
                                                    state.getClientState(),
-                                                   options.getNowInSeconds(state),
                                                    queryStartNanoTime))
         {
+
             return new ResultMessage.Rows(ModificationStatement.buildCasResultSet(ksName,
                                                                                   tableName,
                                                                                   result,
                                                                                   columnsWithConditions,
                                                                                   true,
-                                                                                  state,
                                                                                   options.forStatement(0)));
         }
     }
 
     private Pair<CQL3CasRequest,Set<ColumnMetadata>> makeCasRequest(BatchQueryOptions options, QueryState state)
     {
-        long batchTimestamp = options.getTimestamp(state);
-        int nowInSeconds = options.getNowInSeconds(state);
+        long now = state.getTimestamp();
         DecoratedKey key = null;
         CQL3CasRequest casRequest = null;
         Set<ColumnMetadata> columnsWithConditions = new LinkedHashSet<>();
@@ -467,14 +466,14 @@ public class BatchStatement implements CQLStatement
         {
             ModificationStatement statement = statements.get(i);
             QueryOptions statementOptions = options.forStatement(i);
-            long timestamp = attrs.getTimestamp(batchTimestamp, statementOptions);
+            long timestamp = attrs.getTimestamp(now, statementOptions);
             List<ByteBuffer> pks = statement.buildPartitionKeyNames(statementOptions);
             if (statement.getRestrictions().keyIsInRelation())
                 throw new IllegalArgumentException("Batch with conditions cannot span multiple partitions (you cannot use IN on the partition key)");
             if (key == null)
             {
                 key = statement.metadata().partitioner.decorateKey(pks.get(0));
-                casRequest = new CQL3CasRequest(statement.metadata(), key, conditionColumns, updatesRegularRows, updatesStaticRow);
+                casRequest = new CQL3CasRequest(statement.metadata(), key, true, conditionColumns, updatesRegularRows, updatesStaticRow);
             }
             else if (!key.getKey().equals(pks.get(0)))
             {
@@ -497,7 +496,7 @@ public class BatchStatement implements CQLStatement
 
                 for (Slice slice : slices)
                 {
-                    casRequest.addRangeDeletion(slice, statement, statementOptions, timestamp, nowInSeconds);
+                    casRequest.addRangeDeletion(slice, statement, statementOptions, timestamp);
                 }
 
             }
@@ -513,7 +512,7 @@ public class BatchStatement implements CQLStatement
                     else if (columnsWithConditions != null)
                         Iterables.addAll(columnsWithConditions, statement.getColumnsWithConditions());
                 }
-                casRequest.addRowUpdate(clustering, statement, statementOptions, timestamp, nowInSeconds);
+                casRequest.addRowUpdate(clustering, statement, statementOptions, timestamp);
             }
         }
 
@@ -536,17 +535,14 @@ public class BatchStatement implements CQLStatement
         return new ResultMessage.Void();
     }
 
-    private ResultMessage executeInternalWithoutCondition(QueryState queryState, BatchQueryOptions batchOptions, long queryStartNanoTime)
+    private ResultMessage executeInternalWithoutCondition(QueryState queryState, BatchQueryOptions batchOptions, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException
     {
-        long timestamp = batchOptions.getTimestamp(queryState);
-        int nowInSeconds = batchOptions.getNowInSeconds(queryState);
-
-        for (IMutation mutation : getMutations(batchOptions, true, timestamp, nowInSeconds, queryStartNanoTime))
+        for (IMutation mutation : getMutations(batchOptions, true, queryState.getTimestamp(), queryStartNanoTime))
             mutation.apply();
         return null;
     }
 
-    private ResultMessage executeInternalWithConditions(BatchQueryOptions options, QueryState state)
+    private ResultMessage executeInternalWithConditions(BatchQueryOptions options, QueryState state) throws RequestExecutionException, RequestValidationException
     {
         Pair<CQL3CasRequest, Set<ColumnMetadata>> p = makeCasRequest(options, state);
         CQL3CasRequest request = p.left;
@@ -555,20 +551,9 @@ public class BatchStatement implements CQLStatement
         String ksName = request.metadata.keyspace;
         String tableName = request.metadata.name;
 
-        long timestamp = options.getTimestamp(state);
-        int nowInSeconds = options.getNowInSeconds(state);
-
-        try (RowIterator result = ModificationStatement.casInternal(request, timestamp, nowInSeconds))
+        try (RowIterator result = ModificationStatement.casInternal(request, state))
         {
-            ResultSet resultSet =
-                ModificationStatement.buildCasResultSet(ksName,
-                                                        tableName,
-                                                        result,
-                                                        columnsWithConditions,
-                                                        true,
-                                                        state,
-                                                        options.forStatement(0));
-            return new ResultMessage.Rows(resultSet);
+            return new ResultMessage.Rows(ModificationStatement.buildCasResultSet(ksName, tableName, result, columnsWithConditions, true, options.forStatement(0)));
         }
     }
 
