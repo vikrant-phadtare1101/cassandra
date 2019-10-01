@@ -30,7 +30,4 @@ public interface ActiveRepairServiceMBean
 
     public void setRepairSessionSpaceInMegabytes(int sizeInMegabytes);
     public int getRepairSessionSpaceInMegabytes();
-
-    public boolean getUseOffheapMerkleTrees();
-    public void setUseOffheapMerkleTrees(boolean value);
 }

@@ -265,7 +265,7 @@ public class BulkLoader
 
         return JdkSSLOptions.builder()
                             .withSSLContext(sslContext)
-                            .withCipherSuites(clientEncryptionOptions.cipher_suites.toArray(new String[0]))
+                            .withCipherSuites(clientEncryptionOptions.cipher_suites)
                             .build();
     }
 
