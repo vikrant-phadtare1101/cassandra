@@ -23,19 +23,17 @@ import io.airlift.airline.Arguments;
 import io.airlift.airline.Command;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
 
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 import org.apache.cassandra.utils.EstimatedHistogram;
-
 import org.apache.commons.lang3.ArrayUtils;
 
 @Command(name = "tablehistograms", description = "Print statistic histograms for a given table")
@@ -47,46 +45,40 @@ public class TableHistograms extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        Multimap<String, String> tablesList = HashMultimap.create();
-
-        // a <keyspace, set<table>> mapping for verification or as reference if none provided
-        Multimap<String, String> allTables = HashMultimap.create();
-        Iterator<Map.Entry<String, ColumnFamilyStoreMBean>> tableMBeans = probe.getColumnFamilyStoreMBeanProxies();
-        while (tableMBeans.hasNext())
-        {
-            Map.Entry<String, ColumnFamilyStoreMBean> entry = tableMBeans.next();
-            allTables.put(entry.getKey(), entry.getValue().getTableName());
-        }
-
+        Map<String, List<String>> tablesList = new HashMap<>();
         if (args.size() == 2)
         {
-            tablesList.put(args.get(0), args.get(1));
+            tablesList.put(args.get(0), new ArrayList<String>(Arrays.asList(args.get(1))));
         }
         else if (args.size() == 1)
         {
             String[] input = args.get(0).split("\\.");
             checkArgument(input.length == 2, "tablehistograms requires keyspace and table name arguments");
-            tablesList.put(input[0], input[1]);
+            tablesList.put(input[0], new ArrayList<String>(Arrays.asList(input[1])));
         }
         else
         {
-            // use all tables
-            tablesList = allTables;
-        }
-
-        // verify that all tables to list exist
-        for (String keyspace : tablesList.keys())
-        {
-            for (String table : tablesList.get(keyspace))
+            // get a list of table stores
+            Iterator<Map.Entry<String, ColumnFamilyStoreMBean>> tableMBeans = probe.getColumnFamilyStoreMBeanProxies();
+            while (tableMBeans.hasNext())
             {
-                if (!allTables.containsEntry(keyspace, table))
-                    throw new IllegalArgumentException("Unknown table " + keyspace + '.' + table);
+                Map.Entry<String, ColumnFamilyStoreMBean> entry = tableMBeans.next();
+                String keyspaceName = entry.getKey();
+                ColumnFamilyStoreMBean tableProxy = entry.getValue();
+                if (!tablesList.containsKey(keyspaceName))
+                {
+                    tablesList.put(keyspaceName, new ArrayList<String>());
+                }
+                tablesList.get(keyspaceName).add(tableProxy.getTableName());
             }
         }
 
-        for (String keyspace : tablesList.keys())
+        Iterator<Map.Entry<String, List<String>>> iter = tablesList.entrySet().iterator();
+        while(iter.hasNext())
         {
-            for (String table : tablesList.get(keyspace))
+            Map.Entry<String, List<String>> entry = iter.next();
+            String keyspace = entry.getKey();
+            for (String table : entry.getValue())
             {
                 // calculate percentile of row size and column count
                 long[] estimatedPartitionSize = (long[]) probe.getColumnFamilyMetric(keyspace, table, "EstimatedPartitionSizeHistogram");

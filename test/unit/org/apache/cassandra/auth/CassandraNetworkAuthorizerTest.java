@@ -51,7 +51,6 @@ import org.apache.cassandra.transport.messages.ResultMessage;
 import static org.apache.cassandra.auth.AuthKeyspace.NETWORK_PERMISSIONS;
 import static org.apache.cassandra.auth.RoleTestUtils.LocalCassandraRoleManager;
 import static org.apache.cassandra.schema.SchemaConstants.AUTH_KEYSPACE_NAME;
-import static org.apache.cassandra.auth.RoleTestUtils.getReadCount;
 
 public class CassandraNetworkAuthorizerTest
 {
@@ -106,8 +105,6 @@ public class CassandraNetworkAuthorizerTest
                                new LocalCassandraAuthorizer(),
                                new LocalCassandraNetworkAuthorizer());
         setupSuperUser();
-        // not strictly necessary to init the cache here, but better to be explicit
-        Roles.initRolesCache(DatabaseDescriptor.getRoleManager(), () -> true);
     }
 
     @Before
@@ -230,8 +227,6 @@ public class CassandraNetworkAuthorizerTest
         Assert.assertEquals(DCPermissions.subset("dc1"), dcPerms(username));
         assertDcPermRow(username, "dc1");
 
-        // clear the roles cache to lose the (non-)superuser status for the user
-        Roles.clearCache();
         auth("ALTER ROLE %s WITH superuser = true", username);
         Assert.assertEquals(DCPermissions.all(), dcPerms(username));
     }
@@ -242,17 +237,5 @@ public class CassandraNetworkAuthorizerTest
         String username = createName();
         auth("CREATE ROLE %s", username);
         Assert.assertEquals(DCPermissions.none(), dcPerms(username));
-    }
-
-    @Test
-    public void getLoginPrivilegeFromRolesCache() throws Exception
-    {
-        String username = createName();
-        auth("CREATE ROLE %s", username);
-        long readCount = getReadCount();
-        dcPerms(username);
-        Assert.assertEquals(++readCount, getReadCount());
-        dcPerms(username);
-        Assert.assertEquals(readCount, getReadCount());
     }
 }
