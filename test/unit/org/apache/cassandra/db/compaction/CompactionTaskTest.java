@@ -86,7 +86,7 @@ public class CompactionTaskTest
         cfs.getCompactionStrategyManager().pause();
         try
         {
-            task.execute(CompactionManager.instance.active);
+            task.execute(CompactionManager.instance.getMetrics());
             Assert.fail("Expected CompactionInterruptedException");
         }
         catch (CompactionInterruptedException e)
