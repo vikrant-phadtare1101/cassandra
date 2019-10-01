@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.io.sstable.format.big;
 
-import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
@@ -27,11 +26,11 @@ import java.util.Map;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.compress.BufferType;
@@ -43,7 +42,7 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.SequentialWriter;
 import org.apache.cassandra.io.util.SequentialWriterOption;
-import org.apache.cassandra.net.AsyncStreamingInputPlus;
+import org.apache.cassandra.net.async.RebufferingByteBufDataInputPlus;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadataRef;
 
@@ -77,12 +76,12 @@ public class BigTableZeroCopyWriter extends SSTable implements SSTableMultiWrite
 
     public BigTableZeroCopyWriter(Descriptor descriptor,
                                   TableMetadataRef metadata,
-                                  LifecycleNewTracker lifecycleNewTracker,
+                                  LifecycleTransaction txn,
                                   final Collection<Component> components)
     {
         super(descriptor, ImmutableSet.copyOf(components), metadata, DatabaseDescriptor.getDiskOptimizationStrategy());
 
-        lifecycleNewTracker.trackNew(this);
+        txn.trackNew(this);
         this.metadata = metadata;
         this.componentWriters = new EnumMap<>(Component.Type.class);
 
@@ -202,25 +201,22 @@ public class BigTableZeroCopyWriter extends SSTable implements SSTableMultiWrite
     {
         logger.info("Writing component {} to {} length {}", type, componentWriters.get(type).getPath(), prettyPrintMemory(size));
 
-        if (in instanceof AsyncStreamingInputPlus)
-            write((AsyncStreamingInputPlus) in, size, componentWriters.get(type));
+        if (in instanceof RebufferingByteBufDataInputPlus)
+            write((RebufferingByteBufDataInputPlus) in, size, componentWriters.get(type));
         else
             write(in, size, componentWriters.get(type));
     }
 
-    private void write(AsyncStreamingInputPlus in, long size, SequentialWriter writer)
+    private void write(RebufferingByteBufDataInputPlus in, long size, SequentialWriter writer)
     {
         logger.info("Block Writing component to {} length {}", writer.getPath(), prettyPrintMemory(size));
 
         try
         {
-            in.consume(writer::writeDirectlyToChannel, size);
-            writer.sync();
-        }
-        // FIXME: handle ACIP exceptions properly
-        catch (EOFException | AsyncStreamingInputPlus.InputTimeoutException e)
-        {
-            in.close();
+            long bytesWritten = in.consumeUntil(writer, size);
+
+            if (bytesWritten != size)
+                throw new IOException(format("Failed to read correct number of bytes from channel %s", writer));
         }
         catch (IOException e)
         {

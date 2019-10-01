@@ -38,14 +38,12 @@ import org.apache.cassandra.dht.Token;
  */
 public class SimpleStrategy extends AbstractReplicationStrategy
 {
-    private static final String REPLICATION_FACTOR = "replication_factor";
     private final ReplicationFactor rf;
 
     public SimpleStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions)
     {
         super(keyspaceName, tokenMetadata, snitch, configOptions);
-        validateOptionsInternal(configOptions);
-        this.rf = ReplicationFactor.fromString(this.configOptions.get(REPLICATION_FACTOR));
+        this.rf = ReplicationFactor.fromString(this.configOptions.get("replication_factor"));
     }
 
     public EndpointsForRange calculateNaturalReplicas(Token token, TokenMetadata metadata)
@@ -70,7 +68,10 @@ public class SimpleStrategy extends AbstractReplicationStrategy
                 replicas.add(new Replica(ep, replicaRange, replicas.size() < rf.fullReplicas));
         }
 
-        return replicas.build();
+        // group endpoints by DC, so that we can cheaply filter them to a given DC
+        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
+        return replicas.build()
+                       .sorted(Comparator.comparing(r -> snitch.getDatacenter(r.endpoint())));
     }
 
     public ReplicationFactor getReplicationFactor()
@@ -78,20 +79,16 @@ public class SimpleStrategy extends AbstractReplicationStrategy
         return rf;
     }
 
-    private final static void validateOptionsInternal(Map<String, String> configOptions) throws ConfigurationException
-    {
-        if (configOptions.get(REPLICATION_FACTOR) == null)
-            throw new ConfigurationException("SimpleStrategy requires a replication_factor strategy option.");
-    }
-
     public void validateOptions() throws ConfigurationException
     {
-        validateOptionsInternal(configOptions);
-        validateReplicationFactor(configOptions.get(REPLICATION_FACTOR));
+        String rf = configOptions.get("replication_factor");
+        if (rf == null)
+            throw new ConfigurationException("SimpleStrategy requires a replication_factor strategy option.");
+        validateReplicationFactor(rf);
     }
 
     public Collection<String> recognizedOptions()
     {
-        return Collections.singleton(REPLICATION_FACTOR);
+        return Collections.<String>singleton("replication_factor");
     }
 }

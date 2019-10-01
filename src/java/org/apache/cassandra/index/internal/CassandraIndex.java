@@ -270,7 +270,7 @@ public abstract class CassandraIndex implements Index
 
     public long getEstimatedResultRows()
     {
-        return indexCfs.getMeanRowCount();
+        return indexCfs.getMeanColumns();
     }
 
     /**
@@ -660,8 +660,8 @@ public abstract class CassandraIndex implements Index
     {
         // interrupt in-progress compactions
         Collection<ColumnFamilyStore> cfss = Collections.singleton(indexCfs);
-        CompactionManager.instance.interruptCompactionForCFs(cfss, (sstable) -> true, true);
-        CompactionManager.instance.waitForCessation(cfss, (sstable) -> true);
+        CompactionManager.instance.interruptCompactionForCFs(cfss, true);
+        CompactionManager.instance.waitForCessation(cfss);
         Keyspace.writeOrder.awaitNewBarrier();
         indexCfs.forceBlockingFlush();
         indexCfs.readOrdering.awaitNewBarrier();
@@ -709,8 +709,7 @@ public abstract class CassandraIndex implements Index
 
             SecondaryIndexBuilder builder = new CollatedViewIndexBuilder(baseCfs,
                                                                          Collections.singleton(this),
-                                                                         new ReducingKeyIterator(sstables),
-                                                                         ImmutableSet.copyOf(sstables));
+                                                                         new ReducingKeyIterator(sstables));
             Future<?> future = CompactionManager.instance.submitIndexBuild(builder);
             FBUtilities.waitOnFuture(future);
             indexCfs.forceBlockingFlush();
