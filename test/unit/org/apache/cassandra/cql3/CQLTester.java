@@ -52,7 +52,6 @@ import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.metrics.ClientMetrics;
 import org.apache.cassandra.schema.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.functions.FunctionName;
@@ -405,7 +404,6 @@ public abstract class CQLTester
         SchemaLoader.startGossiper();
 
         server = new Server.Builder().withHost(nativeAddr).withPort(nativePort).build();
-        ClientMetrics.instance.init(Collections.singleton(server));
         server.start();
 
         for (ProtocolVersion version : PROTOCOL_VERSIONS)
@@ -893,14 +891,9 @@ public abstract class CQLTester
         return sessions.get(protocolVersion);
     }
 
-    protected SimpleClient newSimpleClient(ProtocolVersion version, boolean compression, boolean checksums, boolean isOverloadedException) throws IOException
-    {
-        return new SimpleClient(nativeAddr.getHostAddress(), nativePort, version, version.isBeta(), new EncryptionOptions()).connect(compression, checksums, isOverloadedException);
-    }
-
     protected SimpleClient newSimpleClient(ProtocolVersion version, boolean compression, boolean checksums) throws IOException
     {
-        return newSimpleClient(version, compression, checksums, false);
+        return new SimpleClient(nativeAddr.getHostAddress(), nativePort, version, version.isBeta(), new EncryptionOptions()).connect(compression, checksums);
     }
 
     protected String formatQuery(String query)
