@@ -24,7 +24,6 @@ import java.util.List;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 
-import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.service.StorageService;
 
@@ -103,7 +102,7 @@ public class DiskBoundaries
     {
         if (positions == null)
         {
-            return getBoundariesFromSSTableDirectory(sstable.descriptor);
+            return getBoundariesFromSSTableDirectory(sstable);
         }
 
         int pos = Collections.binarySearch(positions, sstable.first);
@@ -114,12 +113,12 @@ public class DiskBoundaries
     /**
      * Try to figure out location based on sstable directory
      */
-    public int getBoundariesFromSSTableDirectory(Descriptor descriptor)
+    private int getBoundariesFromSSTableDirectory(SSTableReader sstable)
     {
         for (int i = 0; i < directories.size(); i++)
         {
             Directories.DataDirectory directory = directories.get(i);
-            if (descriptor.directory.getAbsolutePath().startsWith(directory.location.getAbsolutePath()))
+            if (sstable.descriptor.directory.getAbsolutePath().startsWith(directory.location.getAbsolutePath()))
                 return i;
         }
         return 0;
@@ -128,20 +127,5 @@ public class DiskBoundaries
     public Directories.DataDirectory getCorrectDiskForSSTable(SSTableReader sstable)
     {
         return directories.get(getDiskIndex(sstable));
-    }
-
-    public Directories.DataDirectory getCorrectDiskForKey(DecoratedKey key)
-    {
-        if (positions == null)
-            return null;
-
-        return directories.get(getDiskIndex(key));
-    }
-
-    private int getDiskIndex(DecoratedKey key)
-    {
-        int pos = Collections.binarySearch(positions, key);
-        assert pos < 0;
-        return -pos - 1;
     }
 }

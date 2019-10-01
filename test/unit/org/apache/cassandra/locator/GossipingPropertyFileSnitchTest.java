@@ -18,8 +18,9 @@
 
 package org.apache.cassandra.locator;
 
-import java.net.UnknownHostException;
+import java.net.InetAddress;
 
+import com.google.common.net.InetAddresses;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -44,15 +45,7 @@ public class GossipingPropertyFileSnitchTest
                                      final String endpointString, final String expectedDatacenter,
                                      final String expectedRack)
     {
-        final InetAddressAndPort endpoint;
-        try
-        {
-            endpoint = InetAddressAndPort.getByName(endpointString);
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException(e);
-        }
+        final InetAddress endpoint = InetAddresses.forString(endpointString);
         assertEquals(expectedDatacenter, snitch.getDatacenter(endpoint));
         assertEquals(expectedRack, snitch.getRack(endpoint));
     }
@@ -61,6 +54,6 @@ public class GossipingPropertyFileSnitchTest
     public void testLoadConfig() throws Exception
     {
         final GossipingPropertyFileSnitch snitch = new GossipingPropertyFileSnitch();
-        checkEndpoint(snitch, FBUtilities.getBroadcastAddressAndPort().toString(), "DC1", "RAC1");
+        checkEndpoint(snitch, FBUtilities.getBroadcastAddress().getHostAddress(), "DC1", "RAC1");
     }
 }

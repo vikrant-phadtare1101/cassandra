@@ -35,6 +35,7 @@ import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.util.*;
 import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.utils.ChecksumType;
 import org.apache.cassandra.utils.SyncUtil;
 
 import static org.junit.Assert.assertEquals;
@@ -54,46 +55,30 @@ public class CompressedRandomAccessReaderTest
     public void testResetAndTruncate() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(FileUtils.createTempFile("normal", "1"), false, false, 10, 0);
-        testResetAndTruncate(FileUtils.createTempFile("normal", "2"), false, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
+        testResetAndTruncate(File.createTempFile("normal", "1"), false, false, 10);
+        testResetAndTruncate(File.createTempFile("normal", "2"), false, false, CompressionParams.DEFAULT_CHUNK_LENGTH);
     }
 
     @Test
     public void testResetAndTruncateCompressed() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(FileUtils.createTempFile("compressed", "1"), true, false, 10, 0);
-        testResetAndTruncate(FileUtils.createTempFile("compressed", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
+        testResetAndTruncate(File.createTempFile("compressed", "1"), true, false, 10);
+        testResetAndTruncate(File.createTempFile("compressed", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH);
     }
 
     @Test
     public void testResetAndTruncateCompressedMmap() throws IOException
     {
         // test reset in current buffer or previous one
-        testResetAndTruncate(FileUtils.createTempFile("compressed_mmap", "1"), true, true, 10, 0);
-        testResetAndTruncate(FileUtils.createTempFile("compressed_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH, 0);
-    }
-
-    @Test
-    public void testResetAndTruncateCompressedUncompressedChunks() throws IOException
-    {
-        // test reset in current buffer or previous one
-        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks", "1"), true, false, 10, 3);
-        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks", "2"), true, false, CompressionParams.DEFAULT_CHUNK_LENGTH, 3);
-    }
-
-    @Test
-    public void testResetAndTruncateCompressedUncompressedChunksMmap() throws IOException
-    {
-        // test reset in current buffer or previous one
-        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks_mmap", "1"), true, true, 10, 3);
-        testResetAndTruncate(FileUtils.createTempFile("compressed_uchunks_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH, 3);
+        testResetAndTruncate(File.createTempFile("compressed_mmap", "1"), true, true, 10);
+        testResetAndTruncate(File.createTempFile("compressed_mmap", "2"), true, true, CompressionParams.DEFAULT_CHUNK_LENGTH);
     }
 
     @Test
     public void test6791() throws IOException, ConfigurationException
     {
-        File f = FileUtils.createTempFile("compressed6791_", "3");
+        File f = File.createTempFile("compressed6791_", "3");
         String filename = f.getAbsolutePath();
         MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
         try(CompressedSequentialWriter writer = new CompressedSequentialWriter(f, filename + ".metadata",
@@ -118,7 +103,9 @@ public class CompressedRandomAccessReaderTest
         }
 
         try (FileHandle.Builder builder = new FileHandle.Builder(filename)
-                                                              .withCompressionMetadata(new CompressionMetadata(filename + ".metadata", f.length(), true));
+                                                              .withCompressionMetadata(new CompressionMetadata(filename + ".metadata",
+                                                                                                               f.length(),
+                                                                                                               ChecksumType.CRC32));
              FileHandle fh = builder.complete();
              RandomAccessReader reader = fh.createReader())
         {
@@ -136,7 +123,7 @@ public class CompressedRandomAccessReaderTest
         }
     }
 
-    private static void testResetAndTruncate(File f, boolean compressed, boolean usemmap, int junkSize, double minCompressRatio) throws IOException
+    private static void testResetAndTruncate(File f, boolean compressed, boolean usemmap, int junkSize) throws IOException
     {
         final String filename = f.getAbsolutePath();
         MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
@@ -162,7 +149,7 @@ public class CompressedRandomAccessReaderTest
         }
         assert f.exists();
 
-        CompressionMetadata compressionMetadata = compressed ? new CompressionMetadata(filename + ".metadata", f.length(), true) : null;
+        CompressionMetadata compressionMetadata = compressed ? new CompressionMetadata(filename + ".metadata", f.length(), ChecksumType.CRC32) : null;
         try (FileHandle.Builder builder = new FileHandle.Builder(filename).mmapped(usemmap).withCompressionMetadata(compressionMetadata);
              FileHandle fh = builder.complete();
              RandomAccessReader reader = fh.createReader())
@@ -210,7 +197,7 @@ public class CompressedRandomAccessReaderTest
         }
 
         // open compression metadata and get chunk information
-        CompressionMetadata meta = new CompressionMetadata(metadata.getPath(), file.length(), true);
+        CompressionMetadata meta = new CompressionMetadata(metadata.getPath(), file.length(), ChecksumType.CRC32);
         CompressionMetadata.Chunk chunk = meta.chunkFor(0);
 
         try (FileHandle.Builder builder = new FileHandle.Builder(file.getPath()).withCompressionMetadata(meta);

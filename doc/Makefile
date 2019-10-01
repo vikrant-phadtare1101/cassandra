@@ -19,8 +19,6 @@ YAML_DOC_OUTPUT=source/configuration/cassandra_config_file.rst
 
 MAKE_CASSANDRA_YAML = python convert_yaml_to_rst.py $(YAML_DOC_INPUT) $(YAML_DOC_OUTPUT)
 
-GENERATE_NODETOOL_DOCS = python gen-nodetool-docs.py
-
 WEB_SITE_PRESENCE_FILE='source/.build_for_website'
 
 .PHONY: help
@@ -62,7 +60,6 @@ clean:
 .PHONY: html
 html:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/html."
@@ -71,7 +68,6 @@ html:
 website: clean
 	@touch $(WEB_SITE_PRESENCE_FILE)
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
 	@rm $(WEB_SITE_PRESENCE_FILE)
 	@echo
@@ -80,7 +76,6 @@ website: clean
 .PHONY: dirhtml
 dirhtml:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
@@ -88,7 +83,6 @@ dirhtml:
 .PHONY: singlehtml
 singlehtml:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b singlehtml $(ALLSPHINXOPTS) $(BUILDDIR)/singlehtml
 	@echo
 	@echo "Build finished. The HTML page is in $(BUILDDIR)/singlehtml."
@@ -96,7 +90,6 @@ singlehtml:
 .PHONY: pickle
 pickle:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b pickle $(ALLSPHINXOPTS) $(BUILDDIR)/pickle
 	@echo
 	@echo "Build finished; now you can process the pickle files."
@@ -104,7 +97,6 @@ pickle:
 .PHONY: json
 json:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b json $(ALLSPHINXOPTS) $(BUILDDIR)/json
 	@echo
 	@echo "Build finished; now you can process the JSON files."
@@ -112,7 +104,6 @@ json:
 .PHONY: htmlhelp
 htmlhelp:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b htmlhelp $(ALLSPHINXOPTS) $(BUILDDIR)/htmlhelp
 	@echo
 	@echo "Build finished; now you can run HTML Help Workshop with the" \
@@ -121,7 +112,6 @@ htmlhelp:
 .PHONY: qthelp
 qthelp:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b qthelp $(ALLSPHINXOPTS) $(BUILDDIR)/qthelp
 	@echo
 	@echo "Build finished; now you can run "qcollectiongenerator" with the" \
@@ -133,7 +123,6 @@ qthelp:
 .PHONY: applehelp
 applehelp:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b applehelp $(ALLSPHINXOPTS) $(BUILDDIR)/applehelp
 	@echo
 	@echo "Build finished. The help book is in $(BUILDDIR)/applehelp."
@@ -144,7 +133,6 @@ applehelp:
 .PHONY: devhelp
 devhelp:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b devhelp $(ALLSPHINXOPTS) $(BUILDDIR)/devhelp
 	@echo
 	@echo "Build finished."
@@ -156,7 +144,6 @@ devhelp:
 .PHONY: epub
 epub:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b epub $(ALLSPHINXOPTS) $(BUILDDIR)/epub
 	@echo
 	@echo "Build finished. The epub file is in $(BUILDDIR)/epub."
@@ -164,7 +151,6 @@ epub:
 .PHONY: epub3
 epub3:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b epub3 $(ALLSPHINXOPTS) $(BUILDDIR)/epub3
 	@echo
 	@echo "Build finished. The epub3 file is in $(BUILDDIR)/epub3."
@@ -172,7 +158,6 @@ epub3:
 .PHONY: latex
 latex:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b latex $(ALLSPHINXOPTS) $(BUILDDIR)/latex
 	@echo
 	@echo "Build finished; the LaTeX files are in $(BUILDDIR)/latex."
@@ -182,7 +167,6 @@ latex:
 .PHONY: latexpdf
 latexpdf:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b latex $(ALLSPHINXOPTS) $(BUILDDIR)/latex
 	@echo "Running LaTeX files through pdflatex..."
 	$(MAKE) -C $(BUILDDIR)/latex all-pdf
@@ -191,7 +175,6 @@ latexpdf:
 .PHONY: latexpdfja
 latexpdfja:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b latex $(ALLSPHINXOPTS) $(BUILDDIR)/latex
 	@echo "Running LaTeX files through platex and dvipdfmx..."
 	$(MAKE) -C $(BUILDDIR)/latex all-pdf-ja
@@ -206,7 +189,6 @@ text:
 .PHONY: man
 man:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b man $(ALLSPHINXOPTS) $(BUILDDIR)/man
 	@echo
 	@echo "Build finished. The manual pages are in $(BUILDDIR)/man."
@@ -214,7 +196,6 @@ man:
 .PHONY: texinfo
 texinfo:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b texinfo $(ALLSPHINXOPTS) $(BUILDDIR)/texinfo
 	@echo
 	@echo "Build finished. The Texinfo files are in $(BUILDDIR)/texinfo."
@@ -224,7 +205,6 @@ texinfo:
 .PHONY: info
 info:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b texinfo $(ALLSPHINXOPTS) $(BUILDDIR)/texinfo
 	@echo "Running Texinfo files through makeinfo..."
 	make -C $(BUILDDIR)/texinfo info
@@ -233,7 +213,6 @@ info:
 .PHONY: gettext
 gettext:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b gettext $(I18NSPHINXOPTS) $(BUILDDIR)/locale
 	@echo
 	@echo "Build finished. The message catalogs are in $(BUILDDIR)/locale."
@@ -241,7 +220,6 @@ gettext:
 .PHONY: changes
 changes:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b changes $(ALLSPHINXOPTS) $(BUILDDIR)/changes
 	@echo
 	@echo "The overview file is in $(BUILDDIR)/changes."
@@ -249,7 +227,6 @@ changes:
 .PHONY: linkcheck
 linkcheck:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b linkcheck $(ALLSPHINXOPTS) $(BUILDDIR)/linkcheck
 	@echo
 	@echo "Link check complete; look for any errors in the above output " \
@@ -258,7 +235,6 @@ linkcheck:
 .PHONY: doctest
 doctest:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b doctest $(ALLSPHINXOPTS) $(BUILDDIR)/doctest
 	@echo "Testing of doctests in the sources finished, look at the " \
 	      "results in $(BUILDDIR)/doctest/output.txt."
@@ -266,7 +242,6 @@ doctest:
 .PHONY: coverage
 coverage:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b coverage $(ALLSPHINXOPTS) $(BUILDDIR)/coverage
 	@echo "Testing of coverage in the sources finished, look at the " \
 	      "results in $(BUILDDIR)/coverage/python.txt."
@@ -274,7 +249,6 @@ coverage:
 .PHONY: xml
 xml:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b xml $(ALLSPHINXOPTS) $(BUILDDIR)/xml
 	@echo
 	@echo "Build finished. The XML files are in $(BUILDDIR)/xml."
@@ -282,7 +256,6 @@ xml:
 .PHONY: pseudoxml
 pseudoxml:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b pseudoxml $(ALLSPHINXOPTS) $(BUILDDIR)/pseudoxml
 	@echo
 	@echo "Build finished. The pseudo-XML files are in $(BUILDDIR)/pseudoxml."
@@ -290,7 +263,6 @@ pseudoxml:
 .PHONY: dummy
 dummy:
 	$(MAKE_CASSANDRA_YAML)
-	$(GENERATE_NODETOOL_DOCS)
 	$(SPHINXBUILD) -b dummy $(ALLSPHINXOPTS) $(BUILDDIR)/dummy
 	@echo
 	@echo "Build finished. Dummy builder generates no files."

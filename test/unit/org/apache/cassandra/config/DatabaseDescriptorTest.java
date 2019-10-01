@@ -18,6 +18,7 @@
 */
 package org.apache.cassandra.config;
 
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -26,18 +27,25 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Enumeration;
 
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
+import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.service.MigrationManager;
+import org.apache.cassandra.thrift.ThriftConversion;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
 public class DatabaseDescriptorTest
@@ -48,7 +56,71 @@ public class DatabaseDescriptorTest
         DatabaseDescriptor.daemonInitialization();
     }
 
+    @Test
+    public void testCFMetaDataSerialization() throws ConfigurationException, InvalidRequestException
+    {
+        // test serialization of all defined test CFs.
+        for (String keyspaceName : Schema.instance.getNonSystemKeyspaces())
+        {
+            for (CFMetaData cfm : Schema.instance.getTablesAndViews(keyspaceName))
+            {
+                CFMetaData cfmDupe = ThriftConversion.fromThrift(ThriftConversion.toThrift(cfm));
+                assertNotNull(cfmDupe);
+                assertEquals(cfm, cfmDupe);
+            }
+        }
+    }
+
+    @Test
+    public void testKSMetaDataSerialization() throws ConfigurationException
+    {
+        for (String ks : Schema.instance.getNonSystemKeyspaces())
+        {
+            // Not testing round-trip on the KsDef via serDe() because maps
+            KeyspaceMetadata ksm = Schema.instance.getKSMetaData(ks);
+            KeyspaceMetadata ksmDupe = ThriftConversion.fromThrift(ThriftConversion.toThrift(ksm));
+            assertNotNull(ksmDupe);
+            assertEquals(ksm, ksmDupe);
+        }
+    }
+
     // this came as a result of CASSANDRA-995
+    @Test
+    public void testTransKsMigration() throws ConfigurationException, IOException
+    {
+        SchemaLoader.cleanupAndLeaveDirs();
+        Schema.instance.loadFromDisk();
+        assertEquals(0, Schema.instance.getNonSystemKeyspaces().size());
+
+        Gossiper.instance.start((int)(System.currentTimeMillis() / 1000));
+        Keyspace.setInitialized();
+
+        try
+        {
+            // add a few.
+            MigrationManager.announceNewKeyspace(KeyspaceMetadata.create("ks0", KeyspaceParams.simple(3)));
+            MigrationManager.announceNewKeyspace(KeyspaceMetadata.create("ks1", KeyspaceParams.simple(3)));
+
+            assertNotNull(Schema.instance.getKSMetaData("ks0"));
+            assertNotNull(Schema.instance.getKSMetaData("ks1"));
+
+            Schema.instance.clearKeyspaceMetadata(Schema.instance.getKSMetaData("ks0"));
+            Schema.instance.clearKeyspaceMetadata(Schema.instance.getKSMetaData("ks1"));
+
+            assertNull(Schema.instance.getKSMetaData("ks0"));
+            assertNull(Schema.instance.getKSMetaData("ks1"));
+
+            Schema.instance.loadFromDisk();
+
+            assertNotNull(Schema.instance.getKSMetaData("ks0"));
+            assertNotNull(Schema.instance.getKSMetaData("ks1"));
+        }
+        finally
+        {
+            Gossiper.instance.stop();
+        }
+    }
+
     @Test
     public void testConfigurationLoader() throws Exception
     {
@@ -211,112 +283,7 @@ public class DatabaseDescriptorTest
         Collection<String> tokens = DatabaseDescriptor.tokensFromString(" a,b ,c , d, f,g,h");
         assertEquals(7, tokens.size());
         assertTrue(tokens.containsAll(Arrays.asList(new String[]{"a", "b", "c", "d", "f", "g", "h"})));
-    }
 
-    @Test
-    public void testLowestAcceptableTimeouts() throws ConfigurationException
-    {
-        Config testConfig = new Config();
-        testConfig.read_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.range_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.write_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.truncate_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.cas_contention_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.counter_write_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
-        testConfig.request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT + 1;
         
-        assertTrue(testConfig.read_request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.range_request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.write_request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.truncate_request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.cas_contention_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.counter_write_request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.request_timeout_in_ms > DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-
-        //set less than Lowest acceptable value
-        testConfig.read_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.range_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.write_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.truncate_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.cas_contention_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.counter_write_request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-        testConfig.request_timeout_in_ms = DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT - 1;
-
-        DatabaseDescriptor.checkForLowestAcceptedTimeouts(testConfig);
-
-        assertTrue(testConfig.read_request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.range_request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.write_request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.truncate_request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.cas_contention_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.counter_write_request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-        assertTrue(testConfig.request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
-    }
-
-    @Test
-    public void testRepairSessionMemorySizeToggles()
-    {
-        int previousSize = DatabaseDescriptor.getRepairSessionSpaceInMegabytes();
-        try
-        {
-            Assert.assertEquals((Runtime.getRuntime().maxMemory() / (1024 * 1024) / 16),
-                                DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            int targetSize = (int) (Runtime.getRuntime().maxMemory() / (1024 * 1024) / 4) + 1;
-
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(targetSize);
-            Assert.assertEquals(targetSize, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(10);
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            try
-            {
-                DatabaseDescriptor.setRepairSessionSpaceInMegabytes(0);
-                fail("Should have received a ConfigurationException for depth of 9");
-            }
-            catch (ConfigurationException ignored) { }
-
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-        }
-        finally
-        {
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(previousSize);
-        }
-    }
-
-    @Test
-    public void testRepairSessionSizeToggles()
-    {
-        int previousDepth = DatabaseDescriptor.getRepairSessionMaxTreeDepth();
-        try
-        {
-            Assert.assertEquals(20, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(10);
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-
-            try
-            {
-                DatabaseDescriptor.setRepairSessionMaxTreeDepth(9);
-                fail("Should have received a ConfigurationException for depth of 9");
-            }
-            catch (ConfigurationException ignored) { }
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-
-            try
-            {
-                DatabaseDescriptor.setRepairSessionMaxTreeDepth(-20);
-                fail("Should have received a ConfigurationException for depth of -20");
-            }
-            catch (ConfigurationException ignored) { }
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(22);
-            Assert.assertEquals(22, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-        }
-        finally
-        {
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(previousDepth);
-        }
     }
 }

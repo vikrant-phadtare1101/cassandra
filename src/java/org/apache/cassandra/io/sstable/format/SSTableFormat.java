@@ -18,8 +18,7 @@
 package org.apache.cassandra.io.sstable.format;
 
 import com.google.common.base.CharMatcher;
-
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
@@ -38,10 +37,14 @@ public interface SSTableFormat
     SSTableWriter.Factory getWriterFactory();
     SSTableReader.Factory getReaderFactory();
 
-    RowIndexEntry.IndexSerializer<?> getIndexSerializer(TableMetadata metadata, Version version, SerializationHeader header);
+    RowIndexEntry.IndexSerializer<?> getIndexSerializer(CFMetaData cfm, Version version, SerializationHeader header);
 
     public static enum Type
     {
+        //Used internally to refer to files with no
+        //format flag in the filename
+        LEGACY("big", BigFormat.instance),
+
         //The original sstable format
         BIG("big", BigFormat.instance);
 
@@ -67,6 +70,10 @@ public interface SSTableFormat
         {
             for (Type valid : Type.values())
             {
+                //This is used internally for old sstables
+                if (valid == LEGACY)
+                    continue;
+
                 if (valid.name.equalsIgnoreCase(name))
                     return valid;
             }

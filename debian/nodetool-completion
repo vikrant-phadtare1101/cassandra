@@ -54,43 +54,33 @@ have nodetool && have cqlsh &&
 
         local shopt='
             bootstrap
-            clientstats
             compactionhistory
             compactionstats
             decommission
             describecluster
-            disableauditlog
             disablebackup
             disablebinary
-            disablefullquerylog
             disablegossip
             disablehandoff
             disablehintsfordc
-            disableoldprotocolversions
+            disablethrift
             drain
-            enableauditlog
             enablebackup
             enablebinary
-            enablefullquerylog
             enablegossip
             enablehandoff
+            enablethrift
             enablehintsfordc
-            enableoldprotocolversions
             failuredetector
             gcstats
-            getbatchlogreplaythrottle
             getcompactionthroughput
             getconcurrentcompactors
-            getconcurrentviewbuilders
             getinterdcstreamthroughput
             getlogginglevels
-            getmaxhintwindow
-            getseeds
             getstreamthroughput
             gettimeout
             gettraceprobability
             gossipinfo
-            handoffwindow
             help
             invalidatecountercache
             invalidatekeycache
@@ -102,26 +92,20 @@ have nodetool && have cqlsh &&
             rangekeysample
             refreshsizeestimates
             reloadlocalschema
-            reloadseeds
-            reloadssl
             reloadtriggers
-            repair_admin
             replaybatchlog
-            resetfullquerylog
             resetlocalschema
             resumehandoff
             ring
-            setbatchlogreplaythrottle
             setconcurrentcompactors
-            setconcurrentviewbuilders
             sethintedhandoffthrottlekb
             setinterdcstreamthroughput
             setlogginglevel
-            setmaxhintwindow
             settimeout
             status
             statusbackup
             statusbinary
+            statusthrift
             statusgossip
             statushandoff
             stopdaemon
@@ -142,13 +126,10 @@ have nodetool && have cqlsh &&
             garbagecollect
             getcompactionthreshold
             getendpoints
-            getreplicas
             getsstables
-            import
             info
             move
             netstats
-            profileload
             rebuild
             rebuild_index
             refresh
@@ -163,7 +144,6 @@ have nodetool && have cqlsh &&
             setstreamthroughput
             settraceprobability
             snapshot
-            statusautocompaction
             stop
             tablehistograms
             toppartitions
@@ -182,10 +162,7 @@ have nodetool && have cqlsh &&
             garbagecollect
             getcompactionthreshold
             getendpoints
-            getreplicas
             getsstables
-            import
-            profileload
             rebuild_index
             refresh
             relocatesstables
@@ -193,7 +170,6 @@ have nodetool && have cqlsh &&
             scrub
             setcompactionthreshold
             snapshot
-            statusautocompaction
             tablehistograms
             toppartitions
             verify
@@ -207,13 +183,9 @@ have nodetool && have cqlsh &&
             enableautocompaction
             flush
             garbagecollect
-            getreplicas
-            import
-            profileload
             relocatesstables
             repair
             scrub
-            statusautocompaction
             toppartitions
             upgradesstables
             verify
@@ -256,9 +228,10 @@ have nodetool && have cqlsh &&
                         ;;
                 esac
             fi
+
         elif [[ $COMP_CWORD -eq 3 ]] ; then
             case "${COMP_WORDS[1]}" in
-                cleanup|compact|flush|garbagecollect|getcompactionthreshold|getendpoints|getreplicas|getsstables|import|profileload|rebuild_index|refresh|relocatesstables|repair|scrub|setcompactionthreshold|statusautocompaction|tablehistograms|toppartitions|verify)
+                cleanup|compact|flush|garbagecollect|getcompactionthreshold|getendpoints|getsstables|rebuild_index|refresh|relocatesstables|repair|scrub|setcompactionthreshold|tablehistograms|toppartitions|verify)
                     show_cfs ${prev} ${cur}
                     return 0
                     ;;

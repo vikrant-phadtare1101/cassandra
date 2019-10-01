@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.gms;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -31,10 +32,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.ByteOrderedPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.StorageService;
 import org.jboss.byteman.contrib.bmunit.BMRule;
 import org.jboss.byteman.contrib.bmunit.BMUnitRunner;
@@ -54,7 +55,6 @@ public class PendingRangeCalculatorServiceTest
     @BeforeClass
     public static void setUp() throws ConfigurationException
     {
-        System.setProperty(Gossiper.Props.DISABLE_THREAD_VALIDATION, "true");
         SchemaLoader.prepareServer();
         StorageService.instance.initServer();
     }
@@ -63,11 +63,11 @@ public class PendingRangeCalculatorServiceTest
     @BMRule(name = "Block pending range calculation",
             targetClass = "TokenMetadata",
             targetMethod = "calculatePendingRanges",
-            targetLocation = "AT INVOKE org.apache.cassandra.locator.AbstractReplicationStrategy.getAddressReplicas",
+            targetLocation = "AT INVOKE org.apache.cassandra.locator.AbstractReplicationStrategy.getAddressRanges",
             action = "org.apache.cassandra.gms.PendingRangeCalculatorServiceTest.calculationLock.lock()")
     public void testDelayedResponse() throws UnknownHostException, InterruptedException
     {
-        InetAddressAndPort otherNodeAddr = InetAddressAndPort.getByName("127.0.0.2");
+        InetAddress otherNodeAddr = InetAddress.getByName("127.0.0.2");
         UUID otherHostId = UUID.randomUUID();
 
         // introduce node for first major state change
@@ -113,7 +113,7 @@ public class PendingRangeCalculatorServiceTest
         }
     }
 
-    private Map<InetAddressAndPort, EndpointState> getStates(InetAddressAndPort otherNodeAddr, UUID hostId, int ver, boolean bootstrapping)
+    private Map<InetAddress, EndpointState> getStates(InetAddress otherNodeAddr, UUID hostId, int ver, boolean bootstrapping)
     {
         HeartBeatState hb = new HeartBeatState(1, ver);
         EndpointState state = new EndpointState(hb);
@@ -126,7 +126,7 @@ public class PendingRangeCalculatorServiceTest
         state.addApplicationState(ApplicationState.HOST_ID, StorageService.instance.valueFactory.hostId(hostId));
         state.addApplicationState(ApplicationState.NET_VERSION, StorageService.instance.valueFactory.networkVersion());
 
-        Map<InetAddressAndPort, EndpointState> states = new HashMap<>();
+        Map<InetAddress, EndpointState> states = new HashMap<>();
         states.put(otherNodeAddr, state);
         return states;
     }

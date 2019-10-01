@@ -17,8 +17,8 @@
  */
 package org.apache.cassandra.cache;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.AsciiType;
@@ -45,9 +45,10 @@ public class AutoSavingCacheTest
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
                                     KeyspaceParams.simple(1),
-                                    TableMetadata.builder(KEYSPACE1, CF_STANDARD1)
-                                                 .addPartitionKeyColumn("pKey", AsciiType.instance)
-                                                 .addRegularColumn("col1", AsciiType.instance));
+                                    CFMetaData.Builder.create(KEYSPACE1, CF_STANDARD1)
+                                                      .addPartitionKey("pKey", AsciiType.instance)
+                                                      .addRegularColumn("col1", AsciiType.instance)
+                                                      .build());
     }
 
     @Test
@@ -70,8 +71,8 @@ public class AutoSavingCacheTest
         cfs.truncateBlocking();
         for (int i = 0; i < 2; i++)
         {
-            ColumnMetadata colDef = ColumnMetadata.regularColumn(cfs.metadata(), ByteBufferUtil.bytes("col1"), AsciiType.instance);
-            RowUpdateBuilder rowBuilder = new RowUpdateBuilder(cfs.metadata(), System.currentTimeMillis(), "key1");
+            ColumnDefinition colDef = ColumnDefinition.regularDef(cfs.metadata, ByteBufferUtil.bytes("col1"), AsciiType.instance);
+            RowUpdateBuilder rowBuilder = new RowUpdateBuilder(cfs.metadata, System.currentTimeMillis(), "key1");
             rowBuilder.add(colDef, "val1");
             rowBuilder.build().apply();
             cfs.forceBlockingFlush();
@@ -94,6 +95,6 @@ public class AutoSavingCacheTest
         // then load saved
         keyCache.loadSavedAsync().get();
         for (SSTableReader sstable : cfs.getLiveSSTables())
-            Assert.assertNotNull(keyCache.get(new KeyCacheKey(cfs.metadata(), sstable.descriptor, ByteBufferUtil.bytes("key1"))));
+            Assert.assertNotNull(keyCache.get(new KeyCacheKey(cfs.metadata.ksAndCFName, sstable.descriptor, ByteBufferUtil.bytes("key1"))));
     }
 }

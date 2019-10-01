@@ -54,7 +54,7 @@ if NOT DEFINED JAVA_HOME goto :err
 REM -----------------------------------------------------------------------------
 REM JVM Opts we'll use in legacy run or installation
 set JAVA_OPTS=-ea^
- -javaagent:"%CASSANDRA_HOME%\lib\jamm-0.3.2"^
+ -javaagent:"%CASSANDRA_HOME%\lib\jamm-0.3.0.jar"^
  -Xms2G^
  -Xmx2G^
  -XX:+HeapDumpOnOutOfMemoryError^
@@ -112,7 +112,7 @@ if EXIST "%CASSANDRA_HOME%\lib\jsr223\scala\scala-compiler.jar" (
 )
 
 REM Include the build\classes\main directory so it works in development
-set CASSANDRA_CLASSPATH=%CLASSPATH%;"%CASSANDRA_HOME%\build\classes\main"
+set CASSANDRA_CLASSPATH=%CLASSPATH%;"%CASSANDRA_HOME%\build\classes\main";"%CASSANDRA_HOME%\build\classes\thrift"
 set CASSANDRA_PARAMS=-Dcassandra -Dcassandra-foreground=yes
 set CASSANDRA_PARAMS=%CASSANDRA_PARAMS% -Dcassandra.logdir="%CASSANDRA_HOME%\logs"
 set CASSANDRA_PARAMS=%CASSANDRA_PARAMS% -Dcassandra.storagedir="%CASSANDRA_HOME%\data"

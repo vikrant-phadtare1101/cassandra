@@ -18,7 +18,6 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.*;
-import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 import org.apache.cassandra.config.Config;
@@ -112,12 +111,6 @@ public class CompactionController implements AutoCloseable
             return;
         }
 
-        if (cfs.getNeverPurgeTombstones())
-        {
-            logger.debug("not refreshing overlaps for {}.{} - neverPurgeTombstones is enabled", cfs.keyspace.getName(), cfs.getTableName());
-            return;
-        }
-
         for (SSTableReader reader : overlappingSSTables)
         {
             if (reader.isMarkedCompacted())
@@ -130,7 +123,7 @@ public class CompactionController implements AutoCloseable
 
     private void refreshOverlaps()
     {
-        if (NEVER_PURGE_TOMBSTONES || cfs.getNeverPurgeTombstones())
+        if (NEVER_PURGE_TOMBSTONES)
             return;
 
         if (this.overlappingSSTables != null)
@@ -173,8 +166,8 @@ public class CompactionController implements AutoCloseable
     {
         logger.trace("Checking droppable sstables in {}", cfStore);
 
-        if (NEVER_PURGE_TOMBSTONES || compacting == null || cfStore.getNeverPurgeTombstones())
-            return Collections.<SSTableReader>emptySet();
+        if (NEVER_PURGE_TOMBSTONES || compacting == null)
+            return Collections.emptySet();
 
         if (cfStore.getCompactionStrategyManager().onlyPurgeRepairedTombstones() && !Iterables.all(compacting, SSTableReader::isRepaired))
             return Collections.emptySet();
@@ -263,9 +256,9 @@ public class CompactionController implements AutoCloseable
      * containing his partition and not participating in the compaction. This means there isn't any data in those
      * sstables that might still need to be suppressed by a tombstone at this timestamp.
      */
-    public LongPredicate getPurgeEvaluator(DecoratedKey key)
+    public Predicate<Long> getPurgeEvaluator(DecoratedKey key)
     {
-        if (NEVER_PURGE_TOMBSTONES || !compactingRepaired() || cfs.getNeverPurgeTombstones())
+        if (NEVER_PURGE_TOMBSTONES || !compactingRepaired())
             return time -> false;
 
         overlapIterator.update(key);
@@ -327,7 +320,7 @@ public class CompactionController implements AutoCloseable
     // caller must close iterators
     public Iterable<UnfilteredRowIterator> shadowSources(DecoratedKey key, boolean tombstoneOnly)
     {
-        if (!provideTombstoneSources() || !compactingRepaired() || NEVER_PURGE_TOMBSTONES || cfs.getNeverPurgeTombstones())
+        if (!provideTombstoneSources() || !compactingRepaired() || NEVER_PURGE_TOMBSTONES)
             return null;
         overlapIterator.update(key);
         return Iterables.filter(Iterables.transform(overlapIterator.overlaps(),

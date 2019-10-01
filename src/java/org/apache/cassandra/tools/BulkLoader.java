@@ -18,7 +18,7 @@
 package org.apache.cassandra.tools;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
+import java.net.InetAddress;
 import java.util.Set;
 import javax.net.ssl.SSLContext;
 
@@ -33,7 +33,6 @@ import org.apache.commons.cli.Options;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.io.sstable.SSTableLoader;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.utils.FBUtilities;
@@ -58,15 +57,13 @@ public class BulkLoader
                 new ExternalClient(
                         options.hosts,
                         options.nativePort,
-                        options.storagePort,
                         options.authProvider,
+                        options.storagePort,
                         options.sslStoragePort,
                         options.serverEncOptions,
-                        buildSSLOptions(options.clientEncOptions),
-                        options.allowServerPortDiscovery),
+                        buildSSLOptions(options.clientEncOptions)),
                         handler,
-                        options.connectionsPerHost,
-                        options.targetKeyspace);
+                        options.connectionsPerHost);
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
         DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(options.interDcThrottle);
         StreamResultFuture future = null;
@@ -107,6 +104,7 @@ public class BulkLoader
 
             // Give sockets time to gracefully close
             Thread.sleep(1000);
+            // System.exit(0); // We need that to stop non daemonized threads
         }
         catch (Exception e)
         {
@@ -127,7 +125,7 @@ public class BulkLoader
         private long peak = 0;
         private int totalFiles = 0;
 
-        private final Multimap<InetAddressAndPort, SessionInfo> sessionsByHost = HashMultimap.create();
+        private final Multimap<InetAddress, SessionInfo> sessionsByHost = HashMultimap.create();
 
         public ProgressIndicator()
         {
@@ -168,7 +166,7 @@ public class BulkLoader
 
                 boolean updateTotalFiles = totalFiles == 0;
                 // recalculate progress across all sessions in all hosts and display
-                for (InetAddressAndPort peer : sessionsByHost.keySet())
+                for (InetAddress peer : sessionsByHost.keySet())
                 {
                     sb.append("[").append(peer).append("]");
 
@@ -245,7 +243,7 @@ public class BulkLoader
         }
     }
 
-    private static SSLOptions buildSSLOptions(EncryptionOptions clientEncryptionOptions)
+    private static SSLOptions buildSSLOptions(EncryptionOptions.ClientEncryptionOptions clientEncryptionOptions)
     {
 
         if (!clientEncryptionOptions.enabled)
@@ -265,25 +263,26 @@ public class BulkLoader
 
         return JdkSSLOptions.builder()
                             .withSSLContext(sslContext)
-                            .withCipherSuites(clientEncryptionOptions.cipher_suites.toArray(new String[0]))
+                            .withCipherSuites(clientEncryptionOptions.cipher_suites)
                             .build();
     }
 
     static class ExternalClient extends NativeSSTableLoaderClient
     {
+        private final int storagePort;
         private final int sslStoragePort;
         private final EncryptionOptions.ServerEncryptionOptions serverEncOptions;
 
-        public ExternalClient(Set<InetSocketAddress> hosts,
-                              int nativePort,
-                              int storagePort,
+        public ExternalClient(Set<InetAddress> hosts,
+                              int port,
                               AuthProvider authProvider,
+                              int storagePort,
                               int sslStoragePort,
                               EncryptionOptions.ServerEncryptionOptions serverEncryptionOptions,
-                              SSLOptions sslOptions,
-                              boolean allowServerPortDiscovery)
+                              SSLOptions sslOptions)
         {
-            super(hosts, nativePort, storagePort, authProvider, sslOptions, allowServerPortDiscovery);
+            super(hosts, port, authProvider, sslOptions);
+            this.storagePort = storagePort;
             this.sslStoragePort = sslStoragePort;
             serverEncOptions = serverEncryptionOptions;
         }
@@ -291,7 +290,7 @@ public class BulkLoader
         @Override
         public StreamConnectionFactory getConnectionFactory()
         {
-            return new BulkLoadConnectionFactory(sslStoragePort, serverEncOptions, false);
+            return new BulkLoadConnectionFactory(storagePort, sslStoragePort, serverEncOptions, false);
         }
     }
 

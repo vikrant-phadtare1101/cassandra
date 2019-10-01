@@ -29,7 +29,7 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.SetType;
@@ -61,7 +61,7 @@ public class NativeCellTest
     {
         for (int run = 0 ; run < 1000 ; run++)
         {
-            Row.Builder builder = BTreeRow.unsortedBuilder();
+            Row.Builder builder = BTreeRow.unsortedBuilder(1);
             builder.newRow(rndclustering());
             int count = 1 + rand.nextInt(10);
             for (int i = 0 ; i < count ; i++)
@@ -92,7 +92,7 @@ public class NativeCellTest
 
     private static void rndcd(Row.Builder builder)
     {
-        ColumnMetadata col = rndcol();
+        ColumnDefinition col = rndcol();
         if (!col.isComplex())
         {
             builder.addCell(rndcell(col));
@@ -105,19 +105,19 @@ public class NativeCellTest
         }
     }
 
-    private static ColumnMetadata rndcol()
+    private static ColumnDefinition rndcol()
     {
         UUID uuid = new UUID(rand.nextLong(), rand.nextLong());
         boolean isComplex = rand.nextBoolean();
-        return new ColumnMetadata("",
-                                  "",
-                                  ColumnIdentifier.getInterned(uuid.toString(), false),
+        return new ColumnDefinition("",
+                                    "",
+                                    ColumnIdentifier.getInterned(uuid.toString(), false),
                                     isComplex ? new SetType<>(BytesType.instance, true) : BytesType.instance,
-                                  -1,
-                                  ColumnMetadata.Kind.REGULAR);
+                                    -1,
+                                    ColumnDefinition.Kind.REGULAR);
     }
 
-    private static Cell rndcell(ColumnMetadata col)
+    private static Cell rndcell(ColumnDefinition col)
     {
         long timestamp = rand.nextLong();
         int ttl = rand.nextInt();
