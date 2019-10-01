@@ -18,61 +18,40 @@
 package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.context.CounterContext;
-import org.apache.cassandra.db.filter.ColumnFilter;
-import org.apache.cassandra.db.partitions.Partition;
-import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.filter.ColumnSlice;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
- * Groups the parameters of an update query, and make building updates easier.
+ * A simple container that simplify passing parameters for collections methods.
  */
 public class UpdateParameters
 {
-    public final TableMetadata metadata;
-    public final RegularAndStaticColumns updatedColumns;
+    public final CFMetaData metadata;
     public final QueryOptions options;
-
-    private final int nowInSec;
-    private final long timestamp;
+    public final long timestamp;
     private final int ttl;
-
-    private final DeletionTime deletionTime;
+    public final int localDeletionTime;
 
     // For lists operation that require a read-before-write. Will be null otherwise.
-    private final Map<DecoratedKey, Partition> prefetchedRows;
+    private final Map<ByteBuffer, CQL3Row> prefetchedLists;
 
-    private Row.Builder staticBuilder;
-    private Row.Builder regularBuilder;
-
-    // The builder currently in use. Will alias either staticBuilder or regularBuilder, which are themselves built lazily.
-    private Row.Builder builder;
-
-    public UpdateParameters(TableMetadata metadata,
-                            RegularAndStaticColumns updatedColumns,
-                            QueryOptions options,
-                            long timestamp,
-                            int nowInSec,
-                            int ttl,
-                            Map<DecoratedKey, Partition> prefetchedRows)
+    public UpdateParameters(CFMetaData metadata, QueryOptions options, long timestamp, int ttl, Map<ByteBuffer, CQL3Row> prefetchedLists)
     throws InvalidRequestException
     {
         this.metadata = metadata;
-        this.updatedColumns = updatedColumns;
         this.options = options;
-
-        this.nowInSec = nowInSec;
         this.timestamp = timestamp;
         this.ttl = ttl;
-
-        this.deletionTime = new DeletionTime(timestamp, nowInSec);
-
-        this.prefetchedRows = prefetchedRows;
+        this.localDeletionTime = (int)(System.currentTimeMillis() / 1000);
+        this.prefetchedLists = prefetchedLists;
 
         // We use MIN_VALUE internally to mean the absence of of timestamp (in Selection, in sstable stats, ...), so exclude
         // it to avoid potential confusion.
@@ -80,157 +59,71 @@ public class UpdateParameters
             throw new InvalidRequestException(String.format("Out of bound timestamp, must be in [%d, %d]", Long.MIN_VALUE + 1, Long.MAX_VALUE));
     }
 
-    public void newRow(Clustering clustering) throws InvalidRequestException
+    public Cell makeColumn(CellName name, ByteBuffer value) throws InvalidRequestException
     {
-        if (metadata.isDense() && !metadata.isCompound())
-        {
-            // If it's a COMPACT STORAGE table with a single clustering column and for backward compatibility we
-            // don't want to allow that to be empty (even though this would be fine for the storage engine).
-            assert clustering.size() == 1;
-            ByteBuffer value = clustering.get(0);
-            if (value == null || !value.hasRemaining())
-                throw new InvalidRequestException("Invalid empty or null value for column " + metadata.clusteringColumns().get(0).name);
-        }
-
-        if (clustering == Clustering.STATIC_CLUSTERING)
-        {
-            if (staticBuilder == null)
-                staticBuilder = BTreeRow.unsortedBuilder();
-            builder = staticBuilder;
-        }
-        else
-        {
-            if (regularBuilder == null)
-                regularBuilder = BTreeRow.unsortedBuilder();
-            builder = regularBuilder;
-        }
-
-        builder.newRow(clustering);
+        QueryProcessor.validateCellName(name, metadata.comparator);
+        return AbstractCell.create(name, value, timestamp, ttl, metadata);
     }
 
-    public Clustering currentClustering()
+     public Cell makeCounter(CellName name, long delta) throws InvalidRequestException
+     {
+         QueryProcessor.validateCellName(name, metadata.comparator);
+         return new BufferCounterUpdateCell(name, delta, FBUtilities.timestampMicros());
+     }
+
+    public Cell makeTombstone(CellName name) throws InvalidRequestException
     {
-        return builder.clustering();
+        QueryProcessor.validateCellName(name, metadata.comparator);
+        return new BufferDeletedCell(name, localDeletionTime, timestamp);
     }
 
-    public void addPrimaryKeyLivenessInfo()
+    public RangeTombstone makeRangeTombstone(ColumnSlice slice) throws InvalidRequestException
     {
-        builder.addPrimaryKeyLivenessInfo(LivenessInfo.create(timestamp, ttl, nowInSec));
+        QueryProcessor.validateComposite(slice.start, metadata.comparator);
+        QueryProcessor.validateComposite(slice.finish, metadata.comparator);
+        return new RangeTombstone(slice.start, slice.finish, timestamp, localDeletionTime);
     }
 
-    public void addRowDeletion()
+    public RangeTombstone makeTombstoneForOverwrite(ColumnSlice slice) throws InvalidRequestException
     {
-        // For compact tables, at the exclusion of the static row (of static compact tables), each row ever has a single column,
-        // the "compact" one. As such, deleting the row or deleting that single cell is equivalent. We favor the later
-        // for backward compatibility (thought it doesn't truly matter anymore).
-        if (metadata.isCompactTable() && builder.clustering() != Clustering.STATIC_CLUSTERING)
-            addTombstone(metadata.compactValueColumn);
-        else
-            builder.addRowDeletion(Row.Deletion.regular(deletionTime));
-    }
-
-    public void addTombstone(ColumnMetadata column) throws InvalidRequestException
-    {
-        addTombstone(column, null);
-    }
-
-    public void addTombstone(ColumnMetadata column, CellPath path) throws InvalidRequestException
-    {
-        builder.addCell(BufferCell.tombstone(column, timestamp, nowInSec, path));
-    }
-
-    public void addCell(ColumnMetadata column, ByteBuffer value) throws InvalidRequestException
-    {
-        addCell(column, null, value);
-    }
-
-    public void addCell(ColumnMetadata column, CellPath path, ByteBuffer value) throws InvalidRequestException
-    {
-        Cell cell = ttl == LivenessInfo.NO_TTL
-                  ? BufferCell.live(column, timestamp, value, path)
-                  : BufferCell.expiring(column, timestamp, ttl, nowInSec, value, path);
-        builder.addCell(cell);
-    }
-
-    public void addCounter(ColumnMetadata column, long increment) throws InvalidRequestException
-    {
-        assert ttl == LivenessInfo.NO_TTL;
-
-        // Because column is a counter, we need the value to be a CounterContext. However, we're only creating a
-        // "counter update", which is a temporary state until we run into 'CounterMutation.updateWithCurrentValue()'
-        // which does the read-before-write and sets the proper CounterId, clock and updated value.
-        //
-        // We thus create a "fake" local shard here. The clock used doesn't matter as this is just a temporary
-        // state that will be replaced when processing the mutation in CounterMutation, but the reason we use a 'local'
-        // shard is due to the merging rules: if a user includes multiple updates to the same counter in a batch, those
-        // multiple updates will be merged in the PartitionUpdate *before* they even reach CounterMutation. So we need
-        // such update to be added together, and that's what a local shard gives us.
-        //
-        // We set counterid to a special value to differentiate between regular pre-2.0 local shards from pre-2.1 era
-        // and "counter update" temporary state cells. Please see CounterContext.createUpdate() for further details.
-        builder.addCell(BufferCell.live(column, timestamp, CounterContext.instance().createUpdate(increment)));
-    }
-
-    public void setComplexDeletionTime(ColumnMetadata column)
-    {
-        builder.addComplexDeletion(column, deletionTime);
-    }
-
-    public void setComplexDeletionTimeForOverwrite(ColumnMetadata column)
-    {
-        builder.addComplexDeletion(column, new DeletionTime(deletionTime.markedForDeleteAt() - 1, deletionTime.localDeletionTime()));
-    }
-
-    public Row buildRow()
-    {
-        Row built = builder.build();
-        builder = null; // Resetting to null just so we quickly bad usage where we forget to call newRow() after that.
-        return built;
-    }
-
-    public DeletionTime deletionTime()
-    {
-        return deletionTime;
-    }
-
-    public RangeTombstone makeRangeTombstone(ClusteringComparator comparator, Clustering clustering)
-    {
-        return makeRangeTombstone(Slice.make(comparator, clustering));
-    }
-
-    public RangeTombstone makeRangeTombstone(Slice slice)
-    {
-        return new RangeTombstone(slice, deletionTime);
+        QueryProcessor.validateComposite(slice.start, metadata.comparator);
+        QueryProcessor.validateComposite(slice.finish, metadata.comparator);
+        return new RangeTombstone(slice.start, slice.finish, timestamp - 1, localDeletionTime);
     }
 
     /**
-     * Returns the prefetched row with the already performed modifications.
-     * <p>If no modification have yet been performed this method will return the fetched row or {@code null} if
-     * the row does not exist. If some modifications (updates or deletions) have already been done the row returned
-     * will be the result of the merge of the fetched row and of the pending mutations.</p>
+     * Returns the prefetched list with the already performed modifications.
+     * <p>If no modification have yet been performed this method will return the fetched list.
+     * If some modifications (updates or deletions) have already been done the list returned
+     * will be the result of the merge of the fetched list and of the pending mutations.</p>
      *
-     * @param key the partition key
-     * @param clustering the row clustering
-     * @return the prefetched row with the already performed modifications
+     * @param rowKey the row key
+     * @param cql3ColumnName the column name
+     * @param cf the pending modifications
+     * @return the prefetched list with the already performed modifications
      */
-    public Row getPrefetchedRow(DecoratedKey key, Clustering clustering)
+    public List<Cell> getPrefetchedList(ByteBuffer rowKey, ColumnIdentifier cql3ColumnName, ColumnFamily cf)
     {
-        if (prefetchedRows == null)
-            return null;
+        if (prefetchedLists == null)
+            return Collections.emptyList();
 
-        Partition partition = prefetchedRows.get(key);
-        Row prefetchedRow = partition == null ? null : partition.searchIterator(ColumnFilter.selection(partition.columns()), false).next(clustering);
+        CQL3Row row = prefetchedLists.get(rowKey);
 
-        // We need to apply the pending mutations to return the row in its current state
-        Row pendingMutations = builder.copy().build();
+        List<Cell> cql3List = row == null ? Collections.<Cell>emptyList() : row.getMultiCellColumn(cql3ColumnName);
 
-        if (pendingMutations.isEmpty())
-            return prefetchedRow;
+        if (!cf.isEmpty())
+        {
+            ColumnFamily currentCf = cf.cloneMe();
 
-        if (prefetchedRow == null)
-            return pendingMutations;
+            for (Cell c : cql3List)
+                currentCf.addColumn(c);
 
-        return Rows.merge(prefetchedRow, pendingMutations)
-                   .purge(DeletionPurger.PURGE_ALL, nowInSec, metadata.enforceStrictLiveness());
+            CFMetaData cfm = currentCf.metadata();
+            CQL3Row.RowIterator iterator = cfm.comparator.CQL3RowBuilder(cfm, timestamp).group(currentCf.iterator());
+            // We can only update one CQ3Row per partition key at a time (we don't allow IN for clustering key)
+            cql3List = iterator.hasNext() ? iterator.next().getMultiCellColumn(cql3ColumnName) : null;
+        }
+
+        return (cql3List == null) ? Collections.<Cell>emptyList() : cql3List;
     }
 }

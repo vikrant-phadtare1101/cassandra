@@ -38,7 +38,7 @@ public class DataOutputBufferFixed extends DataOutputBuffer
 
     public DataOutputBufferFixed(int size)
     {
-        super(size);
+        super(ByteBuffer.allocate(size));
     }
 
     public DataOutputBufferFixed(ByteBuffer buffer)
@@ -58,13 +58,8 @@ public class DataOutputBufferFixed extends DataOutputBuffer
      * @see org.apache.cassandra.io.util.DataOutputBuffer#reallocate(long)
      */
     @Override
-    protected void expandToFit(long newSize)
+    protected void reallocate(long newSize)
     {
         throw new BufferOverflowException();
-    }
-
-    public void clear()
-    {
-        buffer.clear();
     }
 }

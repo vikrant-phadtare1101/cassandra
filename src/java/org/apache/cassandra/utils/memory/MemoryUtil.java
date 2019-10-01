@@ -23,22 +23,19 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import com.sun.jna.Native;
-
-import org.apache.cassandra.utils.Architecture;
-
 import sun.misc.Unsafe;
+import sun.nio.ch.DirectBuffer;
 
 public abstract class MemoryUtil
 {
     private static final long UNSAFE_COPY_THRESHOLD = 1024 * 1024L; // copied from java.nio.Bits
 
     private static final Unsafe unsafe;
-    private static final Class<?> DIRECT_BYTE_BUFFER_CLASS, RO_DIRECT_BYTE_BUFFER_CLASS;
+    private static final Class<?> DIRECT_BYTE_BUFFER_CLASS;
     private static final long DIRECT_BYTE_BUFFER_ADDRESS_OFFSET;
     private static final long DIRECT_BYTE_BUFFER_CAPACITY_OFFSET;
     private static final long DIRECT_BYTE_BUFFER_LIMIT_OFFSET;
     private static final long DIRECT_BYTE_BUFFER_POSITION_OFFSET;
-    private static final long DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET;
     private static final Class<?> BYTE_BUFFER_CLASS;
     private static final long BYTE_BUFFER_OFFSET_OFFSET;
     private static final long BYTE_BUFFER_HB_OFFSET;
@@ -46,10 +43,15 @@ public abstract class MemoryUtil
 
     private static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
-    public static final boolean INVERTED_ORDER = Architecture.IS_UNALIGNED && !BIG_ENDIAN;
+    private static final boolean UNALIGNED;
+    public static final boolean INVERTED_ORDER;
 
     static
     {
+        String arch = System.getProperty("os.arch");
+        UNALIGNED = arch.equals("i386") || arch.equals("x86")
+                || arch.equals("amd64") || arch.equals("x86_64");
+        INVERTED_ORDER = UNALIGNED && !BIG_ENDIAN;
         try
         {
             Field field = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
@@ -60,9 +62,7 @@ public abstract class MemoryUtil
             DIRECT_BYTE_BUFFER_CAPACITY_OFFSET = unsafe.objectFieldOffset(Buffer.class.getDeclaredField("capacity"));
             DIRECT_BYTE_BUFFER_LIMIT_OFFSET = unsafe.objectFieldOffset(Buffer.class.getDeclaredField("limit"));
             DIRECT_BYTE_BUFFER_POSITION_OFFSET = unsafe.objectFieldOffset(Buffer.class.getDeclaredField("position"));
-            DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET = unsafe.objectFieldOffset(clazz.getDeclaredField("att"));
             DIRECT_BYTE_BUFFER_CLASS = clazz;
-            RO_DIRECT_BYTE_BUFFER_CLASS = ByteBuffer.allocateDirect(0).asReadOnlyBuffer().getClass();
 
             clazz = ByteBuffer.allocate(0).getClass();
             BYTE_BUFFER_OFFSET_OFFSET = unsafe.objectFieldOffset(ByteBuffer.class.getDeclaredField("offset"));
@@ -75,17 +75,6 @@ public abstract class MemoryUtil
         {
             throw new AssertionError(e);
         }
-    }
-
-    public static int pageSize()
-    {
-        return unsafe.pageSize();
-    }
-
-    public static long getAddress(ByteBuffer buffer)
-    {
-        assert buffer.getClass() == DIRECT_BYTE_BUFFER_CLASS;
-        return unsafe.getLong(buffer, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET);
     }
 
     public static long allocate(long size)
@@ -103,11 +92,6 @@ public abstract class MemoryUtil
         unsafe.putByte(address, b);
     }
 
-    public static void setByte(long address, int count, byte b)
-    {
-        unsafe.setMemory(address, count, b);
-    }
-
     public static void setShort(long address, short s)
     {
         unsafe.putShort(address, s);
@@ -115,7 +99,7 @@ public abstract class MemoryUtil
 
     public static void setInt(long address, int l)
     {
-        if (Architecture.IS_UNALIGNED)
+        if (UNALIGNED)
             unsafe.putInt(address, l);
         else
             putIntByByte(address, l);
@@ -123,7 +107,7 @@ public abstract class MemoryUtil
 
     public static void setLong(long address, long l)
     {
-        if (Architecture.IS_UNALIGNED)
+        if (UNALIGNED)
             unsafe.putLong(address, l);
         else
             putLongByByte(address, l);
@@ -136,37 +120,27 @@ public abstract class MemoryUtil
 
     public static int getShort(long address)
     {
-        return (Architecture.IS_UNALIGNED ? unsafe.getShort(address) : getShortByByte(address)) & 0xffff;
+        return (UNALIGNED ? unsafe.getShort(address) : getShortByByte(address)) & 0xffff;
     }
 
     public static int getInt(long address)
     {
-        return Architecture.IS_UNALIGNED ? unsafe.getInt(address) : getIntByByte(address);
+        return UNALIGNED ? unsafe.getInt(address) : getIntByByte(address);
     }
 
     public static long getLong(long address)
     {
-        return Architecture.IS_UNALIGNED ? unsafe.getLong(address) : getLongByByte(address);
+        return UNALIGNED ? unsafe.getLong(address) : getLongByByte(address);
     }
 
     public static ByteBuffer getByteBuffer(long address, int length)
     {
-        return getByteBuffer(address, length, ByteOrder.nativeOrder());
-    }
-
-    public static ByteBuffer getByteBuffer(long address, int length, ByteOrder order)
-    {
-        ByteBuffer instance = getHollowDirectByteBuffer(order);
-        setDirectByteBuffer(instance, address, length);
+        ByteBuffer instance = getHollowDirectByteBuffer();
+        setByteBuffer(instance, address, length);
         return instance;
     }
 
     public static ByteBuffer getHollowDirectByteBuffer()
-    {
-        return getHollowDirectByteBuffer(ByteOrder.nativeOrder());
-    }
-
-    public static ByteBuffer getHollowDirectByteBuffer(ByteOrder order)
     {
         ByteBuffer instance;
         try
@@ -177,7 +151,7 @@ public abstract class MemoryUtil
         {
             throw new AssertionError(e);
         }
-        instance.order(order);
+        instance.order(ByteOrder.nativeOrder());
         return instance;
     }
 
@@ -196,21 +170,16 @@ public abstract class MemoryUtil
         return instance;
     }
 
-    public static Object getAttachment(ByteBuffer instance)
+    public static void setByteBuffer(ByteBuffer instance, long address, int length)
     {
-        assert instance.getClass() == DIRECT_BYTE_BUFFER_CLASS;
-        return unsafe.getObject(instance, DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET);
-    }
-
-    public static void setAttachment(ByteBuffer instance, Object next)
-    {
-        assert instance.getClass() == DIRECT_BYTE_BUFFER_CLASS;
-        unsafe.putObject(instance, DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET, next);
+        unsafe.putLong(instance, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET, address);
+        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET, length);
+        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_LIMIT_OFFSET, length);
     }
 
     public static ByteBuffer duplicateDirectByteBuffer(ByteBuffer source, ByteBuffer hollowBuffer)
     {
-        assert source.getClass() == DIRECT_BYTE_BUFFER_CLASS || source.getClass() == RO_DIRECT_BYTE_BUFFER_CLASS;
+        assert(source.isDirect());
         unsafe.putLong(hollowBuffer, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET, unsafe.getLong(source, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET));
         unsafe.putInt(hollowBuffer, DIRECT_BYTE_BUFFER_POSITION_OFFSET, unsafe.getInt(source, DIRECT_BYTE_BUFFER_POSITION_OFFSET));
         unsafe.putInt(hollowBuffer, DIRECT_BYTE_BUFFER_LIMIT_OFFSET, unsafe.getInt(source, DIRECT_BYTE_BUFFER_LIMIT_OFFSET));
@@ -218,24 +187,15 @@ public abstract class MemoryUtil
         return hollowBuffer;
     }
 
-    public static ByteBuffer sliceDirectByteBuffer(ByteBuffer source, ByteBuffer hollowBuffer, int offset, int length)
+    public static ByteBuffer duplicateByteBuffer(ByteBuffer source, ByteBuffer hollowBuffer)
     {
-        assert source.getClass() == DIRECT_BYTE_BUFFER_CLASS || source.getClass() == RO_DIRECT_BYTE_BUFFER_CLASS;
-        setDirectByteBuffer(hollowBuffer, offset + unsafe.getLong(source, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET), length);
+        assert(!source.isDirect());
+        unsafe.putInt(hollowBuffer, DIRECT_BYTE_BUFFER_POSITION_OFFSET, unsafe.getInt(source, DIRECT_BYTE_BUFFER_POSITION_OFFSET));
+        unsafe.putInt(hollowBuffer, DIRECT_BYTE_BUFFER_LIMIT_OFFSET, unsafe.getInt(source, DIRECT_BYTE_BUFFER_LIMIT_OFFSET));
+        unsafe.putInt(hollowBuffer, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET, unsafe.getInt(source, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET));
+        unsafe.putInt(hollowBuffer, BYTE_BUFFER_OFFSET_OFFSET, unsafe.getInt(source, BYTE_BUFFER_OFFSET_OFFSET));
+        unsafe.putObject(hollowBuffer, BYTE_BUFFER_HB_OFFSET, unsafe.getObject(source, BYTE_BUFFER_HB_OFFSET));
         return hollowBuffer;
-    }
-
-    public static void setDirectByteBuffer(ByteBuffer instance, long address, int length)
-    {
-        unsafe.putLong(instance, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET, address);
-        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_POSITION_OFFSET, 0);
-        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET, length);
-        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_LIMIT_OFFSET, length);
-    }
-
-    public static void setByteBufferCapacity(ByteBuffer instance, int capacity)
-    {
-        unsafe.putInt(instance, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET, capacity);
     }
 
     public static long getLongByByte(long address)
@@ -349,7 +309,7 @@ public abstract class MemoryUtil
             return;
 
         if (buffer.isDirect())
-            setBytes(getAddress(buffer) + start, address, count);
+            setBytes(((DirectBuffer)buffer).address() + start, address, count);
         else
             setBytes(address, buffer.array(), buffer.arrayOffset() + start, count);
     }

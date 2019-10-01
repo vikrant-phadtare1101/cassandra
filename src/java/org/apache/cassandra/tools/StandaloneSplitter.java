@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,7 +22,7 @@ import java.io.File;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.commons.cli.*;
 
@@ -35,6 +35,7 @@ import org.apache.cassandra.db.compaction.SSTableSplitter;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.Pair;
 
 import static org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
 
@@ -69,11 +70,12 @@ public class StandaloneSplitter
                     continue;
                 }
 
-                Descriptor desc = SSTable.tryDescriptorFromFilename(file);
-                if (desc == null) {
+                Pair<Descriptor, Component> pair = SSTable.tryComponentFromFilename(file.getParentFile(), file.getName());
+                if (pair == null) {
                     System.out.println("Skipping non sstable file " + file);
                     continue;
                 }
+                Descriptor desc = pair.left;
 
                 if (ksName == null)
                     ksName = desc.ksname;
@@ -152,18 +154,20 @@ public class StandaloneSplitter
                 try (LifecycleTransaction transaction = LifecycleTransaction.offline(OperationType.UNKNOWN, sstable))
                 {
                     new SSTableSplitter(cfs, transaction, options.sizeInMB).split();
+
+                    // Remove the sstable (it's been copied by split and snapshotted)
+                    sstable.markObsolete(null);
+                    sstable.selfRef().release();
                 }
                 catch (Exception e)
                 {
                     System.err.println(String.format("Error splitting %s: %s", sstable, e.getMessage()));
                     if (options.debug)
                         e.printStackTrace(System.err);
-
-                    sstable.selfRef().release();
                 }
             }
             CompactionManager.instance.finishCompactionsAndShutdown(5, TimeUnit.MINUTES);
-            LifecycleTransaction.waitForDeletions();
+            SSTableDeletingTask.waitForDeletions();
             System.exit(0); // We need that to stop non daemonized threads
         }
         catch (Exception e)

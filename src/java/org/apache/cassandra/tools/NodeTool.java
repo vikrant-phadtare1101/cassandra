@@ -17,61 +17,33 @@
  */
 package org.apache.cassandra.tools;
 
+import java.io.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.Map.Entry;
+
+import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
+import com.google.common.collect.*;
+
+import io.airlift.command.*;
+
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
+import org.apache.cassandra.tools.nodetool.*;
+import org.apache.cassandra.utils.FBUtilities;
+
 import static com.google.common.base.Throwables.getStackTraceAsString;
 import static com.google.common.collect.Iterables.toArray;
 import static com.google.common.collect.Lists.newArrayList;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
 import static org.apache.commons.lang3.ArrayUtils.EMPTY_STRING_ARRAY;
-import static org.apache.commons.lang3.StringUtils.EMPTY;
-import static org.apache.commons.lang3.StringUtils.isEmpty;
-import static org.apache.commons.lang3.StringUtils.isNotEmpty;
-
-import java.io.Console;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOError;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Scanner;
-import java.util.SortedMap;
-
-import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
-import org.apache.cassandra.tools.nodetool.*;
-import org.apache.cassandra.utils.FBUtilities;
-
-import com.google.common.base.Joiner;
-import com.google.common.base.Throwables;
-import com.google.common.collect.Maps;
-
-import io.airlift.airline.Cli;
-import io.airlift.airline.Help;
-import io.airlift.airline.Option;
-import io.airlift.airline.OptionType;
-import io.airlift.airline.ParseArgumentsMissingException;
-import io.airlift.airline.ParseArgumentsUnexpectedException;
-import io.airlift.airline.ParseCommandMissingException;
-import io.airlift.airline.ParseCommandUnrecognizedException;
-import io.airlift.airline.ParseOptionConversionException;
-import io.airlift.airline.ParseOptionMissingException;
-import io.airlift.airline.ParseOptionMissingValueException;
+import static org.apache.commons.lang3.StringUtils.*;
 
 public class NodeTool
 {
-    static
-    {
-        FBUtilities.preventIllegalAccessWarnings();
-    }
-
     private static final String HISTORYFILE = "nodetool.history";
 
     public static void main(String... args)
@@ -87,13 +59,11 @@ public class NodeTool
                 TableHistograms.class,
                 Cleanup.class,
                 ClearSnapshot.class,
-                ClientStats.class,
                 Compact.class,
                 Scrub.class,
                 Verify.class,
                 Flush.class,
                 UpgradeSSTable.class,
-                GarbageCollect.class,
                 DisableAutoCompaction.class,
                 EnableAutoCompaction.class,
                 CompactionStats.class,
@@ -105,22 +75,16 @@ public class NodeTool
                 EnableGossip.class,
                 DisableGossip.class,
                 EnableHandoff.class,
-                EnableFullQueryLog.class,
-                DisableFullQueryLog.class,
+                EnableThrift.class,
                 GcStats.class,
-                GetBatchlogReplayTrottle.class,
                 GetCompactionThreshold.class,
                 GetCompactionThroughput.class,
-                GetTimeout.class,
                 GetStreamThroughput.class,
                 GetTraceProbability.class,
                 GetInterDCStreamThroughput.class,
                 GetEndpoints.class,
-                GetSeeds.class,
                 GetSSTables.class,
-                GetMaxHintWindow.class,
                 GossipInfo.class,
-                Import.class,
                 InvalidateKeyCache.class,
                 InvalidateRowCache.class,
                 InvalidateCounterCache.class,
@@ -128,39 +92,27 @@ public class NodeTool
                 Move.class,
                 PauseHandoff.class,
                 ResumeHandoff.class,
-                ProfileLoad.class,
                 ProxyHistograms.class,
                 Rebuild.class,
                 Refresh.class,
                 RemoveNode.class,
                 Assassinate.class,
-                ReloadSeeds.class,
-                ResetFullQueryLog.class,
                 Repair.class,
-                RepairAdmin.class,
-                ReplayBatchlog.class,
                 SetCacheCapacity.class,
                 SetHintedHandoffThrottleInKB.class,
-                SetBatchlogReplayThrottle.class,
                 SetCompactionThreshold.class,
                 SetCompactionThroughput.class,
-                GetConcurrentCompactors.class,
-                SetConcurrentCompactors.class,
-                GetConcurrentViewBuilders.class,
-                SetConcurrentViewBuilders.class,
-                SetTimeout.class,
                 SetStreamThroughput.class,
                 SetInterDCStreamThroughput.class,
                 SetTraceProbability.class,
-                SetMaxHintWindow.class,
                 Snapshot.class,
                 ListSnapshots.class,
                 Status.class,
                 StatusBinary.class,
                 StatusGossip.class,
+                StatusThrift.class,
                 StatusBackup.class,
                 StatusHandoff.class,
-                StatusAutoCompaction.class,
                 Stop.class,
                 StopDaemon.class,
                 Version.class,
@@ -170,9 +122,9 @@ public class NodeTool
                 EnableBackup.class,
                 DisableBackup.class,
                 ResetLocalSchema.class,
-                ReloadLocalSchema.class,
                 ReloadTriggers.class,
                 SetCacheKeysToSave.class,
+                DisableThrift.class,
                 DisableHandoff.class,
                 Drain.class,
                 TruncateHints.class,
@@ -180,20 +132,8 @@ public class NodeTool
                 TopPartitions.class,
                 SetLoggingLevel.class,
                 GetLoggingLevels.class,
-                DisableHintsForDC.class,
-                EnableHintsForDC.class,
                 FailureDetectorInfo.class,
-                RefreshSizeEstimates.class,
-                RelocateSSTables.class,
-                ViewBuildStatus.class,
-                HandoffWindow.class,
-                ReloadSslCertificates.class,
-                EnableAuditLog.class,
-                DisableAuditLog.class,
-                GetReplicas.class,
-                DisableAuditLog.class,
-                EnableOldProtocolVersions.class,
-                DisableOldProtocolVersions.class
+                RefreshSizeEstimates.class
         );
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
@@ -288,9 +228,6 @@ public class NodeTool
         @Option(type = OptionType.GLOBAL, name = {"-pwf", "--password-file"}, description = "Path to the JMX password file")
         private String passwordFilePath = EMPTY;
 
-        @Option(type = OptionType.GLOBAL, name = { "-pp", "--print-port"}, description = "Operate in 4.0 mode with hosts disambiguated by port number", arity = 0)
-        protected boolean printPort = false;
-
         @Override
         public void run()
         {
@@ -365,7 +302,7 @@ public class NodeTool
                     nodeClient = new NodeProbe(host, parseInt(port));
                 else
                     nodeClient = new NodeProbe(host, parseInt(port), username, password);
-            } catch (IOException | SecurityException e)
+            } catch (IOException e)
             {
                 Throwable rootCause = Throwables.getRootCause(e);
                 System.err.println(format("nodetool: Failed to connect to '%s:%s' - %s: '%s'.", host, port, rootCause.getClass().getSimpleName(), rootCause.getMessage()));
@@ -375,34 +312,19 @@ public class NodeTool
             return nodeClient;
         }
 
-        protected enum KeyspaceSet
-        {
-            ALL, NON_SYSTEM, NON_LOCAL_STRATEGY
-        }
-
         protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe)
         {
-            return parseOptionalKeyspace(cmdArgs, nodeProbe, KeyspaceSet.ALL);
+            return parseOptionalKeyspace(cmdArgs, nodeProbe, false);
         }
 
-        protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe, KeyspaceSet defaultKeyspaceSet)
+        protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe, boolean includeSystemKS)
         {
             List<String> keyspaces = new ArrayList<>();
 
-
             if (cmdArgs == null || cmdArgs.isEmpty())
-            {
-                if (defaultKeyspaceSet == KeyspaceSet.NON_LOCAL_STRATEGY)
-                    keyspaces.addAll(keyspaces = nodeProbe.getNonLocalStrategyKeyspaces());
-                else if (defaultKeyspaceSet == KeyspaceSet.NON_SYSTEM)
-                    keyspaces.addAll(keyspaces = nodeProbe.getNonSystemKeyspaces());
-                else
-                    keyspaces.addAll(nodeProbe.getKeyspaces());
-            }
+                keyspaces.addAll(includeSystemKS ? nodeProbe.getKeyspaces() : nodeProbe.getNonSystemKeyspaces());
             else
-            {
                 keyspaces.add(cmdArgs.get(0));
-            }
 
             for (String keyspace : keyspaces)
             {
@@ -413,7 +335,7 @@ public class NodeTool
             return Collections.unmodifiableList(keyspaces);
         }
 
-        protected String[] parseOptionalTables(List<String> cmdArgs)
+        protected String[] parseOptionalColumnFamilies(List<String> cmdArgs)
         {
             return cmdArgs.size() <= 1 ? EMPTY_STRING_ARRAY : toArray(cmdArgs.subList(1, cmdArgs.size()), String.class);
         }
@@ -432,29 +354,6 @@ public class NodeTool
                 String dc = epSnitchInfo.getDatacenter(tokenAndEndPoint.getValue());
                 if (!ownershipByDc.containsKey(dc))
                     ownershipByDc.put(dc, new SetHostStat(resolveIp));
-                ownershipByDc.get(dc).add(tokenAndEndPoint.getKey(), tokenAndEndPoint.getValue(), ownerships);
-            }
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException(e);
-        }
-        return ownershipByDc;
-    }
-
-    public static SortedMap<String, SetHostStatWithPort> getOwnershipByDcWithPort(NodeProbe probe, boolean resolveIp,
-                                                                  Map<String, String> tokenToEndpoint,
-                                                                  Map<String, Float> ownerships)
-    {
-        SortedMap<String, SetHostStatWithPort> ownershipByDc = Maps.newTreeMap();
-        EndpointSnitchInfoMBean epSnitchInfo = probe.getEndpointSnitchInfoProxy();
-        try
-        {
-            for (Entry<String, String> tokenAndEndPoint : tokenToEndpoint.entrySet())
-            {
-                String dc = epSnitchInfo.getDatacenter(tokenAndEndPoint.getValue());
-                if (!ownershipByDc.containsKey(dc))
-                    ownershipByDc.put(dc, new SetHostStatWithPort(resolveIp));
                 ownershipByDc.get(dc).add(tokenAndEndPoint.getKey(), tokenAndEndPoint.getValue(), ownerships);
             }
         }

@@ -17,19 +17,14 @@
  */
 package org.apache.cassandra.cql3.functions;
 
-import java.nio.ByteBuffer;
 import java.util.List;
 
 import com.google.common.base.Objects;
+import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.cql3.AssignmentTestable;
-import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.db.marshal.AbstractType;
-
-import org.apache.commons.lang3.text.StrBuilder;
-
-import static java.util.stream.Collectors.toList;
 
 /**
  * Base class for our native/hardcoded functions.
@@ -62,14 +57,6 @@ public abstract class AbstractFunction implements Function
         return returnType;
     }
 
-    public List<String> argumentsList()
-    {
-        return argTypes().stream()
-                         .map(AbstractType::asCQL3Type)
-                         .map(CQL3Type::toString)
-                         .collect(toList());
-    }
-
     @Override
     public boolean equals(Object o)
     {
@@ -82,12 +69,12 @@ public abstract class AbstractFunction implements Function
             && Objects.equal(this.returnType, that.returnType);
     }
 
-    public void addFunctionsTo(List<Function> functions)
+    public Iterable<Function> getFunctions()
     {
-        functions.add(this);
+        return ImmutableSet.<Function>of(this);
     }
 
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean hasReferenceTo(Function function)
     {
         return false;
     }
@@ -103,7 +90,7 @@ public abstract class AbstractFunction implements Function
         // We should ignore the fact that the receiver type is frozen in our comparison as functions do not support
         // frozen types for return type
         AbstractType<?> returnType = returnType();
-        if (receiver.type.isFreezable() && !receiver.type.isMultiCell())
+        if (receiver.type.isFrozenCollection())
             returnType = returnType.freeze();
 
         if (receiver.type.equals(returnType))
@@ -128,14 +115,5 @@ public abstract class AbstractFunction implements Function
         }
         sb.append(") -> ").append(returnType.asCQL3Type());
         return sb.toString();
-    }
-
-    @Override
-    public String columnName(List<String> columnNames)
-    {
-        return new StrBuilder(name().toString()).append('(')
-                                                .appendWithSeparators(columnNames, ", ")
-                                                .append(')')
-                                                .toString();
     }
 }

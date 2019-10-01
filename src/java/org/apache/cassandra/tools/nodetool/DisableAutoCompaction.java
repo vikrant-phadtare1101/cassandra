@@ -17,8 +17,8 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -37,13 +37,13 @@ public class DisableAutoCompaction extends NodeToolCmd
     public void execute(NodeProbe probe)
     {
         List<String> keyspaces = parseOptionalKeyspace(args, probe);
-        String[] tablenames = parseOptionalTables(args);
+        String[] cfnames = parseOptionalColumnFamilies(args);
 
         for (String keyspace : keyspaces)
         {
             try
             {
-                probe.disableAutoCompaction(keyspace, tablenames);
+                probe.disableAutoCompaction(keyspace, cfnames);
             } catch (IOException e)
             {
                 throw new RuntimeException("Error occurred during disabling auto-compaction", e);

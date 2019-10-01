@@ -18,61 +18,62 @@
 */
 package org.apache.cassandra.db.commitlog;
 
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 
 import com.google.common.base.Predicate;
+
 import org.junit.Assert;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.ColumnSerializer;
 import org.apache.cassandra.db.Mutation;
-import org.apache.cassandra.db.rows.SerializationHelper;
-import org.apache.cassandra.io.util.DataInputBuffer;
-import org.apache.cassandra.io.util.RebufferingInputStream;
+import org.apache.cassandra.io.util.FastByteArrayInputStream;
 
 /**
  * Utility class for tests needing to examine the commitlog contents.
  */
 public class CommitLogTestReplayer extends CommitLogReplayer
 {
-    private final Predicate<Mutation> processor;
-
-    public CommitLogTestReplayer(Predicate<Mutation> processor) throws IOException
+    static public void examineCommitLog(Predicate<Mutation> processor) throws IOException
     {
-        super(CommitLog.instance, CommitLogPosition.NONE, null, ReplayFilter.create());
         CommitLog.instance.sync(true);
 
+        CommitLogTestReplayer replayer = new CommitLogTestReplayer(CommitLog.instance, processor);
+        File commitLogDir = new File(DatabaseDescriptor.getCommitLogLocation());
+        replayer.recover(commitLogDir.listFiles());
+    }
+
+    final private Predicate<Mutation> processor;
+
+    public CommitLogTestReplayer(CommitLog log, Predicate<Mutation> processor)
+    {
+        this(log, ReplayPosition.NONE, processor);
+    }
+
+    public CommitLogTestReplayer(CommitLog log, ReplayPosition discardedPos, Predicate<Mutation> processor)
+    {
+        super(log, discardedPos, null, ReplayFilter.create());
         this.processor = processor;
-        commitLogReader = new CommitLogTestReader();
     }
 
-    public void examineCommitLog() throws IOException
+    @Override
+    void replayMutation(byte[] inputBuffer, int size, final int entryLocation, final CommitLogDescriptor desc)
     {
-        replayFiles(new File(DatabaseDescriptor.getCommitLogLocation()).listFiles());
-    }
-
-    private class CommitLogTestReader extends CommitLogReader
-    {
-        @Override
-        protected void readMutation(CommitLogReadHandler handler,
-                                    byte[] inputBuffer,
-                                    int size,
-                                    CommitLogPosition minPosition,
-                                    final int entryLocation,
-                                    final CommitLogDescriptor desc) throws IOException
+        FastByteArrayInputStream bufIn = new FastByteArrayInputStream(inputBuffer, 0, size);
+        Mutation mutation;
+        try
         {
-            RebufferingInputStream bufIn = new DataInputBuffer(inputBuffer, 0, size);
-            Mutation mutation;
-            try
-            {
-                mutation = Mutation.serializer.deserialize(bufIn, desc.getMessagingVersion(), SerializationHelper.Flag.LOCAL);
-                Assert.assertTrue(processor.apply(mutation));
-            }
-            catch (IOException e)
-            {
-                // Test fails.
-                throw new AssertionError(e);
-            }
+            mutation = Mutation.serializer.deserialize(new DataInputStream(bufIn),
+                                                           desc.getMessagingVersion(),
+                                                           ColumnSerializer.Flag.LOCAL);
+            Assert.assertTrue(processor.apply(mutation));
+        }
+        catch (IOException e)
+        {
+            // Test fails.
+            throw new AssertionError(e);
         }
     }
 }

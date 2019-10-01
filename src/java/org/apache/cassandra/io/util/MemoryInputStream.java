@@ -19,58 +19,50 @@ package org.apache.cassandra.io.util;
 
 import java.io.DataInput;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.primitives.Ints;
-
-import org.apache.cassandra.utils.memory.MemoryUtil;
-
-public class MemoryInputStream extends RebufferingInputStream implements DataInput
+public class MemoryInputStream extends AbstractDataInput implements DataInput
 {
     private final Memory mem;
-    private final int bufferSize;
-    private long offset;
-
+    private int position = 0;
 
     public MemoryInputStream(Memory mem)
     {
-        this(mem, Ints.saturatedCast(mem.size));
-    }
-
-    @VisibleForTesting
-    public MemoryInputStream(Memory mem, int bufferSize)
-    {
-        super(getByteBuffer(mem.peer, bufferSize));
         this.mem = mem;
-        this.bufferSize = bufferSize;
-        this.offset = mem.peer + bufferSize;
     }
 
-    @Override
-    protected void reBuffer() throws IOException
+    public int read() throws IOException
     {
-        if (offset - mem.peer >= mem.size())
-            return;
-
-        buffer = getByteBuffer(offset, Math.min(bufferSize, Ints.saturatedCast(memRemaining())));
-        offset += buffer.capacity();
+        return mem.getByte(position++) & 0xFF;
     }
 
-    @Override
-    public int available()
+    public void readFully(byte[] buffer, int offset, int count) throws IOException
     {
-        return Ints.saturatedCast(buffer.remaining() + memRemaining());
+        mem.getBytes(position, buffer, offset, count);
+        position += count;
     }
 
-    private long memRemaining()
+    public void seek(long pos)
     {
-        return mem.size + mem.peer - offset;
+        position = (int) pos;
     }
 
-    private static ByteBuffer getByteBuffer(long offset, int length)
+    public long getPosition()
     {
-        return MemoryUtil.getByteBuffer(offset, length, ByteOrder.BIG_ENDIAN);
+        return position;
+    }
+
+    public long getPositionLimit()
+    {
+        return mem.size();
+    }
+
+    protected long length()
+    {
+        return mem.size();
+    }
+
+    public void close()
+    {
+        // do nothing.
     }
 }

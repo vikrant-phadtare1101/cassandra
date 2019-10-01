@@ -17,11 +17,13 @@
  */
 package org.apache.cassandra.db;
 
+import java.io.DataInput;
 import java.io.IOException;
 
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.net.MessageOut;
+import org.apache.cassandra.net.MessagingService;
 
 /**
  * This message is sent back the truncate operation and basically specifies if
@@ -42,6 +44,11 @@ public class TruncateResponse
         this.success = success;
     }
 
+    public MessageOut<TruncateResponse> createMessage()
+    {
+        return new MessageOut<TruncateResponse>(MessagingService.Verb.REQUEST_RESPONSE, this, serializer);
+    }
+
     public static class TruncateResponseSerializer implements IVersionedSerializer<TruncateResponse>
     {
         public void serialize(TruncateResponse tr, DataOutputPlus out, int version) throws IOException
@@ -51,7 +58,7 @@ public class TruncateResponse
             out.writeBoolean(tr.success);
         }
 
-        public TruncateResponse deserialize(DataInputPlus in, int version) throws IOException
+        public TruncateResponse deserialize(DataInput in, int version) throws IOException
         {
             String keyspace = in.readUTF();
             String columnFamily = in.readUTF();
@@ -61,9 +68,9 @@ public class TruncateResponse
 
         public long serializedSize(TruncateResponse tr, int version)
         {
-            return TypeSizes.sizeof(tr.keyspace)
-                 + TypeSizes.sizeof(tr.columnFamily)
-                 + TypeSizes.sizeof(tr.success);
+            return TypeSizes.NATIVE.sizeof(tr.keyspace)
+                 + TypeSizes.NATIVE.sizeof(tr.columnFamily)
+                 + TypeSizes.NATIVE.sizeof(tr.success);
         }
     }
 }

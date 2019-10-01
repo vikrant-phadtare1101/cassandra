@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.utils;
 
+import java.io.DataInput;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLongArray;
@@ -25,8 +26,8 @@ import com.google.common.base.Objects;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.ISerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+
 import org.slf4j.Logger;
 
 public class EstimatedHistogram
@@ -112,7 +113,11 @@ public class EstimatedHistogram
         return bucketOffsets;
     }
 
-    private int findIndex(long n)
+    /**
+     * Increments the count of the bucket closest to n, rounding UP.
+     * @param n
+     */
+    public void add(long n)
     {
         int index = Arrays.binarySearch(bucketOffsets, n);
         if (index < 0)
@@ -120,25 +125,8 @@ public class EstimatedHistogram
             // inexact match, take the first bucket higher than n
             index = -index - 1;
         }
-        return index;
-    }
-
-    /**
-     * Increments the count of the bucket closest to n, rounding UP.
-     * @param n
-     */
-    public void add(long n)
-    {
-        buckets.incrementAndGet(findIndex(n));
-    }
-
-    /**
-     * Increments the count of the bucket closest to n, rounding UP by delta
-     * @param n
-     */
-    public void add(long n, long delta)
-    {
-        buckets.addAndGet(findIndex(n), delta);
+        // else exact match; we're good
+        buckets.incrementAndGet(index);
     }
 
     /**
@@ -283,7 +271,7 @@ public class EstimatedHistogram
     }
 
     /**
-     * log.debug() every record in the histogram
+     * log.trace() every record in the histogram
      *
      * @param log
      */
@@ -314,7 +302,7 @@ public class EstimatedHistogram
             // calculation, and accept the unnecessary whitespace prefixes that will occasionally occur
             if (i == 0 && count == 0)
                 continue;
-            log.debug(String.format(formatstr, names[i], count));
+            log.trace(String.format(formatstr, names[i], count));
         }
     }
 
@@ -379,31 +367,30 @@ public class EstimatedHistogram
             }
         }
 
-        public EstimatedHistogram deserialize(DataInputPlus in) throws IOException
+        public EstimatedHistogram deserialize(DataInput in) throws IOException
         {
             int size = in.readInt();
             long[] offsets = new long[size - 1];
             long[] buckets = new long[size];
 
-            for (int i = 0; i < size; i++)
-            {
+            for (int i = 0; i < size; i++) {
                 offsets[i == 0 ? 0 : i - 1] = in.readLong();
                 buckets[i] = in.readLong();
             }
             return new EstimatedHistogram(offsets, buckets);
         }
 
-        public long serializedSize(EstimatedHistogram eh)
+        public long serializedSize(EstimatedHistogram eh, TypeSizes typeSizes)
         {
             int size = 0;
 
             long[] offsets = eh.getBucketOffsets();
             long[] buckets = eh.getBuckets(false);
-            size += TypeSizes.sizeof(buckets.length);
+            size += typeSizes.sizeof(buckets.length);
             for (int i = 0; i < buckets.length; i++)
             {
-                size += TypeSizes.sizeof(offsets[i == 0 ? 0 : i - 1]);
-                size += TypeSizes.sizeof(buckets[i]);
+                size += typeSizes.sizeof(offsets[i == 0 ? 0 : i - 1]);
+                size += typeSizes.sizeof(buckets[i]);
             }
             return size;
         }

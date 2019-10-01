@@ -1,4 +1,5 @@
 /*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,42 +16,30 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
+ *
  */
 package org.apache.cassandra.cache;
 
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
-import com.google.common.hash.Hasher;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.github.benmanes.caffeine.cache.Weigher;
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.db.RowUpdateBuilder;
-import org.apache.cassandra.db.marshal.AsciiType;
-import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.db.partitions.CachedBTreePartition;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.rows.UnfilteredRowIterators;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.ArrayBackedSortedColumns;
+import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.schema.IndexMetadata;
-import org.apache.cassandra.schema.Indexes;
-import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.utils.Pair;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertTrue;
+import com.googlecode.concurrentlinkedhashmap.Weighers;
+
+import static org.apache.cassandra.Util.column;
+import static org.junit.Assert.*;
 
 public class CacheProviderTest
 {
@@ -63,78 +52,59 @@ public class CacheProviderTest
     private static final String KEYSPACE1 = "CacheProviderTest1";
     private static final String CF_STANDARD1 = "Standard1";
 
-    private static TableMetadata cfm;
-
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
         SchemaLoader.prepareServer();
-
-        cfm =
-            TableMetadata.builder(KEYSPACE1, CF_STANDARD1)
-                         .addPartitionKeyColumn("pKey", AsciiType.instance)
-                         .addRegularColumn("col1", AsciiType.instance)
-                         .build();
-
-        SchemaLoader.createKeyspace(KEYSPACE1, KeyspaceParams.simple(1), cfm);
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1));
     }
 
-    private CachedBTreePartition createPartition()
+    private void simpleCase(ColumnFamily cf, ICache<MeasureableString, IRowCacheEntry> cache)
     {
-        PartitionUpdate update = new RowUpdateBuilder(cfm, System.currentTimeMillis(), "key1")
-                                 .add("col1", "val1")
-                                 .buildUpdate();
-
-        return CachedBTreePartition.create(update.unfilteredIterator(), FBUtilities.nowInSeconds());
-    }
-
-    private void simpleCase(CachedBTreePartition partition, ICache<MeasureableString, IRowCacheEntry> cache)
-    {
-        cache.put(key1, partition);
+        cache.put(key1, cf);
         assertNotNull(cache.get(key1));
 
-        assertDigests(cache.get(key1), partition);
-        cache.put(key2, partition);
-        cache.put(key3, partition);
-        cache.put(key4, partition);
-        cache.put(key5, partition);
+        assertDigests(cache.get(key1), cf);
+        cache.put(key2, cf);
+        cache.put(key3, cf);
+        cache.put(key4, cf);
+        cache.put(key5, cf);
 
         assertEquals(CAPACITY, cache.size());
     }
 
-    private void assertDigests(IRowCacheEntry one, CachedBTreePartition two)
+    private void assertDigests(IRowCacheEntry one, ColumnFamily two)
     {
-        assertTrue(one instanceof CachedBTreePartition);
-        Hasher h1 = HashingUtils.CURRENT_HASH_FUNCTION.newHasher();
-        Hasher h2 = HashingUtils.CURRENT_HASH_FUNCTION.newHasher();
-        UnfilteredRowIterators.digest(((CachedBTreePartition) one).unfilteredIterator(), h1, MessagingService.current_version);
-        UnfilteredRowIterators.digest(((CachedBTreePartition) two).unfilteredIterator(), h2, MessagingService.current_version);
-        Assert.assertEquals(h1.hash(), h2.hash());
+        // CF does not implement .equals
+        assertTrue(one instanceof ColumnFamily);
+        assertEquals(ColumnFamily.digest((ColumnFamily)one), ColumnFamily.digest(two));
     }
 
-    private void concurrentCase(final CachedBTreePartition partition, final ICache<MeasureableString, IRowCacheEntry> cache) throws InterruptedException
+    // TODO this isn't terribly useful
+    private void concurrentCase(final ColumnFamily cf, final ICache<MeasureableString, IRowCacheEntry> cache) throws InterruptedException
     {
-        final long startTime = System.currentTimeMillis() + 500;
-        Runnable runnable = new Runnable()
+        Runnable runable = new Runnable()
         {
             public void run()
             {
-                while (System.currentTimeMillis() < startTime) {}
-                for (int j = 0; j < 1000; j++)
+                for (int j = 0; j < 10; j++)
                 {
-                    cache.put(key1, partition);
-                    cache.put(key2, partition);
-                    cache.put(key3, partition);
-                    cache.put(key4, partition);
-                    cache.put(key5, partition);
+                    cache.put(key1, cf);
+                    cache.put(key2, cf);
+                    cache.put(key3, cf);
+                    cache.put(key4, cf);
+                    cache.put(key5, cf);
                 }
             }
         };
 
-        List<Thread> threads = new ArrayList<>(100);
+        List<Thread> threads = new ArrayList<Thread>(100);
         for (int i = 0; i < 100; i++)
         {
-            Thread thread = NamedThreadFactory.createThread(runnable);
+            Thread thread = new Thread(runable);
             threads.add(thread);
             thread.start();
         }
@@ -142,57 +112,36 @@ public class CacheProviderTest
             thread.join();
     }
 
+    private ColumnFamily createCF()
+    {
+        ColumnFamily cf = ArrayBackedSortedColumns.factory.create(KEYSPACE1, CF_STANDARD1);
+        cf.addColumn(column("vijay", "great", 1));
+        cf.addColumn(column("awesome", "vijay", 1));
+        return cf;
+    }
+
     @Test
     public void testSerializingCache() throws InterruptedException
     {
-        ICache<MeasureableString, IRowCacheEntry> cache = SerializingCache.create(CAPACITY,
-            Weigher.singletonWeigher(), new SerializingCacheProvider.RowCacheSerializer());
-        CachedBTreePartition partition = createPartition();
-        simpleCase(partition, cache);
-        concurrentCase(partition, cache);
+        ICache<MeasureableString, IRowCacheEntry> cache = SerializingCache.create(CAPACITY, Weighers.<RefCountedMemory>singleton(), new SerializingCacheProvider.RowCacheSerializer());
+        ColumnFamily cf = createCF();
+        simpleCase(cf, cache);
+        concurrentCase(cf, cache);
     }
 
     @Test
     public void testKeys()
     {
-        TableId id1 = TableId.generate();
+        Pair<String, String> ksAndCFName = Pair.create(KEYSPACE1, CF_STANDARD1);
         byte[] b1 = {1, 2, 3, 4};
-        RowCacheKey key1 = new RowCacheKey(id1, null, ByteBuffer.wrap(b1));
-        TableId id2 = TableId.fromString(id1.toString());
+        RowCacheKey key1 = new RowCacheKey(ksAndCFName, ByteBuffer.wrap(b1));
         byte[] b2 = {1, 2, 3, 4};
-        RowCacheKey key2 = new RowCacheKey(id2, null, ByteBuffer.wrap(b2));
+        RowCacheKey key2 = new RowCacheKey(ksAndCFName, ByteBuffer.wrap(b2));
         assertEquals(key1, key2);
         assertEquals(key1.hashCode(), key2.hashCode());
-
-        TableMetadata tm = TableMetadata.builder("ks", "tab", id1)
-                                        .addPartitionKeyColumn("pk", UTF8Type.instance)
-                                        .build();
-
-        assertTrue(key1.sameTable(tm));
 
         byte[] b3 = {1, 2, 3, 5};
-        RowCacheKey key3 = new RowCacheKey(id1, null, ByteBuffer.wrap(b3));
-        assertNotSame(key1, key3);
-        assertNotSame(key1.hashCode(), key3.hashCode());
-
-        // with index name
-
-        key1 = new RowCacheKey(id1, "indexFoo", ByteBuffer.wrap(b1));
-        assertNotSame(key1, key2);
-        assertNotSame(key1.hashCode(), key2.hashCode());
-
-        key2 = new RowCacheKey(id2, "indexFoo", ByteBuffer.wrap(b2));
-        assertEquals(key1, key2);
-        assertEquals(key1.hashCode(), key2.hashCode());
-
-        tm = TableMetadata.builder("ks", "tab.indexFoo", id1)
-                          .kind(TableMetadata.Kind.INDEX)
-                          .addPartitionKeyColumn("pk", UTF8Type.instance)
-                          .indexes(Indexes.of(IndexMetadata.fromSchemaMetadata("indexFoo", IndexMetadata.Kind.KEYS, Collections.emptyMap())))
-                          .build();
-        assertTrue(key1.sameTable(tm));
-
-        key3 = new RowCacheKey(id1, "indexFoo", ByteBuffer.wrap(b3));
+        RowCacheKey key3 = new RowCacheKey(ksAndCFName, ByteBuffer.wrap(b3));
         assertNotSame(key1, key3);
         assertNotSame(key1.hashCode(), key3.hashCode());
     }

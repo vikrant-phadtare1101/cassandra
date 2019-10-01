@@ -19,7 +19,6 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
 import java.util.*;
 
 import org.junit.BeforeClass;
@@ -29,14 +28,14 @@ import static org.junit.Assert.assertEquals;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.Cell;
-import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.db.partitions.ImmutableBTreePartition;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.composites.CellNames;
+import org.apache.cassandra.db.filter.QueryFilter;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.*;
 
@@ -68,8 +67,9 @@ public class CompositeTypeTest
         AbstractType<?> composite = CompositeType.getInstance(Arrays.asList(new AbstractType<?>[]{BytesType.instance, TimeUUIDType.instance, IntegerType.instance}));
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    KeyspaceParams.simple(1),
-                                    SchemaLoader.denseCFMD(KEYSPACE1, CF_STANDARDCOMPOSITE, composite));
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARDCOMPOSITE, composite));
     }
 
     @Test
@@ -187,28 +187,23 @@ public class CompositeTypeTest
         ByteBuffer cname5 = createCompositeKey("test2", uuids[1], 42, false);
 
         ByteBuffer key = ByteBufferUtil.bytes("k");
+        Mutation rm = new Mutation(KEYSPACE1, key);
+        addColumn(rm, cname5);
+        addColumn(rm, cname1);
+        addColumn(rm, cname4);
+        addColumn(rm, cname2);
+        addColumn(rm, cname3);
+        rm.applyUnsafe();
 
-        long ts = FBUtilities.timestampMicros();
-        new RowUpdateBuilder(cfs.metadata(), ts, key).clustering(cname5).add("val", "cname5").build().applyUnsafe();
-        new RowUpdateBuilder(cfs.metadata(), ts, key).clustering(cname1).add("val", "cname1").build().applyUnsafe();
-        new RowUpdateBuilder(cfs.metadata(), ts, key).clustering(cname4).add("val", "cname4").build().applyUnsafe();
-        new RowUpdateBuilder(cfs.metadata(), ts, key).clustering(cname2).add("val", "cname2").build().applyUnsafe();
-        new RowUpdateBuilder(cfs.metadata(), ts, key).clustering(cname3).add("val", "cname3").build().applyUnsafe();
+        ColumnFamily cf = cfs.getColumnFamily(QueryFilter.getIdentityFilter(Util.dk("k"), CF_STANDARDCOMPOSITE, System.currentTimeMillis()));
 
-        ColumnMetadata cdef = cfs.metadata().getColumn(ByteBufferUtil.bytes("val"));
+        Iterator<Cell> iter = cf.getSortedColumns().iterator();
 
-        ImmutableBTreePartition readPartition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs, key).build());
-        Iterator<Row> iter = readPartition.iterator();
-
-        compareValues(iter.next().getCell(cdef), "cname1");
-        compareValues(iter.next().getCell(cdef), "cname2");
-        compareValues(iter.next().getCell(cdef), "cname3");
-        compareValues(iter.next().getCell(cdef), "cname4");
-        compareValues(iter.next().getCell(cdef), "cname5");
-    }
-    private void compareValues(Cell c, String r) throws CharacterCodingException
-    {
-        assert ByteBufferUtil.string(c.value()).equals(r) : "Expected: {" + ByteBufferUtil.string(c.value()) + "} got: {" + r + "}";
+        assert iter.next().name().toByteBuffer().equals(cname1);
+        assert iter.next().name().toByteBuffer().equals(cname2);
+        assert iter.next().name().toByteBuffer().equals(cname3);
+        assert iter.next().name().toByteBuffer().equals(cname4);
+        assert iter.next().name().toByteBuffer().equals(cname5);
     }
 
     @Test
@@ -219,16 +214,14 @@ public class CompositeTypeTest
             TypeParser.parse("CompositeType");
             fail("Shouldn't work");
         }
-        catch (ConfigurationException e) {}
-        catch (SyntaxException e) {}
+        catch (ConfigurationException | SyntaxException e) {}
 
         try
         {
             TypeParser.parse("CompositeType()");
             fail("Shouldn't work");
         }
-        catch (ConfigurationException e) {}
-        catch (SyntaxException e) {}
+        catch (ConfigurationException | SyntaxException e) {}
     }
 
     @Test
@@ -261,18 +254,22 @@ public class CompositeTypeTest
             new String[]{ "foo!", "b:ar" },
         };
 
-
         for (String[] input : inputs)
         {
-            ByteBuffer[] bbs = new ByteBuffer[input.length];
-            for (int i = 0; i < input.length; i++)
-                bbs[i] = UTF8Type.instance.fromString(input[i]);
+            CompositeType.Builder builder = new CompositeType.Builder(comp);
+            for (String part : input)
+                builder.add(UTF8Type.instance.fromString(part));
 
-            ByteBuffer value = comp.fromString(comp.getString(CompositeType.build(bbs)));
+            ByteBuffer value = comp.fromString(comp.getString(builder.build()));
             ByteBuffer[] splitted = comp.split(value);
             for (int i = 0; i < splitted.length; i++)
                 assertEquals(input[i], UTF8Type.instance.getString(splitted[i]));
         }
+    }
+
+    private void addColumn(Mutation rm, ByteBuffer cname)
+    {
+        rm.add(CF_STANDARDCOMPOSITE, CellNames.simpleDense(cname), ByteBufferUtil.EMPTY_BYTE_BUFFER, 0);
     }
 
     private ByteBuffer createCompositeKey(String s, UUID uuid, int i, boolean lastIsOne)

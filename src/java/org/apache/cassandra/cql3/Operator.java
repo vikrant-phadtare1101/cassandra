@@ -20,13 +20,6 @@ package org.apache.cassandra.cql3;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
-import org.apache.cassandra.db.marshal.*;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
 public enum Operator
 {
@@ -36,12 +29,6 @@ public enum Operator
         public String toString()
         {
             return "=";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return type.compareForCQL(leftOperand, rightOperand) == 0;
         }
     },
     LT(4)
@@ -53,9 +40,9 @@ public enum Operator
         }
 
         @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
+        public Operator reverse()
         {
-            return type.compareForCQL(leftOperand, rightOperand) < 0;
+            return GT;
         }
     },
     LTE(3)
@@ -67,9 +54,9 @@ public enum Operator
         }
 
         @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
+        public Operator reverse()
         {
-            return type.compareForCQL(leftOperand, rightOperand) <= 0;
+            return GTE;
         }
     },
     GTE(1)
@@ -81,9 +68,9 @@ public enum Operator
         }
 
         @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
+        public Operator reverse()
         {
-            return type.compareForCQL(leftOperand, rightOperand) >= 0;
+            return LTE;
         }
     },
     GT(2)
@@ -95,54 +82,16 @@ public enum Operator
         }
 
         @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
+        public Operator reverse()
         {
-            return type.compareForCQL(leftOperand, rightOperand) > 0;
+            return LT;
         }
     },
     IN(7)
     {
-        @Override
-        public String toString()
-        {
-            return "IN";
-        }
-
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            List<?> inValues = ListType.getInstance(type, false).getSerializer().deserialize(rightOperand);
-            return inValues.contains(type.getSerializer().deserialize(leftOperand));
-        }
     },
     CONTAINS(5)
     {
-        @Override
-        public String toString()
-        {
-            return "CONTAINS";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            switch(((CollectionType<?>) type).kind)
-            {
-                case LIST :
-                    ListType<?> listType = (ListType<?>) type;
-                    List<?> list = listType.getSerializer().deserialize(leftOperand);
-                    return list.contains(listType.getElementsType().getSerializer().deserialize(rightOperand));
-                case SET:
-                    SetType<?> setType = (SetType<?>) type;
-                    Set<?> set = setType.getSerializer().deserialize(leftOperand);
-                    return set.contains(setType.getElementsType().getSerializer().deserialize(rightOperand));
-                case MAP:
-                    MapType<?, ?> mapType = (MapType<?, ?>) type;
-                    Map<?, ?> map = mapType.getSerializer().deserialize(leftOperand);
-                    return map.containsValue(mapType.getValuesType().getSerializer().deserialize(rightOperand));
-                default:
-                    throw new AssertionError();
-            }
-        }
     },
     CONTAINS_KEY(6)
     {
@@ -151,14 +100,6 @@ public enum Operator
         {
             return "CONTAINS KEY";
         }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            MapType<?, ?> mapType = (MapType<?, ?>) type;
-            Map<?, ?> map = mapType.getSerializer().deserialize(leftOperand);
-            return map.containsKey(mapType.getKeysType().getSerializer().deserialize(rightOperand));
-        }
     },
     NEQ(8)
     {
@@ -166,96 +107,6 @@ public enum Operator
         public String toString()
         {
             return "!=";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return type.compareForCQL(leftOperand, rightOperand) != 0;
-
-        }
-    },
-    IS_NOT(9)
-    {
-        @Override
-        public String toString()
-        {
-            return "IS NOT";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            throw new UnsupportedOperationException();
-        }
-    },
-    LIKE_PREFIX(10)
-    {
-        @Override
-        public String toString()
-        {
-            return "LIKE '<term>%'";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return ByteBufferUtil.startsWith(leftOperand, rightOperand);
-        }
-    },
-    LIKE_SUFFIX(11)
-    {
-        @Override
-        public String toString()
-        {
-            return "LIKE '%<term>'";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return ByteBufferUtil.endsWith(leftOperand, rightOperand);
-        }
-    },
-    LIKE_CONTAINS(12)
-    {
-        @Override
-        public String toString()
-        {
-            return "LIKE '%<term>%'";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return ByteBufferUtil.contains(leftOperand, rightOperand);
-        }
-    },
-    LIKE_MATCHES(13)
-    {
-        @Override
-        public String toString()
-        {
-            return "LIKE '<term>'";
-        }
-
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            return ByteBufferUtil.contains(leftOperand, rightOperand);
-        }
-    },
-    LIKE(14)
-    {
-        @Override
-        public String toString()
-        {
-            return "LIKE";
-        }
-
-        @Override
-        public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
-        {
-            throw new UnsupportedOperationException();
         }
     };
 
@@ -284,11 +135,6 @@ public enum Operator
         output.writeInt(b);
     }
 
-    public int getValue()
-    {
-        return b;
-    }
-
     /**
      * Deserializes a <code>Operator</code> instance from the specified input.
      *
@@ -306,25 +152,6 @@ public enum Operator
           throw new IOException(String.format("Cannot resolve Relation.Type from binary representation: %s", b));
     }
 
-    /**
-     * Whether 2 values satisfy this operator (given the type they should be compared with).
-     */
-    public abstract boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand);
-
-    public int serializedSize()
-    {
-        return 4;
-    }
-
-    /**
-     * Checks if this operator is a slice operator.
-     * @return {@code true} if this operator is a slice operator, {@code false} otherwise.
-     */
-    public boolean isSlice()
-    {
-        return this == LT || this == LTE || this == GT || this == GTE;
-    }
-
     @Override
     public String toString()
     {
@@ -332,11 +159,12 @@ public enum Operator
     }
 
     /**
-     * Checks if this operator is an IN operator.
-     * @return {@code true} if this operator is an IN operator, {@code false} otherwise.
+     * Returns the reverse operator if this one.
+     *
+     * @return the reverse operator of this one.
      */
-    public boolean isIN()
+    public Operator reverse()
     {
-        return this == IN;
+        return this;
     }
 }
