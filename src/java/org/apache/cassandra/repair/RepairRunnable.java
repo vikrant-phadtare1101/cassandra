@@ -133,11 +133,10 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
     protected void fireErrorAndComplete(int progressCount, int totalProgress, String message)
     {
         StorageMetrics.repairExceptions.inc();
-        String errorMessage = String.format("Repair command #%d failed with error %s", cmd, message);
-        fireProgressEvent(new ProgressEvent(ProgressEventType.ERROR, progressCount, totalProgress, errorMessage));
+        fireProgressEvent(new ProgressEvent(ProgressEventType.ERROR, progressCount, totalProgress, message));
         String completionMessage = String.format("Repair command #%d finished with error", cmd);
         fireProgressEvent(new ProgressEvent(ProgressEventType.COMPLETE, progressCount, totalProgress, completionMessage));
-        recordFailure(errorMessage, completionMessage);
+        recordFailure(message, completionMessage);
     }
 
 
@@ -160,7 +159,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException | IOException e)
         {
-            logger.error("Repair {} failed:", parentSession, e);
+            logger.error("Repair failed:", e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -217,7 +216,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException e)
         {
-            logger.error("Repair {} failed:", parentSession, e);
+            logger.error("Repair failed:", e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -231,7 +230,6 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException e)
         {
-            logger.error("Repair {} failed:", parentSession, e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -263,7 +261,6 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (Throwable t)
         {
-            logger.error("Repair {} failed:", parentSession, t);
             if (!options.isPreview())
             {
                 SystemDistributedKeyspace.failParentRepair(parentSession, t);
@@ -642,11 +639,8 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
     {
         // Note we rely on the first message being the reason for the failure
         // when inspecting this state from RepairRunner.queryForCompletedRepair
-        String failure = failureMessage == null ? "unknown failure" : failureMessage;
-        String completion = completionMessage == null ? "unknown completion" : completionMessage;
-
         ActiveRepairService.instance.recordRepairStatus(cmd, ActiveRepairService.ParentRepairStatus.FAILED,
-                                               ImmutableList.of(failure, completion));
+                                               ImmutableList.of(failureMessage, completionMessage));
     }
 
     private static void addRangeToNeighbors(List<CommonRange> neighborRangeList, Range<Token> range, EndpointsForRange neighbors)

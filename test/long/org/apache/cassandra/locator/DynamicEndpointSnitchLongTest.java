@@ -30,8 +30,6 @@ import org.apache.cassandra.service.StorageService;
 
 import org.apache.cassandra.utils.FBUtilities;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
 public class DynamicEndpointSnitchLongTest
 {
     static
@@ -103,7 +101,7 @@ public class DynamicEndpointSnitchLongTest
             {
                 Replica host = hosts.get(random.nextInt(hosts.size()));
                 int score = random.nextInt(SCORE_RANGE);
-                dsnitch.receiveTiming(host.endpoint(), score, MILLISECONDS);
+                dsnitch.receiveTiming(host.endpoint(), score);
             }
         }
     }

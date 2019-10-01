@@ -71,8 +71,6 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.security.ThreadAwareSecurityManager;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-
 /**
  * The <code>CassandraDaemon</code> is an abstraction for a Cassandra daemon
  * service, which defines not only a way to activate and deactivate it, but also
@@ -204,15 +202,6 @@ public class CassandraDaemon
         catch (StartupException e)
         {
             exitOrFail(e.returnCode, e.getMessage(), e.getCause());
-        }
-
-        try
-        {
-            SystemKeyspace.snapshotOnVersionChange();
-        }
-        catch (IOException e)
-        {
-            exitOrFail(3, e.getMessage(), e.getCause());
         }
 
         // We need to persist this as soon as possible after startup checks.
@@ -433,9 +422,9 @@ public class CassandraDaemon
         // schedule periodic recomputation of speculative retry thresholds
         ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(
             () -> Keyspace.all().forEach(k -> k.getColumnFamilyStores().forEach(ColumnFamilyStore::updateSpeculationThreshold)),
-            DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
-            DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
-            NANOSECONDS
+            DatabaseDescriptor.getReadRpcTimeout(),
+            DatabaseDescriptor.getReadRpcTimeout(),
+            TimeUnit.MILLISECONDS
         );
 
         // Native transport

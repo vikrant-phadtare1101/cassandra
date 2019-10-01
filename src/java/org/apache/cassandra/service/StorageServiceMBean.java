@@ -359,10 +359,6 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public void forceTerminateAllRepairSessions();
 
-    public void setRepairSessionMaxTreeDepth(int depth);
-
-    public int getRepairSessionMaxTreeDepth();
-
     /**
      * Get the status of a given parent repair session.
      * @param cmd the int reference returned when issuing the repair
@@ -576,12 +572,6 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public int getConcurrentValidators();
     public void setConcurrentValidators(int value);
-
-    public int getSSTablePreemptiveOpenIntervalInMB();
-    public void setSSTablePreemptiveOpenIntervalInMB(int intervalInMB);
-
-    public boolean getMigrateKeycacheOnCompaction();
-    public void setMigrateKeycacheOnCompaction(boolean invalidateKeyCacheOnCompaction);
 
     public int getConcurrentViewBuilders();
     public void setConcurrentViewBuilders(int value);
