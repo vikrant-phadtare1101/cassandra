@@ -17,21 +17,20 @@
  */
 package org.apache.cassandra.repair;
 
+import java.net.InetAddress;
 import java.util.UUID;
 import java.util.Collections;
 import java.util.Collection;
 
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.cassandra.locator.RangesAtEndpoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.repair.messages.SyncResponse;
+import org.apache.cassandra.repair.messages.SyncComplete;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.streaming.StreamEvent;
 import org.apache.cassandra.streaming.StreamEventHandler;
@@ -39,11 +38,9 @@ import org.apache.cassandra.streaming.StreamPlan;
 import org.apache.cassandra.streaming.StreamState;
 import org.apache.cassandra.streaming.StreamOperation;
 
-import static org.apache.cassandra.net.Verb.SYNC_RSP;
-
 /**
- * StreamingRepairTask performs data streaming between two remote replicas, neither of which is repair coordinator.
- * Task will send {@link SyncResponse} message back to coordinator upon streaming completion.
+ * StreamingRepairTask performs data streaming between two remote replica which neither is not repair coordinator.
+ * Task will send {@link SyncComplete} message back to coordinator upon streaming completion.
  */
 public class StreamingRepairTask implements Runnable, StreamEventHandler
 {
@@ -51,14 +48,14 @@ public class StreamingRepairTask implements Runnable, StreamEventHandler
 
     private final RepairJobDesc desc;
     private final boolean asymmetric;
-    private final InetAddressAndPort initiator;
-    private final InetAddressAndPort src;
-    private final InetAddressAndPort dst;
+    private final InetAddress initiator;
+    private final InetAddress src;
+    private final InetAddress dst;
     private final Collection<Range<Token>> ranges;
     private final UUID pendingRepair;
     private final PreviewKind previewKind;
 
-    public StreamingRepairTask(RepairJobDesc desc, InetAddressAndPort initiator, InetAddressAndPort src, InetAddressAndPort dst, Collection<Range<Token>> ranges,  UUID pendingRepair, PreviewKind previewKind, boolean asymmetric)
+    public StreamingRepairTask(RepairJobDesc desc, InetAddress initiator, InetAddress src, InetAddress dst, Collection<Range<Token>> ranges,  UUID pendingRepair, PreviewKind previewKind, boolean asymmetric)
     {
         this.desc = desc;
         this.initiator = initiator;
@@ -72,22 +69,21 @@ public class StreamingRepairTask implements Runnable, StreamEventHandler
 
     public void run()
     {
+        InetAddress dest = dst;
+        InetAddress preferred = SystemKeyspace.getPreferredIP(dest);
         logger.info("[streaming task #{}] Performing streaming repair of {} ranges with {}", desc.sessionId, ranges.size(), dst);
-        createStreamPlan(dst).execute();
+        createStreamPlan(dest, preferred).execute();
     }
 
     @VisibleForTesting
-    StreamPlan createStreamPlan(InetAddressAndPort dest)
+    StreamPlan createStreamPlan(InetAddress dest, InetAddress preferred)
     {
-        StreamPlan sp = new StreamPlan(StreamOperation.REPAIR, 1, false, pendingRepair, previewKind)
+        StreamPlan sp = new StreamPlan(StreamOperation.REPAIR, 1, false, false, pendingRepair, previewKind)
                .listeners(this)
                .flushBeforeTransfer(pendingRepair == null) // sstables are isolated at the beginning of an incremental repair session, so flushing isn't neccessary
-               // see comment on RangesAtEndpoint.toDummyList for why we synthesize replicas here
-               .requestRanges(dest, desc.keyspace, RangesAtEndpoint.toDummyList(ranges),
-                       RangesAtEndpoint.toDummyList(Collections.emptyList()), desc.columnFamily); // request ranges from the remote node
+               .requestRanges(dest, preferred, desc.keyspace, ranges, desc.columnFamily); // request ranges from the remote node
         if (!asymmetric)
-            // see comment on RangesAtEndpoint.toDummyList for why we synthesize replicas here
-            sp.transferRanges(dest, desc.keyspace, RangesAtEndpoint.toDummyList(ranges), desc.columnFamily); // send ranges to the remote node
+            sp.transferRanges(dest, preferred, desc.keyspace, ranges, desc.columnFamily); // send ranges to the remote node
         return sp;
     }
 
@@ -98,19 +94,19 @@ public class StreamingRepairTask implements Runnable, StreamEventHandler
     }
 
     /**
-     * If we succeeded on both stream in and out, respond back to coordinator
+     * If we succeeded on both stream in and out, reply back to coordinator
      */
     public void onSuccess(StreamState state)
     {
         logger.info("[repair #{}] streaming task succeed, returning response to {}", desc.sessionId, initiator);
-        MessagingService.instance().send(Message.out(SYNC_RSP, new SyncResponse(desc, src, dst, true, state.createSummaries())), initiator);
+        MessagingService.instance().sendOneWay(new SyncComplete(desc, src, dst, true, state.createSummaries()).createMessage(), initiator);
     }
 
     /**
-     * If we failed on either stream in or out, respond fail to coordinator
+     * If we failed on either stream in or out, reply fail to coordinator
      */
     public void onFailure(Throwable t)
     {
-        MessagingService.instance().send(Message.out(SYNC_RSP, new SyncResponse(desc, src, dst, false, Collections.emptyList())), initiator);
+        MessagingService.instance().sendOneWay(new SyncComplete(desc, src, dst, false, Collections.emptyList()).createMessage(), initiator);
     }
 }

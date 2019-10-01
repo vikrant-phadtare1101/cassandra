@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.repair.consistent;
 
+import java.net.InetAddress;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -26,7 +27,6 @@ import java.util.Objects;
 
 import com.google.common.collect.Lists;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.RepairResult;
 import org.apache.cassandra.repair.RepairSessionResult;
 import org.apache.cassandra.repair.SyncStat;
@@ -42,14 +42,14 @@ public class SyncStatSummary
 
     private static class Session
     {
-        final InetAddressAndPort src;
-        final InetAddressAndPort dst;
+        final InetAddress src;
+        final InetAddress dst;
 
         int files = 0;
         long bytes = 0;
         long ranges = 0;
 
-        Session(InetAddressAndPort src, InetAddressAndPort dst)
+        Session(InetAddress src, InetAddress dst)
         {
             this.src = src;
             this.dst = dst;
@@ -84,7 +84,7 @@ public class SyncStatSummary
         int ranges = -1;
         boolean totalsCalculated = false;
 
-        final Map<Pair<InetAddressAndPort, InetAddressAndPort>, Session> sessions = new HashMap<>();
+        final Map<Pair<InetAddress, InetAddress>, Session> sessions = new HashMap<>();
 
         Table(String keyspace, String table)
         {
@@ -92,9 +92,9 @@ public class SyncStatSummary
             this.table = table;
         }
 
-        Session getOrCreate(InetAddressAndPort from, InetAddressAndPort to)
+        Session getOrCreate(InetAddress from, InetAddress to)
         {
-            Pair<InetAddressAndPort, InetAddressAndPort> k = Pair.create(from, to);
+            Pair<InetAddress, InetAddress> k = Pair.create(from, to);
             if (!sessions.containsKey(k))
             {
                 sessions.put(k, new Session(from, to));

@@ -26,7 +26,6 @@ import java.util.UUID;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.utils.WrappedRunnable;
 
 
@@ -94,7 +93,7 @@ class TracingImpl extends Tracing
     }
 
     @Override
-    protected TraceState newTraceState(InetAddressAndPort coordinator, UUID sessionId, TraceType traceType)
+    protected TraceState newTraceState(InetAddress coordinator, UUID sessionId, TraceType traceType)
     {
         return new TraceStateImpl(coordinator, sessionId, traceType);
     }

@@ -35,18 +35,16 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LogRecord.Type;
-import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.SnapshotDeletingTask;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.tools.StandaloneSSTableUtil;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.utils.concurrent.Ref;
 import org.apache.cassandra.utils.concurrent.RefCounted;
@@ -147,28 +145,19 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
     }
 
     /**
-     * helper method for tests, creates the remove records per sstable
-     */
-    @VisibleForTesting
-    SSTableTidier obsoleted(SSTableReader sstable)
-    {
-        return obsoleted(sstable, LogRecord.make(Type.REMOVE, sstable));
-    }
-
-    /**
      * Schedule a reader for deletion as soon as it is fully unreferenced.
      */
-    SSTableTidier obsoleted(SSTableReader reader, LogRecord logRecord)
+    SSTableTidier obsoleted(SSTableReader reader)
     {
-        if (txnFile.contains(Type.ADD, reader, logRecord))
+        if (txnFile.contains(Type.ADD, reader))
         {
-            if (txnFile.contains(Type.REMOVE, reader, logRecord))
+            if (txnFile.contains(Type.REMOVE, reader))
                 throw new IllegalArgumentException();
 
             return new SSTableTidier(reader, true, this);
         }
 
-        txnFile.addRecord(logRecord);
+        txnFile.add(Type.REMOVE, reader);
 
         if (tracker != null)
             tracker.notifyDeleting(reader);
@@ -176,11 +165,21 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
         return new SSTableTidier(reader, false, this);
     }
 
-    Map<SSTable, LogRecord> makeRemoveRecords(Iterable<SSTableReader> sstables)
+    Map<SSTableReader, SSTableTidier> bulkObsoletion(Iterable<SSTableReader> sstables)
     {
-        return txnFile.makeRecords(Type.REMOVE, sstables);
-    }
+        if (!txnFile.isEmpty())
+            throw new IllegalStateException("Bad state when doing bulk obsoletions");
 
+        txnFile.addAll(Type.REMOVE, sstables);
+        Map<SSTableReader, SSTableTidier> tidiers = new HashMap<>();
+        for (SSTableReader sstable : sstables)
+        {
+            if (tracker != null)
+                tracker.notifyDeleting(sstable);
+            tidiers.put(sstable, new SSTableTidier(sstable, false, this));
+        }
+        return tidiers;
+    }
 
     OperationType type()
     {
@@ -235,7 +234,7 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
         catch (IOException e)
         {
             logger.error("Unable to delete {}", file, e);
-            FileUtils.handleFSErrorAndPropagate(new FSWriteError(e, file));
+            throw new RuntimeException(e);
         }
     }
 
@@ -269,10 +268,8 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
             if (logger.isTraceEnabled())
                 logger.trace("Removing files for transaction log {}", data);
 
-            // this happens if we forget to close a txn and the garbage collector closes it for us
-            // or if the transaction journal was never properly created in the first place
             if (!data.completed())
-            {
+            { // this happens if we forget to close a txn and the garbage collector closes it for us
                 logger.error("Transaction log {} indicates txn was not completed, trying to abort it now", data);
                 Throwable err = Throwables.perform((Throwable)null, data::abort);
                 if (err != null)
@@ -424,7 +421,7 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
      * for further details on transaction logs.
      *
      * This method is called on startup and by the standalone sstableutil tool when the cleanup option is specified,
-     * @see org.apache.cassandra.tools.StandaloneSSTableUtil
+     * @see StandaloneSSTableUtil.
      *
      * @return true if the leftovers of all transaction logs found were removed, false otherwise.
      *

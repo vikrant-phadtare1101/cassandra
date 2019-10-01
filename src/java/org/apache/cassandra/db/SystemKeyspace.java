@@ -29,14 +29,12 @@ import java.util.stream.StreamSupport;
 import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
-import com.google.common.util.concurrent.ListenableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,7 +42,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.*;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.CompactionHistoryTabularData;
 import org.apache.cassandra.db.marshal.*;
@@ -54,7 +52,6 @@ import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.*;
 import org.apache.cassandra.locator.IEndpointSnitch;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.metrics.RestorableMeter;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.*;
@@ -72,8 +69,6 @@ import static java.util.Collections.singletonMap;
 
 import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 import static org.apache.cassandra.cql3.QueryProcessor.executeOnceInternal;
-import static org.apache.cassandra.locator.Replica.fullReplica;
-import static org.apache.cassandra.locator.Replica.transientReplica;
 
 public final class SystemKeyspace
 {
@@ -96,23 +91,18 @@ public final class SystemKeyspace
     public static final String PAXOS = "paxos";
     public static final String BUILT_INDEXES = "IndexInfo";
     public static final String LOCAL = "local";
-    public static final String PEERS_V2 = "peers_v2";
-    public static final String PEER_EVENTS_V2 = "peer_events_v2";
+    public static final String PEERS = "peers";
+    public static final String PEER_EVENTS = "peer_events";
+    public static final String RANGE_XFERS = "range_xfers";
     public static final String COMPACTION_HISTORY = "compaction_history";
     public static final String SSTABLE_ACTIVITY = "sstable_activity";
     public static final String SIZE_ESTIMATES = "size_estimates";
-    public static final String AVAILABLE_RANGES_V2 = "available_ranges_v2";
-    public static final String TRANSFERRED_RANGES_V2 = "transferred_ranges_v2";
+    public static final String AVAILABLE_RANGES = "available_ranges";
+    public static final String TRANSFERRED_RANGES = "transferred_ranges";
     public static final String VIEW_BUILDS_IN_PROGRESS = "view_builds_in_progress";
     public static final String BUILT_VIEWS = "built_views";
     public static final String PREPARED_STATEMENTS = "prepared_statements";
     public static final String REPAIRS = "repairs";
-
-    @Deprecated public static final String LEGACY_PEERS = "peers";
-    @Deprecated public static final String LEGACY_PEER_EVENTS = "peer_events";
-    @Deprecated public static final String LEGACY_TRANSFERRED_RANGES = "transferred_ranges";
-    @Deprecated public static final String LEGACY_AVAILABLE_RANGES = "available_ranges";
-
 
     public static final TableMetadata Batches =
         parse(BATCHES,
@@ -123,25 +113,25 @@ public final class SystemKeyspace
               + "version int,"
               + "PRIMARY KEY ((id)))")
               .partitioner(new LocalPartitioner(TimeUUIDType.instance))
-              .compaction(CompactionParams.stcs(singletonMap("min_threshold", "2")))
+              .compaction(CompactionParams.scts(singletonMap("min_threshold", "2")))
               .build();
 
     private static final TableMetadata Paxos =
         parse(PAXOS,
-                "in-progress paxos proposals",
-                "CREATE TABLE %s ("
-                + "row_key blob,"
-                + "cf_id UUID,"
-                + "in_progress_ballot timeuuid,"
-                + "most_recent_commit blob,"
-                + "most_recent_commit_at timeuuid,"
-                + "most_recent_commit_version int,"
-                + "proposal blob,"
-                + "proposal_ballot timeuuid,"
-                + "proposal_version int,"
-                + "PRIMARY KEY ((row_key), cf_id))")
-                .compaction(CompactionParams.lcs(emptyMap()))
-                .build();
+              "in-progress paxos proposals",
+              "CREATE TABLE %s ("
+              + "row_key blob,"
+              + "cf_id UUID,"
+              + "in_progress_ballot timeuuid,"
+              + "most_recent_commit blob,"
+              + "most_recent_commit_at timeuuid,"
+              + "most_recent_commit_version int,"
+              + "proposal blob,"
+              + "proposal_ballot timeuuid,"
+              + "proposal_version int,"
+              + "PRIMARY KEY ((row_key), cf_id))")
+              .compaction(CompactionParams.lcs(emptyMap()))
+              .build();
 
     private static final TableMetadata BuiltIndexes =
         parse(BUILT_INDEXES,
@@ -155,122 +145,122 @@ public final class SystemKeyspace
 
     private static final TableMetadata Local =
         parse(LOCAL,
-                "information about the local node",
-                "CREATE TABLE %s ("
-                + "key text,"
-                + "bootstrapped text,"
-                + "broadcast_address inet,"
-                + "broadcast_port int,"
-                + "cluster_name text,"
-                + "cql_version text,"
-                + "data_center text,"
-                + "gossip_generation int,"
-                + "host_id uuid,"
-                + "listen_address inet,"
-                + "listen_port int,"
-                + "native_protocol_version text,"
-                + "partitioner text,"
-                + "rack text,"
-                + "release_version text,"
-                + "rpc_address inet,"
-                + "rpc_port int,"
-                + "schema_version uuid,"
-                + "tokens set<varchar>,"
-                + "truncated_at map<uuid, blob>,"
-                + "PRIMARY KEY ((key)))"
-                ).recordDeprecatedSystemColumn("thrift_version", UTF8Type.instance)
-                .build();
+              "information about the local node",
+              "CREATE TABLE %s ("
+              + "key text,"
+              + "bootstrapped text,"
+              + "broadcast_address inet,"
+              + "cluster_name text,"
+              + "cql_version text,"
+              + "data_center text,"
+              + "gossip_generation int,"
+              + "host_id uuid,"
+              + "listen_address inet,"
+              + "native_protocol_version text,"
+              + "partitioner text,"
+              + "rack text,"
+              + "release_version text,"
+              + "rpc_address inet,"
+              + "schema_version uuid,"
+              + "tokens set<varchar>,"
+              + "truncated_at map<uuid, blob>,"
+              + "PRIMARY KEY ((key)))")
+              .recordDeprecatedSystemColumn("thrift_version", UTF8Type.instance)
+              .build();
 
-    private static final TableMetadata PeersV2 =
-        parse(PEERS_V2,
-                "information about known peers in the cluster",
-                "CREATE TABLE %s ("
-                + "peer inet,"
-                + "peer_port int,"
-                + "data_center text,"
-                + "host_id uuid,"
-                + "preferred_ip inet,"
-                + "preferred_port int,"
-                + "rack text,"
-                + "release_version text,"
-                + "native_address inet,"
-                + "native_port int,"
-                + "schema_version uuid,"
-                + "tokens set<varchar>,"
-                + "PRIMARY KEY ((peer), peer_port))")
-                .build();
+    private static final TableMetadata Peers =
+        parse(PEERS,
+              "information about known peers in the cluster",
+              "CREATE TABLE %s ("
+              + "peer inet,"
+              + "data_center text,"
+              + "host_id uuid,"
+              + "preferred_ip inet,"
+              + "rack text,"
+              + "release_version text,"
+              + "rpc_address inet,"
+              + "schema_version uuid,"
+              + "tokens set<varchar>,"
+              + "PRIMARY KEY ((peer)))")
+              .build();
 
-    private static final TableMetadata PeerEventsV2 =
-        parse(PEER_EVENTS_V2,
-                "events related to peers",
-                "CREATE TABLE %s ("
-                + "peer inet,"
-                + "peer_port int,"
-                + "hints_dropped map<uuid, int>,"
-                + "PRIMARY KEY ((peer), peer_port))")
-                .build();
+    private static final TableMetadata PeerEvents =
+        parse(PEER_EVENTS,
+              "events related to peers",
+              "CREATE TABLE %s ("
+              + "peer inet,"
+              + "hints_dropped map<uuid, int>,"
+              + "PRIMARY KEY ((peer)))")
+              .build();
+
+    private static final TableMetadata RangeXfers =
+        parse(RANGE_XFERS,
+              "ranges requested for transfer",
+              "CREATE TABLE %s ("
+              + "token_bytes blob,"
+              + "requested_at timestamp,"
+              + "PRIMARY KEY ((token_bytes)))")
+              .build();
 
     private static final TableMetadata CompactionHistory =
         parse(COMPACTION_HISTORY,
-                "week-long compaction history",
-                "CREATE TABLE %s ("
-                + "id uuid,"
-                + "bytes_in bigint,"
-                + "bytes_out bigint,"
-                + "columnfamily_name text,"
-                + "compacted_at timestamp,"
-                + "keyspace_name text,"
-                + "rows_merged map<int, bigint>,"
-                + "PRIMARY KEY ((id)))")
-                .defaultTimeToLive((int) TimeUnit.DAYS.toSeconds(7))
-                .build();
+              "week-long compaction history",
+              "CREATE TABLE %s ("
+              + "id uuid,"
+              + "bytes_in bigint,"
+              + "bytes_out bigint,"
+              + "columnfamily_name text,"
+              + "compacted_at timestamp,"
+              + "keyspace_name text,"
+              + "rows_merged map<int, bigint>,"
+              + "PRIMARY KEY ((id)))")
+              .defaultTimeToLive((int) TimeUnit.DAYS.toSeconds(7))
+              .build();
 
     private static final TableMetadata SSTableActivity =
         parse(SSTABLE_ACTIVITY,
-                "historic sstable read rates",
-                "CREATE TABLE %s ("
-                + "keyspace_name text,"
-                + "columnfamily_name text,"
-                + "generation int,"
-                + "rate_120m double,"
-                + "rate_15m double,"
-                + "PRIMARY KEY ((keyspace_name, columnfamily_name, generation)))")
-                .build();
+              "historic sstable read rates",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "columnfamily_name text,"
+              + "generation int,"
+              + "rate_120m double,"
+              + "rate_15m double,"
+              + "PRIMARY KEY ((keyspace_name, columnfamily_name, generation)))")
+              .build();
 
     private static final TableMetadata SizeEstimates =
         parse(SIZE_ESTIMATES,
-                "per-table primary range size estimates",
-                "CREATE TABLE %s ("
-                + "keyspace_name text,"
-                + "table_name text,"
-                + "range_start text,"
-                + "range_end text,"
-                + "mean_partition_size bigint,"
-                + "partitions_count bigint,"
-                + "PRIMARY KEY ((keyspace_name), table_name, range_start, range_end))")
-                .build();
+              "per-table primary range size estimates",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "table_name text,"
+              + "range_start text,"
+              + "range_end text,"
+              + "mean_partition_size bigint,"
+              + "partitions_count bigint,"
+              + "PRIMARY KEY ((keyspace_name), table_name, range_start, range_end))")
+              .build();
 
-    private static final TableMetadata AvailableRangesV2 =
-    parse(AVAILABLE_RANGES_V2,
-          "available keyspace/ranges during bootstrap/replace that are ready to be served",
-          "CREATE TABLE %s ("
-          + "keyspace_name text,"
-          + "full_ranges set<blob>,"
-          + "transient_ranges set<blob>,"
-          + "PRIMARY KEY ((keyspace_name)))")
-    .build();
+    private static final TableMetadata AvailableRanges =
+        parse(AVAILABLE_RANGES,
+              "available keyspace/ranges during bootstrap/replace that are ready to be served",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "ranges set<blob>,"
+              + "PRIMARY KEY ((keyspace_name)))")
+              .build();
 
-    private static final TableMetadata TransferredRangesV2 =
-        parse(TRANSFERRED_RANGES_V2,
-                "record of transferred ranges for streaming operation",
-                "CREATE TABLE %s ("
-                + "operation text,"
-                + "peer inet,"
-                + "peer_port int,"
-                + "keyspace_name text,"
-                + "ranges set<blob>,"
-                + "PRIMARY KEY ((operation, keyspace_name), peer, peer_port))")
-                .build();
+    private static final TableMetadata TransferredRanges =
+        parse(TRANSFERRED_RANGES,
+              "record of transferred ranges for streaming operation",
+              "CREATE TABLE %s ("
+              + "operation text,"
+              + "peer inet,"
+              + "keyspace_name text,"
+              + "ranges set<blob>,"
+              + "PRIMARY KEY ((operation, keyspace_name), peer))")
+              .build();
 
     private static final TableMetadata ViewBuildsInProgress =
         parse(VIEW_BUILDS_IN_PROGRESS,
@@ -287,94 +277,44 @@ public final class SystemKeyspace
 
     private static final TableMetadata BuiltViews =
         parse(BUILT_VIEWS,
-                "built views",
-                "CREATE TABLE %s ("
-                + "keyspace_name text,"
-                + "view_name text,"
-                + "status_replicated boolean,"
-                + "PRIMARY KEY ((keyspace_name), view_name))")
-                .build();
+              "built views",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "view_name text,"
+              + "status_replicated boolean,"
+              + "PRIMARY KEY ((keyspace_name), view_name))")
+              .build();
 
     private static final TableMetadata PreparedStatements =
         parse(PREPARED_STATEMENTS,
-                "prepared statements",
-                "CREATE TABLE %s ("
-                + "prepared_id blob,"
-                + "logged_keyspace text,"
-                + "query_string text,"
-                + "PRIMARY KEY ((prepared_id)))")
-                .build();
+              "prepared statements",
+              "CREATE TABLE %s ("
+              + "prepared_id blob,"
+              + "logged_keyspace text,"
+              + "query_string text,"
+              + "PRIMARY KEY ((prepared_id)))")
+              .build();
 
     private static final TableMetadata Repairs =
         parse(REPAIRS,
-          "repairs",
-          "CREATE TABLE %s ("
-          + "parent_id timeuuid, "
-          + "started_at timestamp, "
-          + "last_update timestamp, "
-          + "repaired_at timestamp, "
-          + "state int, "
-          + "coordinator inet, "
-          + "coordinator_port int,"
-          + "participants set<inet>,"
-          + "participants_wp set<text>,"
-          + "ranges set<blob>, "
-          + "cfids set<uuid>, "
-          + "PRIMARY KEY (parent_id))").build();
-
-    @Deprecated
-    private static final TableMetadata LegacyPeers =
-        parse(LEGACY_PEERS,
-            "information about known peers in the cluster",
-            "CREATE TABLE %s ("
-            + "peer inet,"
-            + "data_center text,"
-            + "host_id uuid,"
-            + "preferred_ip inet,"
-            + "rack text,"
-            + "release_version text,"
-            + "rpc_address inet,"
-            + "schema_version uuid,"
-            + "tokens set<varchar>,"
-            + "PRIMARY KEY ((peer)))")
-            .build();
-
-    @Deprecated
-    private static final TableMetadata LegacyPeerEvents =
-        parse(LEGACY_PEER_EVENTS,
-            "events related to peers",
-            "CREATE TABLE %s ("
-            + "peer inet,"
-            + "hints_dropped map<uuid, int>,"
-            + "PRIMARY KEY ((peer)))")
-            .build();
-
-    @Deprecated
-    private static final TableMetadata LegacyTransferredRanges =
-        parse(LEGACY_TRANSFERRED_RANGES,
-            "record of transferred ranges for streaming operation",
-            "CREATE TABLE %s ("
-            + "operation text,"
-            + "peer inet,"
-            + "keyspace_name text,"
-            + "ranges set<blob>,"
-            + "PRIMARY KEY ((operation, keyspace_name), peer))")
-            .build();
-
-    @Deprecated
-    private static final TableMetadata LegacyAvailableRanges =
-        parse(LEGACY_AVAILABLE_RANGES,
-              "available keyspace/ranges during bootstrap/replace that are ready to be served",
+              "repairs",
               "CREATE TABLE %s ("
-              + "keyspace_name text,"
-              + "ranges set<blob>,"
-              + "PRIMARY KEY ((keyspace_name)))")
-        .build();
+              + "parent_id timeuuid, "
+              + "started_at timestamp, "
+              + "last_update timestamp, "
+              + "repaired_at timestamp, "
+              + "state int, "
+              + "coordinator inet, "
+              + "participants set<inet>, "
+              + "ranges set<blob>, "
+              + "cfids set<uuid>, "
+              + "PRIMARY KEY (parent_id))").build();
 
     private static TableMetadata.Builder parse(String table, String description, String cql)
     {
         return CreateTableStatement.parse(format(cql, table), SchemaConstants.SYSTEM_KEYSPACE_NAME)
                                    .id(TableId.forSystemTable(SchemaConstants.SYSTEM_KEYSPACE_NAME, table))
+                                   .dcLocalReadRepairChance(0.0)
                                    .gcGraceSeconds(0)
                                    .memtableFlushPeriod((int) TimeUnit.HOURS.toMillis(1))
                                    .comment(description);
@@ -391,17 +331,14 @@ public final class SystemKeyspace
                          Batches,
                          Paxos,
                          Local,
-                         PeersV2,
-                         LegacyPeers,
-                         PeerEventsV2,
-                         LegacyPeerEvents,
+                         Peers,
+                         PeerEvents,
+                         RangeXfers,
                          CompactionHistory,
                          SSTableActivity,
                          SizeEstimates,
-                         AvailableRangesV2,
-                         LegacyAvailableRanges,
-                         TransferredRangesV2,
-                         LegacyTransferredRanges,
+                         AvailableRanges,
+                         TransferredRanges,
                          ViewBuildsInProgress,
                          BuiltViews,
                          PreparedStatements,
@@ -447,12 +384,9 @@ public final class SystemKeyspace
                      "rack," +
                      "partitioner," +
                      "rpc_address," +
-                     "rpc_port," +
                      "broadcast_address," +
-                     "broadcast_port," +
-                     "listen_address," +
-                     "listen_port" +
-                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                     "listen_address" +
+                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
         executeOnceInternal(format(req, LOCAL),
                             LOCAL,
@@ -460,15 +394,12 @@ public final class SystemKeyspace
                             FBUtilities.getReleaseVersionString(),
                             QueryProcessor.CQL_VERSION.toString(),
                             String.valueOf(ProtocolVersion.CURRENT.asInt()),
-                            snitch.getLocalDatacenter(),
-                            snitch.getLocalRack(),
+                            snitch.getDatacenter(FBUtilities.getBroadcastAddress()),
+                            snitch.getRack(FBUtilities.getBroadcastAddress()),
                             DatabaseDescriptor.getPartitioner().getClass().getName(),
                             DatabaseDescriptor.getRpcAddress(),
-                            DatabaseDescriptor.getNativeTransportPort(),
-                            FBUtilities.getJustBroadcastAddress(),
-                            DatabaseDescriptor.getStoragePort(),
-                            FBUtilities.getJustLocalAddress(),
-                            DatabaseDescriptor.getStoragePort());
+                            FBUtilities.getBroadcastAddress(),
+                            FBUtilities.getLocalAddress());
     }
 
     public static void updateCompactionHistory(String ksname,
@@ -530,10 +461,11 @@ public final class SystemKeyspace
     {
         String buildReq = "DELETE FROM %s.%s WHERE keyspace_name = ? AND view_name = ?";
         executeInternal(String.format(buildReq, SchemaConstants.SYSTEM_KEYSPACE_NAME, VIEW_BUILDS_IN_PROGRESS), keyspaceName, viewName);
+        forceBlockingFlush(VIEW_BUILDS_IN_PROGRESS);
 
         String builtReq = "DELETE FROM %s.\"%s\" WHERE keyspace_name = ? AND view_name = ? IF EXISTS";
         executeInternal(String.format(builtReq, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_VIEWS), keyspaceName, viewName);
-        forceBlockingFlush(VIEW_BUILDS_IN_PROGRESS, BUILT_VIEWS);
+        forceBlockingFlush(BUILT_VIEWS);
     }
 
     public static void finishViewBuildStatus(String ksname, String viewName)
@@ -677,65 +609,39 @@ public final class SystemKeyspace
     /**
      * Record tokens being used by another node
      */
-    public static synchronized void updateTokens(InetAddressAndPort ep, Collection<Token> tokens)
+    public static synchronized void updateTokens(InetAddress ep, Collection<Token> tokens)
     {
-        if (ep.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (ep.equals(FBUtilities.getBroadcastAddress()))
             return;
 
         String req = "INSERT INTO system.%s (peer, tokens) VALUES (?, ?)";
-        executeInternal(String.format(req, LEGACY_PEERS), ep.address, tokensAsSet(tokens));
-        req = "INSERT INTO system.%s (peer, peer_port, tokens) VALUES (?, ?, ?)";
-        executeInternal(String.format(req, PEERS_V2), ep.address, ep.port, tokensAsSet(tokens));
+        executeInternal(format(req, PEERS), ep, tokensAsSet(tokens));
     }
 
-    public static synchronized boolean updatePreferredIP(InetAddressAndPort ep, InetAddressAndPort preferred_ip)
+    public static synchronized void updatePreferredIP(InetAddress ep, InetAddress preferred_ip)
     {
-        if (preferred_ip.equals(getPreferredIP(ep)))
-            return false;
+        if (getPreferredIP(ep) == preferred_ip)
+            return;
 
         String req = "INSERT INTO system.%s (peer, preferred_ip) VALUES (?, ?)";
-        executeInternal(String.format(req, LEGACY_PEERS), ep.address, preferred_ip.address);
-        req = "INSERT INTO system.%s (peer, peer_port, preferred_ip, preferred_port) VALUES (?, ?, ?, ?)";
-        executeInternal(String.format(req, PEERS_V2), ep.address, ep.port, preferred_ip.address, preferred_ip.port);
-        forceBlockingFlush(LEGACY_PEERS, PEERS_V2);
-        return true;
+        executeInternal(format(req, PEERS), ep, preferred_ip);
+        forceBlockingFlush(PEERS);
     }
 
-    public static synchronized void updatePeerInfo(InetAddressAndPort ep, String columnName, Object value)
+    public static synchronized void updatePeerInfo(InetAddress ep, String columnName, Object value)
     {
-        if (ep.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (ep.equals(FBUtilities.getBroadcastAddress()))
             return;
 
         String req = "INSERT INTO system.%s (peer, %s) VALUES (?, ?)";
-        executeInternal(String.format(req, LEGACY_PEERS, columnName), ep.address, value);
-        //This column doesn't match across the two tables
-        if (columnName.equals("rpc_address"))
-        {
-            columnName = "native_address";
-        }
-        req = "INSERT INTO system.%s (peer, peer_port, %s) VALUES (?, ?, ?)";
-        executeInternal(String.format(req, PEERS_V2, columnName), ep.address, ep.port, value);
+        executeInternal(format(req, PEERS, columnName), ep, value);
     }
 
-    public static synchronized void updatePeerNativeAddress(InetAddressAndPort ep, InetAddressAndPort address)
-    {
-        if (ep.equals(FBUtilities.getBroadcastAddressAndPort()))
-            return;
-
-        String req = "INSERT INTO system.%s (peer, rpc_address) VALUES (?, ?)";
-        executeInternal(String.format(req, LEGACY_PEERS), ep.address, address.address);
-        req = "INSERT INTO system.%s (peer, peer_port, native_address, native_port) VALUES (?, ?, ?, ?)";
-        executeInternal(String.format(req, PEERS_V2), ep.address, ep.port, address.address, address.port);
-    }
-
-
-    public static synchronized void updateHintsDropped(InetAddressAndPort ep, UUID timePeriod, int value)
+    public static synchronized void updateHintsDropped(InetAddress ep, UUID timePeriod, int value)
     {
         // with 30 day TTL
         String req = "UPDATE system.%s USING TTL 2592000 SET hints_dropped[ ? ] = ? WHERE peer = ?";
-        executeInternal(String.format(req, LEGACY_PEER_EVENTS), timePeriod, value, ep.address);
-        req = "UPDATE system.%s USING TTL 2592000 SET hints_dropped[ ? ] = ? WHERE peer = ? AND peer_port = ?";
-        executeInternal(String.format(req, PEER_EVENTS_V2), timePeriod, value, ep.address, ep.port);
+        executeInternal(format(req, PEER_EVENTS), timePeriod, value, ep);
     }
 
     public static synchronized void updateSchemaVersion(UUID version)
@@ -767,18 +673,16 @@ public final class SystemKeyspace
     /**
      * Remove stored tokens being used by another node
      */
-    public static synchronized void removeEndpoint(InetAddressAndPort ep)
+    public static synchronized void removeEndpoint(InetAddress ep)
     {
         String req = "DELETE FROM system.%s WHERE peer = ?";
-        executeInternal(String.format(req, LEGACY_PEERS), ep.address);
-        req = String.format("DELETE FROM system.%s WHERE peer = ? AND peer_port = ?", PEERS_V2);
-        executeInternal(req, ep.address, ep.port);
-        forceBlockingFlush(LEGACY_PEERS, PEERS_V2);
+        executeInternal(format(req, PEERS), ep);
+        forceBlockingFlush(PEERS);
     }
 
     /**
      * This method is used to update the System Keyspace with the new tokens for this node
-     */
+    */
     public static synchronized void updateTokens(Collection<Token> tokens)
     {
         assert !tokens.isEmpty() : "removeEndpoint should be used instead";
@@ -792,32 +696,22 @@ public final class SystemKeyspace
         forceBlockingFlush(LOCAL);
     }
 
-    public static void forceBlockingFlush(String ...cfnames)
+    public static void forceBlockingFlush(String cfname)
     {
         if (!DatabaseDescriptor.isUnsafeSystem())
-        {
-            List<ListenableFuture<CommitLogPosition>> futures = new ArrayList<>();
-
-            for (String cfname : cfnames)
-            {
-                futures.add(Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(cfname).forceFlush());
-            }
-            FBUtilities.waitOnFutures(futures);
-        }
+            FBUtilities.waitOnFuture(Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(cfname).forceFlush());
     }
 
     /**
      * Return a map of stored tokens to IP addresses
      *
      */
-    public static SetMultimap<InetAddressAndPort, Token> loadTokens()
+    public static SetMultimap<InetAddress, Token> loadTokens()
     {
-        SetMultimap<InetAddressAndPort, Token> tokenMap = HashMultimap.create();
-        for (UntypedResultSet.Row row : executeInternal("SELECT peer, peer_port, tokens FROM system." + PEERS_V2))
+        SetMultimap<InetAddress, Token> tokenMap = HashMultimap.create();
+        for (UntypedResultSet.Row row : executeInternal("SELECT peer, tokens FROM system." + PEERS))
         {
-            InetAddress address = row.getInetAddress("peer");
-            Integer port = row.getInt("peer_port");
-            InetAddressAndPort peer = InetAddressAndPort.getByAddressOverrideDefaults(address, port);
+            InetAddress peer = row.getInetAddress("peer");
             if (row.has("tokens"))
                 tokenMap.putAll(peer, deserializeTokens(row.getSet("tokens", UTF8Type.instance)));
         }
@@ -829,14 +723,12 @@ public final class SystemKeyspace
      * Return a map of store host_ids to IP addresses
      *
      */
-    public static Map<InetAddressAndPort, UUID> loadHostIds()
+    public static Map<InetAddress, UUID> loadHostIds()
     {
-        Map<InetAddressAndPort, UUID> hostIdMap = new HashMap<>();
-        for (UntypedResultSet.Row row : executeInternal("SELECT peer, peer_port, host_id FROM system." + PEERS_V2))
+        Map<InetAddress, UUID> hostIdMap = new HashMap<>();
+        for (UntypedResultSet.Row row : executeInternal("SELECT peer, host_id FROM system." + PEERS))
         {
-            InetAddress address = row.getInetAddress("peer");
-            Integer port = row.getInt("peer_port");
-            InetAddressAndPort peer = InetAddressAndPort.getByAddressOverrideDefaults(address, port);
+            InetAddress peer = row.getInetAddress("peer");
             if (row.has("host_id"))
             {
                 hostIdMap.put(peer, row.getUUID("host_id"));
@@ -851,29 +743,24 @@ public final class SystemKeyspace
      * @param ep endpoint address to check
      * @return Preferred IP for given endpoint if present, otherwise returns given ep
      */
-    public static InetAddressAndPort getPreferredIP(InetAddressAndPort ep)
+    public static InetAddress getPreferredIP(InetAddress ep)
     {
-        String req = "SELECT preferred_ip, preferred_port FROM system.%s WHERE peer=? AND peer_port = ?";
-        UntypedResultSet result = executeInternal(String.format(req, PEERS_V2), ep.address, ep.port);
+        String req = "SELECT preferred_ip FROM system.%s WHERE peer=?";
+        UntypedResultSet result = executeInternal(format(req, PEERS), ep);
         if (!result.isEmpty() && result.one().has("preferred_ip"))
-        {
-            UntypedResultSet.Row row = result.one();
-            return InetAddressAndPort.getByAddressOverrideDefaults(row.getInetAddress("preferred_ip"), row.getInt("preferred_port"));
-        }
+            return result.one().getInetAddress("preferred_ip");
         return ep;
     }
 
     /**
      * Return a map of IP addresses containing a map of dc and rack info
      */
-    public static Map<InetAddressAndPort, Map<String,String>> loadDcRackInfo()
+    public static Map<InetAddress, Map<String,String>> loadDcRackInfo()
     {
-        Map<InetAddressAndPort, Map<String, String>> result = new HashMap<>();
-        for (UntypedResultSet.Row row : executeInternal("SELECT peer, peer_port, data_center, rack from system." + PEERS_V2))
+        Map<InetAddress, Map<String, String>> result = new HashMap<>();
+        for (UntypedResultSet.Row row : executeInternal("SELECT peer, data_center, rack from system." + PEERS))
         {
-            InetAddress address = row.getInetAddress("peer");
-            Integer port = row.getInt("peer_port");
-            InetAddressAndPort peer = InetAddressAndPort.getByAddressOverrideDefaults(address, port);
+            InetAddress peer = row.getInetAddress("peer");
             if (row.has("data_center") && row.has("rack"))
             {
                 Map<String, String> dcRack = new HashMap<>();
@@ -892,16 +779,16 @@ public final class SystemKeyspace
      * @param ep endpoint address to check
      * @return Release version or null if version is unknown.
      */
-    public static CassandraVersion getReleaseVersion(InetAddressAndPort ep)
+    public static CassandraVersion getReleaseVersion(InetAddress ep)
     {
         try
         {
-            if (FBUtilities.getBroadcastAddressAndPort().equals(ep))
+            if (FBUtilities.getBroadcastAddress().equals(ep))
             {
                 return new CassandraVersion(FBUtilities.getReleaseVersionString());
             }
-            String req = "SELECT release_version FROM system.%s WHERE peer=? AND peer_port=?";
-            UntypedResultSet result = executeInternal(String.format(req, PEERS_V2), ep.address, ep.port);
+            String req = "SELECT release_version FROM system.%s WHERE peer=?";
+            UntypedResultSet result = executeInternal(format(req, PEERS), ep);
             if (result != null && result.one().has("release_version"))
             {
                 return new CassandraVersion(result.one().getString("release_version"));
@@ -1276,83 +1163,41 @@ public final class SystemKeyspace
         executeInternal(cql, keyspace, table);
     }
 
-    /**
-     * Clears size estimates for a keyspace (used to manually clean when we miss a keyspace drop)
-     */
-    public static void clearSizeEstimates(String keyspace)
+    public static synchronized void updateAvailableRanges(String keyspace, Collection<Range<Token>> completedRanges)
     {
-        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
-        executeInternal(cql, keyspace);
-    }
-
-    /**
-     * @return A multimap from keyspace to table for all tables with entries in size estimates
-     */
-    public static synchronized SetMultimap<String, String> getTablesWithSizeEstimates()
-    {
-        SetMultimap<String, String> keyspaceTableMap = HashMultimap.create();
-        String cql = String.format("SELECT keyspace_name, table_name FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
-        UntypedResultSet rs = executeInternal(cql);
-        for (UntypedResultSet.Row row : rs)
+        String cql = "UPDATE system.%s SET ranges = ranges + ? WHERE keyspace_name = ?";
+        Set<ByteBuffer> rangesToUpdate = new HashSet<>(completedRanges.size());
+        for (Range<Token> range : completedRanges)
         {
-            keyspaceTableMap.put(row.getString("keyspace_name"), row.getString("table_name"));
+            rangesToUpdate.add(rangeToBytes(range));
         }
-        return keyspaceTableMap;
+        executeInternal(format(cql, AVAILABLE_RANGES), rangesToUpdate, keyspace);
     }
 
-    public static synchronized void updateAvailableRanges(String keyspace, Collection<Range<Token>> completedFullRanges, Collection<Range<Token>> completedTransientRanges)
+    public static synchronized Set<Range<Token>> getAvailableRanges(String keyspace, IPartitioner partitioner)
     {
-        String cql = "UPDATE system.%s SET full_ranges = full_ranges + ?, transient_ranges = transient_ranges + ? WHERE keyspace_name = ?";
-        executeInternal(format(cql, AVAILABLE_RANGES_V2),
-                        completedFullRanges.stream().map(SystemKeyspace::rangeToBytes).collect(Collectors.toSet()),
-                        completedTransientRanges.stream().map(SystemKeyspace::rangeToBytes).collect(Collectors.toSet()),
-                        keyspace);
-    }
-
-    /**
-     * List of the streamed ranges, where transientness is encoded based on the source, where range was streamed from.
-     */
-    public static synchronized AvailableRanges getAvailableRanges(String keyspace, IPartitioner partitioner)
-    {
+        Set<Range<Token>> result = new HashSet<>();
         String query = "SELECT * FROM system.%s WHERE keyspace_name=?";
-        UntypedResultSet rs = executeInternal(format(query, AVAILABLE_RANGES_V2), keyspace);
-
-        ImmutableSet.Builder<Range<Token>> full = new ImmutableSet.Builder<>();
-        ImmutableSet.Builder<Range<Token>> trans = new ImmutableSet.Builder<>();
+        UntypedResultSet rs = executeInternal(format(query, AVAILABLE_RANGES), keyspace);
         for (UntypedResultSet.Row row : rs)
         {
-            Optional.ofNullable(row.getSet("full_ranges", BytesType.instance))
-                    .ifPresent(full_ranges -> full_ranges.stream()
-                            .map(buf -> byteBufferToRange(buf, partitioner))
-                            .forEach(full::add));
-            Optional.ofNullable(row.getSet("transient_ranges", BytesType.instance))
-                    .ifPresent(transient_ranges -> transient_ranges.stream()
-                            .map(buf -> byteBufferToRange(buf, partitioner))
-                            .forEach(trans::add));
+            Set<ByteBuffer> rawRanges = row.getSet("ranges", BytesType.instance);
+            for (ByteBuffer rawRange : rawRanges)
+            {
+                result.add(byteBufferToRange(rawRange, partitioner));
+            }
         }
-        return new AvailableRanges(full.build(), trans.build());
-    }
-
-    public static class AvailableRanges
-    {
-        public Set<Range<Token>> full;
-        public Set<Range<Token>> trans;
-
-        private AvailableRanges(Set<Range<Token>> full, Set<Range<Token>> trans)
-        {
-            this.full = full;
-            this.trans = trans;
-        }
+        return ImmutableSet.copyOf(result);
     }
 
     public static void resetAvailableRanges()
     {
-        ColumnFamilyStore availableRanges = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(AVAILABLE_RANGES_V2);
+        ColumnFamilyStore availableRanges = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(AVAILABLE_RANGES);
         availableRanges.truncateBlocking();
     }
 
     public static synchronized void updateTransferredRanges(StreamOperation streamOperation,
-                                                         InetAddressAndPort peer,
+                                                         InetAddress peer,
                                                          String keyspace,
                                                          Collection<Range<Token>> streamedRanges)
     {
@@ -1362,21 +1207,17 @@ public final class SystemKeyspace
         {
             rangesToUpdate.add(rangeToBytes(range));
         }
-        executeInternal(format(cql, LEGACY_TRANSFERRED_RANGES), rangesToUpdate, streamOperation.getDescription(), peer.address, keyspace);
-        cql = "UPDATE system.%s SET ranges = ranges + ? WHERE operation = ? AND peer = ? AND peer_port = ? AND keyspace_name = ?";
-        executeInternal(String.format(cql, TRANSFERRED_RANGES_V2), rangesToUpdate, streamOperation.getDescription(), peer.address, peer.port, keyspace);
+        executeInternal(format(cql, TRANSFERRED_RANGES), rangesToUpdate, streamOperation.getDescription(), peer, keyspace);
     }
 
-    public static synchronized Map<InetAddressAndPort, Set<Range<Token>>> getTransferredRanges(String description, String keyspace, IPartitioner partitioner)
+    public static synchronized Map<InetAddress, Set<Range<Token>>> getTransferredRanges(String description, String keyspace, IPartitioner partitioner)
     {
-        Map<InetAddressAndPort, Set<Range<Token>>> result = new HashMap<>();
+        Map<InetAddress, Set<Range<Token>>> result = new HashMap<>();
         String query = "SELECT * FROM system.%s WHERE operation = ? AND keyspace_name = ?";
-        UntypedResultSet rs = executeInternal(String.format(query, TRANSFERRED_RANGES_V2), description, keyspace);
+        UntypedResultSet rs = executeInternal(format(query, TRANSFERRED_RANGES), description, keyspace);
         for (UntypedResultSet.Row row : rs)
         {
-            InetAddress peerAddress = row.getInetAddress("peer");
-            int port = row.getInt("peer_port");
-            InetAddressAndPort peer = InetAddressAndPort.getByAddressOverrideDefaults(peerAddress, port);
+            InetAddress peer = row.getInetAddress("peer");
             Set<ByteBuffer> rawRanges = row.getSet("ranges", BytesType.instance);
             Set<Range<Token>> ranges = Sets.newHashSetWithExpectedSize(rawRanges.size());
             for (ByteBuffer rawRange : rawRanges)
@@ -1390,27 +1231,30 @@ public final class SystemKeyspace
 
     /**
      * Compare the release version in the system.local table with the one included in the distro.
-     * If they don't match, snapshot all tables in the system and schema keyspaces. This is intended
-     * to be called at startup to create a backup of the system tables during an upgrade
+     * If they don't match, snapshot all tables in the system keyspace. This is intended to be
+     * called at startup to create a backup of the system tables during an upgrade
      *
      * @throws IOException
      */
-    public static void snapshotOnVersionChange() throws IOException
+    public static boolean snapshotOnVersionChange() throws IOException
     {
         String previous = getPreviousVersionString();
         String next = FBUtilities.getReleaseVersionString();
 
-        // if we're restarting after an upgrade, snapshot the system and schema keyspaces
+        // if we're restarting after an upgrade, snapshot the system keyspace
         if (!previous.equals(NULL_VERSION.toString()) && !previous.equals(next))
 
         {
-            logger.info("Detected version upgrade from {} to {}, snapshotting system keyspaces", previous, next);
+            logger.info("Detected version upgrade from {} to {}, snapshotting system keyspace", previous, next);
             String snapshotName = Keyspace.getTimestampedSnapshotName(format("upgrade-%s-%s",
                                                                              previous,
                                                                              next));
-            for (String keyspace : SchemaConstants.LOCAL_SYSTEM_KEYSPACE_NAMES)
-                Keyspace.open(keyspace).snapshot(snapshotName, null);
+            Keyspace systemKs = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME);
+            systemKs.snapshot(snapshotName, null);
+            return true;
         }
+
+        return false;
     }
 
     /**
@@ -1450,13 +1294,7 @@ public final class SystemKeyspace
         return result.one().getString("release_version");
     }
 
-    @VisibleForTesting
-    public static Set<Range<Token>> rawRangesToRangeSet(Set<ByteBuffer> rawRanges, IPartitioner partitioner)
-    {
-        return rawRanges.stream().map(buf -> byteBufferToRange(buf, partitioner)).collect(Collectors.toSet());
-    }
-
-    static ByteBuffer rangeToBytes(Range<Token> range)
+    private static ByteBuffer rangeToBytes(Range<Token> range)
     {
         try (DataOutputBuffer out = new DataOutputBuffer())
         {

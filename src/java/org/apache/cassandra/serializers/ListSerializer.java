@@ -169,19 +169,13 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
         return (Class) List.class;
     }
 
-    @Override
     public ByteBuffer getSerializedValue(ByteBuffer collection, ByteBuffer key, AbstractType<?> comparator)
     {
         // We don't allow selecting an element of a list so we don't need this.
         throw new UnsupportedOperationException();
     }
 
-    @Override
-    public ByteBuffer getSliceFromSerialized(ByteBuffer collection,
-                                             ByteBuffer from,
-                                             ByteBuffer to,
-                                             AbstractType<?> comparator,
-                                             boolean frozen)
+    public ByteBuffer getSliceFromSerialized(ByteBuffer collection, ByteBuffer from, ByteBuffer to, AbstractType<?> comparator)
     {
         // We don't allow slicing of list so we don't need this.
         throw new UnsupportedOperationException();

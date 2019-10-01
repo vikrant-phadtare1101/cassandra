@@ -19,6 +19,7 @@ package org.apache.cassandra.repair;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -39,13 +40,11 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.gms.Gossiper;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.messages.RepairOption;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -75,55 +74,54 @@ public final class SystemDistributedKeyspace
 
     private static final TableMetadata RepairHistory =
         parse(REPAIR_HISTORY,
-                "Repair history",
-                "CREATE TABLE %s ("
-                     + "keyspace_name text,"
-                     + "columnfamily_name text,"
-                     + "id timeuuid,"
-                     + "parent_id timeuuid,"
-                     + "range_begin text,"
-                     + "range_end text,"
-                     + "coordinator inet,"
-                     + "coordinator_port int,"
-                     + "participants set<inet>,"
-                     + "participants_v2 set<text>,"
-                     + "exception_message text,"
-                     + "exception_stacktrace text,"
-                     + "status text,"
-                     + "started_at timestamp,"
-                     + "finished_at timestamp,"
-                     + "PRIMARY KEY ((keyspace_name, columnfamily_name), id))");
+              "Repair history",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "columnfamily_name text,"
+              + "id timeuuid,"
+              + "parent_id timeuuid,"
+              + "range_begin text,"
+              + "range_end text,"
+              + "coordinator inet,"
+              + "participants set<inet>,"
+              + "exception_message text,"
+              + "exception_stacktrace text,"
+              + "status text,"
+              + "started_at timestamp,"
+              + "finished_at timestamp,"
+              + "PRIMARY KEY ((keyspace_name, columnfamily_name), id))");
 
     private static final TableMetadata ParentRepairHistory =
         parse(PARENT_REPAIR_HISTORY,
-                "Repair history",
-                "CREATE TABLE %s ("
-                     + "parent_id timeuuid,"
-                     + "keyspace_name text,"
-                     + "columnfamily_names set<text>,"
-                     + "started_at timestamp,"
-                     + "finished_at timestamp,"
-                     + "exception_message text,"
-                     + "exception_stacktrace text,"
-                     + "requested_ranges set<text>,"
-                     + "successful_ranges set<text>,"
-                     + "options map<text, text>,"
-                     + "PRIMARY KEY (parent_id))");
+              "Repair history",
+              "CREATE TABLE %s ("
+              + "parent_id timeuuid,"
+              + "keyspace_name text,"
+              + "columnfamily_names set<text>,"
+              + "started_at timestamp,"
+              + "finished_at timestamp,"
+              + "exception_message text,"
+              + "exception_stacktrace text,"
+              + "requested_ranges set<text>,"
+              + "successful_ranges set<text>,"
+              + "options map<text, text>,"
+              + "PRIMARY KEY (parent_id))");
 
     private static final TableMetadata ViewBuildStatus =
         parse(VIEW_BUILD_STATUS,
-            "Materialized View build status",
-            "CREATE TABLE %s ("
-                     + "keyspace_name text,"
-                     + "view_name text,"
-                     + "host_id uuid,"
-                     + "status text,"
-                     + "PRIMARY KEY ((keyspace_name, view_name), host_id))");
+              "Materialized View build status",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "view_name text,"
+              + "host_id uuid,"
+              + "status text,"
+              + "PRIMARY KEY ((keyspace_name, view_name), host_id))");
 
     private static TableMetadata parse(String table, String description, String cql)
     {
         return CreateTableStatement.parse(format(cql, table), SchemaConstants.DISTRIBUTED_KEYSPACE_NAME)
                                    .id(TableId.forSystemTable(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, table))
+                                   .dcLocalReadRepairChance(0.0)
                                    .comment(description)
                                    .build();
     }
@@ -186,62 +184,32 @@ public final class SystemDistributedKeyspace
         processSilent(fmtQuery);
     }
 
-    public static void startRepairs(UUID id, UUID parent_id, String keyspaceName, String[] cfnames, CommonRange commonRange)
+    public static void startRepairs(UUID id, UUID parent_id, String keyspaceName, String[] cfnames, Collection<Range<Token>> ranges, Iterable<InetAddress> endpoints)
     {
-        //Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
-        //due to schema differences
-        boolean includeNewColumns = !Gossiper.instance.haveMajorVersion3Nodes();
+        String coordinator = FBUtilities.getBroadcastAddress().getHostAddress();
+        Set<String> participants = Sets.newHashSet(coordinator);
 
-        InetAddressAndPort coordinator = FBUtilities.getBroadcastAddressAndPort();
-        Set<String> participants = Sets.newHashSet();
-        Set<String> participants_v2 = Sets.newHashSet();
-
-        for (InetAddressAndPort endpoint : commonRange.endpoints)
-        {
-            participants.add(endpoint.getHostAddress(false));
-            participants_v2.add(endpoint.toString());
-        }
+        for (InetAddress endpoint : endpoints)
+            participants.add(endpoint.getHostAddress());
 
         String query =
-                "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, coordinator_port, participants, participants_v2, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        %d,               { '%s' },     { '%s' },        '%s',   toTimestamp(now()))";
-        String queryWithoutNewColumns =
                 "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, participants, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',               { '%s' },        '%s',   toTimestamp(now()))";
+                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        { '%s' },     '%s',   toTimestamp(now()))";
 
         for (String cfname : cfnames)
         {
-            for (Range<Token> range : commonRange.ranges)
+            for (Range<Token> range : ranges)
             {
-                String fmtQry;
-                if (includeNewColumns)
-                {
-                    fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    coordinator.port,
-                                    Joiner.on("', '").join(participants),
-                                    Joiner.on("', '").join(participants_v2),
-                                    RepairState.STARTED.toString());
-                }
-                else
-                {
-                    fmtQry = format(queryWithoutNewColumns, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    Joiner.on("', '").join(participants),
-                                    RepairState.STARTED.toString());
-                }
+                String fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
+                                              keyspaceName,
+                                              cfname,
+                                              id.toString(),
+                                              parent_id.toString(),
+                                              range.left.toString(),
+                                              range.right.toString(),
+                                              coordinator,
+                                              Joiner.on("', '").join(participants),
+                                              RepairState.STARTED.toString());
                 processSilent(fmtQry);
             }
         }

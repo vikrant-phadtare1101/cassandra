@@ -134,8 +134,6 @@ public abstract class CollectionSerializer<T> implements TypeSerializer<T>
 
     /**
      * Returns the slice of a collection directly from its serialized value.
-     * <p>If the slice contains no elements an empty collection will be returned for frozen collections, and a 
-     * {@code null} one for non-frozen collections.</p>
      *
      * @param collection the serialized collection. This cannot be {@code null}.
      * @param from the left bound of the slice to extract. This cannot be {@code null} but if this is
@@ -143,14 +141,10 @@ public abstract class CollectionSerializer<T> implements TypeSerializer<T>
      * of {@code collection}.
      * @param comparator the type to use to compare the {@code from} and {@code to} values to those
      * in the collection.
-     * @param frozen {@code true} if the collection is a frozen one, {@code false} otherwise
-     * @return a serialized collection corresponding to slice {@code [from, to]} of {@code collection}.
+     * @return a valid serialized collection (possibly empty) corresponding to slice {@code [from, to]}
+     * of {@code collection}.
      */
-    public abstract ByteBuffer getSliceFromSerialized(ByteBuffer collection,
-                                                      ByteBuffer from,
-                                                      ByteBuffer to,
-                                                      AbstractType<?> comparator,
-                                                      boolean frozen);
+    public abstract ByteBuffer getSliceFromSerialized(ByteBuffer collection, ByteBuffer from, ByteBuffer to, AbstractType<?> comparator);
 
     /**
      * Creates a new serialized map composed from the data from {@code input} between {@code startPos}
@@ -166,7 +160,7 @@ public abstract class CollectionSerializer<T> implements TypeSerializer<T>
         ByteBuffer output = ByteBuffer.allocate(sizeLen + bodyLen);
         writeCollectionSize(output, count, version);
         output.position(0);
-        ByteBufferUtil.copyBytes(input, startPos, output, sizeLen, bodyLen);
+        ByteBufferUtil.arrayCopy(input, startPos, output, sizeLen, bodyLen);
         return output;
     }
 }

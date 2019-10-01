@@ -140,7 +140,6 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
         return (Class) Set.class;
     }
 
-    @Override
     public ByteBuffer getSerializedValue(ByteBuffer collection, ByteBuffer key, AbstractType<?> comparator)
     {
         try
@@ -166,12 +165,7 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
         }
     }
 
-    @Override
-    public ByteBuffer getSliceFromSerialized(ByteBuffer collection,
-                                             ByteBuffer from,
-                                             ByteBuffer to,
-                                             AbstractType<?> comparator,
-                                             boolean frozen)
+    public ByteBuffer getSliceFromSerialized(ByteBuffer collection, ByteBuffer from, ByteBuffer to, AbstractType<?> comparator)
     {
         if (from == ByteBufferUtil.UNSET_BYTE_BUFFER && to == ByteBufferUtil.UNSET_BYTE_BUFFER)
             return collection;
@@ -222,10 +216,6 @@ public class SetSerializer<T> extends CollectionSerializer<Set<T>>
                 if (comparison == 0)
                     break;
             }
-
-            if (count == 0 && !frozen)
-                return null;
-
             return copyAsNewCollection(collection, count, startPos, input.position(), ProtocolVersion.V3);
         }
         catch (BufferUnderflowException e)

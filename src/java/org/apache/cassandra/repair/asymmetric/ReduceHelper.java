@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.repair.asymmetric;
 
+import java.net.InetAddress;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,7 +31,6 @@ import com.google.common.collect.ImmutableMap;
 
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.locator.InetAddressAndPort;
 
 /**
  * Basic idea is that we track incoming ranges instead of blindly just exchanging the ranges that mismatch between two nodes
@@ -47,19 +47,19 @@ public class ReduceHelper
     /**
      * Reduces the differences provided by the merkle trees to a minimum set of differences
      */
-    public static ImmutableMap<InetAddressAndPort, HostDifferences> reduce(DifferenceHolder differences, PreferedNodeFilter filter)
+    public static ImmutableMap<InetAddress, HostDifferences> reduce(DifferenceHolder differences, PreferedNodeFilter filter)
     {
-        Map<InetAddressAndPort, IncomingRepairStreamTracker> trackers = createIncomingRepairStreamTrackers(differences);
-        Map<InetAddressAndPort, Integer> outgoingStreamCounts = new HashMap<>();
-        ImmutableMap.Builder<InetAddressAndPort, HostDifferences> mapBuilder = ImmutableMap.builder();
-        for (Map.Entry<InetAddressAndPort, IncomingRepairStreamTracker> trackerEntry : trackers.entrySet())
+        Map<InetAddress, IncomingRepairStreamTracker> trackers = createIncomingRepairStreamTrackers(differences);
+        Map<InetAddress, Integer> outgoingStreamCounts = new HashMap<>();
+        ImmutableMap.Builder<InetAddress, HostDifferences> mapBuilder = ImmutableMap.builder();
+        for (Map.Entry<InetAddress, IncomingRepairStreamTracker> trackerEntry : trackers.entrySet())
         {
             IncomingRepairStreamTracker tracker = trackerEntry.getValue();
             HostDifferences rangesToFetch = new HostDifferences();
             for (Map.Entry<Range<Token>, StreamFromOptions> entry : tracker.getIncoming().entrySet())
             {
                 Range<Token> rangeToFetch = entry.getKey();
-                for (InetAddressAndPort remoteNode : pickLeastStreaming(trackerEntry.getKey(), entry.getValue(), outgoingStreamCounts, filter))
+                for (InetAddress remoteNode : pickLeastStreaming(trackerEntry.getKey(), entry.getValue(), outgoingStreamCounts, filter))
                     rangesToFetch.addSingleRange(remoteNode, rangeToFetch);
             }
             mapBuilder.put(trackerEntry.getKey(), rangesToFetch);
@@ -69,14 +69,14 @@ public class ReduceHelper
     }
 
     @VisibleForTesting
-    static Map<InetAddressAndPort, IncomingRepairStreamTracker> createIncomingRepairStreamTrackers(DifferenceHolder differences)
+    static Map<InetAddress, IncomingRepairStreamTracker> createIncomingRepairStreamTrackers(DifferenceHolder differences)
     {
-        Map<InetAddressAndPort, IncomingRepairStreamTracker> trackers = new HashMap<>();
+        Map<InetAddress, IncomingRepairStreamTracker> trackers = new HashMap<>();
 
-        for (InetAddressAndPort hostWithDifference : differences.keyHosts())
+        for (InetAddress hostWithDifference : differences.keyHosts())
         {
             HostDifferences hostDifferences = differences.get(hostWithDifference);
-            for (InetAddressAndPort differingHost : hostDifferences.hosts())
+            for (InetAddress differingHost : hostDifferences.hosts())
             {
                 List<Range<Token>> differingRanges = hostDifferences.get(differingHost);
                 // hostWithDifference has mismatching ranges differingRanges with differingHost:
@@ -93,24 +93,24 @@ public class ReduceHelper
     }
 
     private static IncomingRepairStreamTracker getTracker(DifferenceHolder differences,
-                                                          Map<InetAddressAndPort, IncomingRepairStreamTracker> trackers,
-                                                          InetAddressAndPort host)
+                                                          Map<InetAddress, IncomingRepairStreamTracker> trackers,
+                                                          InetAddress host)
     {
         return trackers.computeIfAbsent(host, (h) -> new IncomingRepairStreamTracker(differences));
     }
 
     // greedily pick the nodes doing the least amount of streaming
-    private static Collection<InetAddressAndPort> pickLeastStreaming(InetAddressAndPort streamingNode,
+    private static Collection<InetAddress> pickLeastStreaming(InetAddress streamingNode,
                                                               StreamFromOptions toStreamFrom,
-                                                              Map<InetAddressAndPort, Integer> outgoingStreamCounts,
+                                                              Map<InetAddress, Integer> outgoingStreamCounts,
                                                               PreferedNodeFilter filter)
     {
-        Set<InetAddressAndPort> retSet = new HashSet<>();
-        for (Set<InetAddressAndPort> toStream : toStreamFrom.allStreams())
+        Set<InetAddress> retSet = new HashSet<>();
+        for (Set<InetAddress> toStream : toStreamFrom.allStreams())
         {
-            InetAddressAndPort candidate = null;
-            Set<InetAddressAndPort> prefered = filter.apply(streamingNode, toStream);
-            for (InetAddressAndPort node : prefered)
+            InetAddress candidate = null;
+            Set<InetAddress> prefered = filter.apply(streamingNode, toStream);
+            for (InetAddress node : prefered)
             {
                 if (candidate == null || outgoingStreamCounts.getOrDefault(candidate, 0) > outgoingStreamCounts.getOrDefault(node, 0))
                 {
@@ -120,7 +120,7 @@ public class ReduceHelper
             // ok, found no prefered hosts, try all of them
             if (candidate == null)
             {
-                for (InetAddressAndPort node : toStream)
+                for (InetAddress node : toStream)
                 {
                     if (candidate == null || outgoingStreamCounts.getOrDefault(candidate, 0) > outgoingStreamCounts.getOrDefault(node, 0))
                     {

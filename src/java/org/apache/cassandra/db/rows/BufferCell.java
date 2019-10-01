@@ -19,7 +19,6 @@ package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.db.ExpirationDateOverflowHandling;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.db.marshal.ByteType;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -67,7 +66,7 @@ public class BufferCell extends AbstractCell
     public static BufferCell expiring(ColumnMetadata column, long timestamp, int ttl, int nowInSec, ByteBuffer value, CellPath path)
     {
         assert ttl != NO_TTL;
-        return new BufferCell(column, timestamp, ttl, ExpirationDateOverflowHandling.computeLocalExpirationTime(nowInSec, ttl), value, path);
+        return new BufferCell(column, timestamp, ttl, nowInSec + ttl, value, path);
     }
 
     public static BufferCell tombstone(ColumnMetadata column, long timestamp, int nowInSec)
@@ -113,11 +112,6 @@ public class BufferCell extends AbstractCell
     public Cell withUpdatedValue(ByteBuffer newValue)
     {
         return new BufferCell(column, timestamp, ttl, localDeletionTime, newValue, path);
-    }
-
-    public Cell withUpdatedTimestampAndLocalDeletionTime(long newTimestamp, int newLocalDeletionTime)
-    {
-        return new BufferCell(column, newTimestamp, ttl, newLocalDeletionTime, value, path);
     }
 
     public Cell copy(AbstractAllocator allocator)

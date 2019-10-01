@@ -38,7 +38,7 @@ Installation from binary tarball files
 
 ::
 
-    tar -xzvf apache-cassandra-3.6-bin.tar.gz
+    tar -xvf apache-cassandra-3.6-bin.tar.gz cassandra
 
 The files will be extracted into ``apache-cassandra-3.6``, you need to substitute 3.6 with the release number that you
 have downloaded.

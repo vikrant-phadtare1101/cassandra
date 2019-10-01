@@ -60,7 +60,7 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
     public void run()
     {
         TokenMetadata metadata = StorageService.instance.getTokenMetadata().cloneOnlyTokenMap();
-        if (!metadata.isMember(FBUtilities.getBroadcastAddressAndPort()))
+        if (!metadata.isMember(FBUtilities.getBroadcastAddress()))
         {
             logger.debug("Node is not part of the ring; not recording size estimates");
             return;
@@ -71,17 +71,16 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
         for (Keyspace keyspace : Keyspace.nonLocalStrategy())
         {
             Collection<Range<Token>> localRanges = StorageService.instance.getPrimaryRangesForEndpoint(keyspace.getName(),
-                    FBUtilities.getBroadcastAddressAndPort());
+                    FBUtilities.getBroadcastAddress());
             for (ColumnFamilyStore table : keyspace.getColumnFamilyStores())
             {
                 long start = System.nanoTime();
                 recordSizeEstimates(table, localRanges);
                 long passed = System.nanoTime() - start;
-                if (logger.isTraceEnabled())
-                    logger.trace("Spent {} milliseconds on estimating {}.{} size",
-                                 TimeUnit.NANOSECONDS.toMillis(passed),
-                                 table.metadata.keyspace,
-                                 table.metadata.name);
+                logger.trace("Spent {} milliseconds on estimating {}.{} size",
+                             TimeUnit.NANOSECONDS.toMillis(passed),
+                             table.metadata.keyspace,
+                             table.metadata.name);
             }
         }
     }

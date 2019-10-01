@@ -19,14 +19,10 @@ package org.apache.cassandra.utils;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import com.datastax.driver.core.*;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.schema.*;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.ColumnMetadata.ClusteringOrder;
@@ -38,46 +34,33 @@ import org.apache.cassandra.dht.Token.TokenFactory;
 import org.apache.cassandra.io.sstable.SSTableLoader;
 import org.apache.cassandra.schema.TableMetadata;
 
-import org.apache.cassandra.schema.CQLTypeParser;
-import org.apache.cassandra.schema.SchemaKeyspace;
-import org.apache.cassandra.schema.Types;
-
 public class NativeSSTableLoaderClient extends SSTableLoader.Client
 {
     protected final Map<String, TableMetadataRef> tables;
-    private final Collection<InetSocketAddress> hosts;
+    private final Collection<InetAddress> hosts;
     private final int port;
-    private final int storagePort;
     private final AuthProvider authProvider;
     private final SSLOptions sslOptions;
-    private final boolean allowServerPortDiscovery;
 
 
-    public NativeSSTableLoaderClient(Collection<InetSocketAddress> hosts, int nativePort, int storagePort, String username, String password, SSLOptions sslOptions, boolean allowServerPortDiscovery)
+    public NativeSSTableLoaderClient(Collection<InetAddress> hosts, int port, String username, String password, SSLOptions sslOptions)
     {
-        this(hosts, nativePort, storagePort, new PlainTextAuthProvider(username, password), sslOptions, allowServerPortDiscovery);
+        this(hosts, port, new PlainTextAuthProvider(username, password), sslOptions);
     }
 
-    public NativeSSTableLoaderClient(Collection<InetSocketAddress> hosts, int nativePort, int storagePort, AuthProvider authProvider, SSLOptions sslOptions, boolean allowServerPortDiscovery)
+    public NativeSSTableLoaderClient(Collection<InetAddress> hosts, int port, AuthProvider authProvider, SSLOptions sslOptions)
     {
         super();
         this.tables = new HashMap<>();
         this.hosts = hosts;
-        this.port = nativePort;
+        this.port = port;
         this.authProvider = authProvider;
         this.sslOptions = sslOptions;
-        this.allowServerPortDiscovery = allowServerPortDiscovery;
-        this.storagePort = storagePort;
     }
 
     public void init(String keyspace)
     {
-        Set<InetAddress> hostAddresses = hosts.stream().map(host -> host.getAddress()).collect(Collectors.toSet());
-        Cluster.Builder builder = Cluster.builder().addContactPoints(hostAddresses).withPort(port).allowBetaProtocolVersion();
-
-        if (allowServerPortDiscovery)
-            builder = builder.allowServerPortDiscovery();
-
+        Cluster.Builder builder = Cluster.builder().addContactPoints(hosts).withPort(port);
         if (sslOptions != null)
             builder.withSSL(sslOptions);
         if (authProvider != null)
@@ -99,18 +82,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
                 Range<Token> range = new Range<>(tokenFactory.fromString(tokenRange.getStart().getValue().toString()),
                                                  tokenFactory.fromString(tokenRange.getEnd().getValue().toString()));
                 for (Host endpoint : endpoints)
-                {
-                    int portToUse;
-                    if (allowServerPortDiscovery)
-                    {
-                        portToUse = endpoint.getBroadcastAddressOptPort().portOrElse(storagePort);
-                    }
-                    else
-                    {
-                        portToUse = storagePort;
-                    }
-                    addRangeForEndpoint(range, InetAddressAndPort.getByNameOverrideDefaults(endpoint.getAddress().getHostAddress(), portToUse));
-                }
+                    addRangeForEndpoint(range, endpoint.getAddress());
             }
 
             Types types = fetchTypes(keyspace, session);
@@ -118,10 +90,6 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
             tables.putAll(fetchTables(keyspace, session, partitioner, types));
             // We only need the TableMetadata for the views, so we only load that.
             tables.putAll(fetchViews(keyspace, session, partitioner, types));
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException(e);
         }
     }
 
@@ -230,7 +198,9 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
         if (order == ClusteringOrder.DESC)
             type = ReversedType.getInstance(type);
 
-        ColumnIdentifier name = new ColumnIdentifier(row.getBytes("column_name_bytes"), row.getString("column_name"));
+        ColumnIdentifier name = ColumnIdentifier.getInterned(type,
+                                                             row.getBytes("column_name_bytes"),
+                                                             row.getString("column_name"));
 
         int position = row.getInt("position");
         org.apache.cassandra.schema.ColumnMetadata.Kind kind = ColumnMetadata.Kind.valueOf(row.getString("kind").toUpperCase());
