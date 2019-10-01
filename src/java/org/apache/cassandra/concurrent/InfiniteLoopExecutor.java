@@ -70,7 +70,7 @@ public class InfiniteLoopExecutor
         return this;
     }
 
-    public void shutdownNow()
+    public void shutdown()
     {
         isShutdown = true;
         thread.interrupt();
