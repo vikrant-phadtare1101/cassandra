@@ -19,12 +19,10 @@ package org.apache.cassandra.streaming;
 
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.locator.InetAddressAndPort;
-
 
 /**
  * {@link StreamCoordinator} is a helper class that abstracts away maintaining multiple
@@ -284,8 +282,7 @@ public class StreamCoordinator
             // create
             if (streamSessions.size() < connectionsPerHost)
             {
-                StreamSession session = new StreamSession(streamOperation, peer, factory, streamSessions.size(),
-                                                          pendingRepair, previewKind);
+                StreamSession session = new StreamSession(streamOperation, peer, factory, streamSessions.size(), pendingRepair, previewKind);
                 streamSessions.put(++lastReturned, session);
                 return session;
             }
@@ -341,12 +338,6 @@ public class StreamCoordinator
         public Collection<SessionInfo> getAllSessionInfo()
         {
             return sessionInfos.values();
-        }
-
-        @VisibleForTesting
-        public void shutdown()
-        {
-            streamSessions.values().forEach(ss -> ss.sessionFailed());
         }
     }
 }

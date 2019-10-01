@@ -26,10 +26,8 @@ import com.codahale.metrics.Meter;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.compaction.ActiveCompactions;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.TableMetadata;
 
@@ -38,9 +36,12 @@ import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 /**
  * Metrics for compaction.
  */
-public class CompactionMetrics
+public class CompactionMetrics implements CompactionManager.CompactionExecutorStatsCollector
 {
     public static final MetricNameFactory factory = new DefaultNameFactory("Compaction");
+
+    // a synchronized identity set of running tasks to their compaction info
+    private static final Set<CompactionInfo.Holder> compactions = Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<CompactionInfo.Holder, Boolean>()));
 
     /** Estimated number of compactions remaining to perform */
     public final Gauge<Integer> pendingTasks;
@@ -78,7 +79,7 @@ public class CompactionMetrics
                         n += cfs.getCompactionStrategyManager().getEstimatedRemainingTasks();
                 }
                 // add number of currently running compactions
-                return n + CompactionManager.instance.active.getCompactions().size();
+                return n + compactions.size();
             }
         });
 
@@ -107,7 +108,7 @@ public class CompactionMetrics
                 }
 
                 // currently running compactions
-                for (CompactionInfo.Holder compaction : CompactionManager.instance.active.getCompactions())
+                for (CompactionInfo.Holder compaction : compactions)
                 {
                     TableMetadata metaData = compaction.getCompactionInfo().getTableMetadata();
                     if (metaData == null)
@@ -151,5 +152,22 @@ public class CompactionMetrics
         compactionsReduced = Metrics.counter(factory.createMetricName("CompactionsReduced"));
         sstablesDropppedFromCompactions = Metrics.counter(factory.createMetricName("SSTablesDroppedFromCompaction"));
         compactionsAborted = Metrics.counter(factory.createMetricName("CompactionsAborted"));
+    }
+
+    public void beginCompaction(CompactionInfo.Holder ci)
+    {
+        compactions.add(ci);
+    }
+
+    public void finishCompaction(CompactionInfo.Holder ci)
+    {
+        compactions.remove(ci);
+        bytesCompacted.inc(ci.getCompactionInfo().getTotal());
+        totalCompactionsCompleted.mark();
+    }
+
+    public static List<CompactionInfo.Holder> getCompactions()
+    {
+        return new ArrayList<CompactionInfo.Holder>(compactions);
     }
 }

@@ -29,18 +29,20 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.RateLimiter;
+
+import org.apache.cassandra.db.Directories;
+import org.apache.cassandra.db.compaction.writers.CompactionAwareWriter;
+import org.apache.cassandra.db.compaction.writers.DefaultCompactionWriter;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.db.compaction.writers.CompactionAwareWriter;
-import org.apache.cassandra.db.compaction.writers.DefaultCompactionWriter;
+import org.apache.cassandra.db.compaction.CompactionManager.CompactionExecutorStatsCollector;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.FBUtilities;
@@ -52,7 +54,7 @@ public class CompactionTask extends AbstractCompactionTask
     protected final int gcBefore;
     protected final boolean keepOriginals;
     protected static long totalBytesCompacted = 0;
-    private ActiveCompactionsTracker activeCompactions;
+    private CompactionExecutorStatsCollector collector;
 
     public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore)
     {
@@ -77,9 +79,9 @@ public class CompactionTask extends AbstractCompactionTask
         return totalBytesCompacted += bytesCompacted;
     }
 
-    protected int executeInternal(ActiveCompactionsTracker activeCompactions)
+    protected int executeInternal(CompactionExecutorStatsCollector collector)
     {
-        this.activeCompactions = activeCompactions == null ? ActiveCompactionsTracker.NOOP : activeCompactions;
+        this.collector = collector;
         run();
         return transaction.originals().size();
     }
@@ -187,7 +189,8 @@ public class CompactionTask extends AbstractCompactionTask
                 if (!controller.cfs.getCompactionStrategyManager().isActive())
                     throw new CompactionInterruptedException(ci.getCompactionInfo());
 
-                activeCompactions.beginCompaction(ci);
+                if (collector != null)
+                    collector.beginCompaction(ci);
 
                 try (CompactionAwareWriter writer = getCompactionAwareWriter(cfs, getDirectories(), transaction, actuallyCompact))
                 {
@@ -217,8 +220,11 @@ public class CompactionTask extends AbstractCompactionTask
                 }
                 finally
                 {
-                    activeCompactions.finishCompaction(ci);
+                    if (collector != null)
+                        collector.finishCompaction(ci);
+
                     mergedRowCounts = ci.getMergedRowCounts();
+
                     totalSourceCQLRows = ci.getTotalSourceCQLRows();
                 }
             }
@@ -331,23 +337,6 @@ public class CompactionTask extends AbstractCompactionTask
             throw new RuntimeException(String.format("Attempting to compact pending repair sstables with sstables from other repair, or sstables not pending repair: %s", ids));
 
         return ids.iterator().next();
-    }
-
-    public static boolean getIsTransient(Set<SSTableReader> sstables)
-    {
-        if (sstables.isEmpty())
-        {
-            return false;
-        }
-
-        boolean isTransient = sstables.iterator().next().isTransient();
-
-        if (!Iterables.all(sstables, sstable -> sstable.isTransient() == isTransient))
-        {
-            throw new RuntimeException("Attempting to compact transient sstables with non transient sstables");
-        }
-
-        return isTransient;
     }
 
 
