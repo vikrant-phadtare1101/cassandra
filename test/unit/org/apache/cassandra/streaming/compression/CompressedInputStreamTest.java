@@ -21,26 +21,22 @@ import java.io.*;
 import java.util.*;
 
 import org.junit.BeforeClass;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ClusteringComparator;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.io.compress.CompressedSequentialWriter;
 import org.apache.cassandra.io.compress.CompressionMetadata;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.SequentialWriterOption;
 import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
-import org.apache.cassandra.db.streaming.CompressedInputStream;
-import org.apache.cassandra.db.streaming.CompressionInfo;
+import org.apache.cassandra.streaming.compress.CompressedInputStream;
+import org.apache.cassandra.streaming.compress.CompressionInfo;
 import org.apache.cassandra.utils.ChecksumType;
+import org.apache.cassandra.utils.Pair;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
@@ -49,9 +45,6 @@ import static org.junit.Assert.fail;
  */
 public class CompressedInputStreamTest
 {
-    @Rule
-    public TemporaryFolder tempFolder = new TemporaryFolder();
-
     @BeforeClass
     public static void setupDD()
     {
@@ -61,17 +54,17 @@ public class CompressedInputStreamTest
     @Test
     public void testCompressedRead() throws Exception
     {
-        testCompressedReadWith(new long[]{0L}, false, false, 0);
-        testCompressedReadWith(new long[]{1L}, false, false, 0);
-        testCompressedReadWith(new long[]{100L}, false, false, 0);
+        testCompressedReadWith(new long[]{0L}, false, false);
+        testCompressedReadWith(new long[]{1L}, false, false);
+        testCompressedReadWith(new long[]{100L}, false, false);
 
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, false, 0);
+        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, false);
     }
 
     @Test(expected = EOFException.class)
     public void testTruncatedRead() throws Exception
     {
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, true, false, 0);
+        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, true, false);
     }
 
     /**
@@ -80,45 +73,22 @@ public class CompressedInputStreamTest
     @Test(timeout = 30000)
     public void testException() throws Exception
     {
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, true, 0);
-    }
-
-    @Test
-    public void testCompressedReadUncompressedChunks() throws Exception
-    {
-        testCompressedReadWith(new long[]{0L}, false, false, 3);
-        testCompressedReadWith(new long[]{1L}, false, false, 3);
-        testCompressedReadWith(new long[]{100L}, false, false, 3);
-
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, false, 3);
-    }
-
-    @Test(expected = EOFException.class)
-    public void testTruncatedReadUncompressedChunks() throws Exception
-    {
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, true, false, 3);
-    }
-
-    @Test(timeout = 30000)
-    public void testCorruptedReadUncompressedChunks() throws Exception
-    {
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, true, 3);
+        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false, true);
     }
 
     /**
      * @param valuesToCheck array of longs of range(0-999)
      * @throws Exception
      */
-    private void testCompressedReadWith(long[] valuesToCheck, boolean testTruncate, boolean testException, double minCompressRatio) throws Exception
+    private void testCompressedReadWith(long[] valuesToCheck, boolean testTruncate, boolean testException) throws Exception
     {
         assert valuesToCheck != null && valuesToCheck.length > 0;
 
         // write compressed data file of longs
-        File parentDir = tempFolder.newFolder();
-        Descriptor desc = new Descriptor(parentDir, "ks", "cf", 1);
-        File tmp = new File(desc.filenameFor(Component.DATA));
+        File tmp = new File(File.createTempFile("cassandra", "unittest").getParent(), "ks-cf-ib-1-Data.db");
+        Descriptor desc = Descriptor.fromFilename(tmp.getAbsolutePath());
         MetadataCollector collector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
-        CompressionParams param = CompressionParams.snappy(32, minCompressRatio);
+        CompressionParams param = CompressionParams.snappy(32);
         Map<Long, Long> index = new HashMap<Long, Long>();
         try (CompressedSequentialWriter writer = new CompressedSequentialWriter(tmp,
                                                                                 desc.filenameFor(Component.COMPRESSION_INFO),
@@ -135,11 +105,11 @@ public class CompressedInputStreamTest
         }
 
         CompressionMetadata comp = CompressionMetadata.create(tmp.getAbsolutePath());
-        List<SSTableReader.PartitionPositionBounds> sections = new ArrayList<>();
+        List<Pair<Long, Long>> sections = new ArrayList<>();
         for (long l : valuesToCheck)
         {
             long position = index.get(l);
-            sections.add(new SSTableReader.PartitionPositionBounds(position, position + 8));
+            sections.add(Pair.create(position, position + 8));
         }
         CompressionMetadata.Chunk[] chunks = comp.getChunksForSections(sections);
         long totalSize = comp.getTotalSizeForSections(sections);
@@ -179,29 +149,29 @@ public class CompressedInputStreamTest
             testException(sections, info);
             return;
         }
-        CompressedInputStream input = new CompressedInputStream(new DataInputStreamPlus(new ByteArrayInputStream(toRead)), info, ChecksumType.CRC32, () -> 1.0);
+        CompressedInputStream input = new CompressedInputStream(new ByteArrayInputStream(toRead), info, ChecksumType.CRC32, () -> 1.0);
 
         try (DataInputStream in = new DataInputStream(input))
         {
             for (int i = 0; i < sections.size(); i++)
             {
-                input.position(sections.get(i).lowerPosition);
+                input.position(sections.get(i).left);
                 long readValue = in.readLong();
                 assertEquals("expected " + valuesToCheck[i] + " but was " + readValue, valuesToCheck[i], readValue);
             }
         }
     }
 
-    private static void testException(List<SSTableReader.PartitionPositionBounds> sections, CompressionInfo info) throws IOException
+    private static void testException(List<Pair<Long, Long>> sections, CompressionInfo info) throws IOException
     {
-        CompressedInputStream input = new CompressedInputStream(new DataInputStreamPlus(new ByteArrayInputStream(new byte[0])), info, ChecksumType.CRC32, () -> 1.0);
+        CompressedInputStream input = new CompressedInputStream(new ByteArrayInputStream(new byte[0]), info, ChecksumType.CRC32, () -> 1.0);
 
         try (DataInputStream in = new DataInputStream(input))
         {
             for (int i = 0; i < sections.size(); i++)
             {
+                input.position(sections.get(i).left);
                 try {
-                    input.position(sections.get(i).lowerPosition);
                     in.readLong();
                     fail("Should have thrown IOException");
                 }
@@ -213,4 +183,3 @@ public class CompressedInputStreamTest
         }
     }
 }
-

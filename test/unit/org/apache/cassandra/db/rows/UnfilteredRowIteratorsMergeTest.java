@@ -19,7 +19,7 @@ package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.function.IntUnaryOperator;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -31,7 +31,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import org.apache.cassandra.Util;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.AsciiType;
@@ -47,13 +47,11 @@ public class UnfilteredRowIteratorsMergeTest
     }
     static DecoratedKey partitionKey = Util.dk("key");
     static DeletionTime partitionLevelDeletion = DeletionTime.LIVE;
-    static TableMetadata metadata =
-        TableMetadata.builder("UnfilteredRowIteratorsMergeTest", "Test")
-                     .addPartitionKeyColumn("key", AsciiType.instance)
-                     .addClusteringColumn("clustering", Int32Type.instance)
-                     .addRegularColumn("data", Int32Type.instance)
-                     .build();
-
+    static CFMetaData metadata = CFMetaData.Builder.create("UnfilteredRowIteratorsMergeTest", "Test").
+            addPartitionKey("key", AsciiType.instance).
+            addClusteringColumn("clustering", Int32Type.instance).
+            addRegularColumn("data", Int32Type.instance).
+            build();
     static Comparator<Clusterable> comparator = new ClusteringComparator(Int32Type.instance);
     static int nowInSec = FBUtilities.nowInSeconds();
 
@@ -112,7 +110,7 @@ public class UnfilteredRowIteratorsMergeTest
                 System.out.println("\nSeed " + seed);
 
             Random r = new Random(seed);
-            List<IntUnaryOperator> timeGenerators = ImmutableList.of(
+            List<Function<Integer, Integer>> timeGenerators = ImmutableList.of(
                     x -> -1,
                     x -> DEL_RANGE,
                     x -> r.nextInt(DEL_RANGE)
@@ -151,24 +149,25 @@ public class UnfilteredRowIteratorsMergeTest
 
     public UnfilteredRowIterator mergeIterators(List<UnfilteredRowIterator> us, boolean iterations)
     {
+        int now = FBUtilities.nowInSeconds();
         if (iterations)
         {
             UnfilteredRowIterator mi = us.get(0);
             int i;
             for (i = 1; i + 2 <= ITERATORS; i += 2)
-                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i), us.get(i+1)));
+                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i), us.get(i+1)), now);
             if (i + 1 <= ITERATORS)
-                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i)));
+                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i)), now);
             return mi;
         }
         else
         {
-            return UnfilteredRowIterators.merge(us);
+            return UnfilteredRowIterators.merge(us, now);
         }
     }
 
     @SuppressWarnings("unused")
-    private List<Unfiltered> generateSource(Random r, IntUnaryOperator timeGenerator)
+    private List<Unfiltered> generateSource(Random r, Function<Integer, Integer> timeGenerator)
     {
         int[] positions = new int[ITEMS + 1];
         for (int i=0; i<ITEMS; ++i)
@@ -386,10 +385,10 @@ public class UnfilteredRowIteratorsMergeTest
         return Clustering.make(Int32Type.instance.decompose(i));
     }
 
-    static Row emptyRowAt(int pos, IntUnaryOperator timeGenerator)
+    static Row emptyRowAt(int pos, Function<Integer, Integer> timeGenerator)
     {
         final Clustering clustering = clusteringFor(pos);
-        final LivenessInfo live = LivenessInfo.create(timeGenerator.applyAsInt(pos), nowInSec);
+        final LivenessInfo live = LivenessInfo.create(timeGenerator.apply(pos), nowInSec);
         return BTreeRow.noCellLiveRow(clustering, live);
     }
 
@@ -425,7 +424,7 @@ public class UnfilteredRowIteratorsMergeTest
             super(UnfilteredRowIteratorsMergeTest.metadata,
                   UnfilteredRowIteratorsMergeTest.partitionKey,
                   UnfilteredRowIteratorsMergeTest.partitionLevelDeletion,
-                  UnfilteredRowIteratorsMergeTest.metadata.regularAndStaticColumns(),
+                  UnfilteredRowIteratorsMergeTest.metadata.partitionColumns(),
                   null,
                   reversed,
                   EncodingStats.NO_STATS);

@@ -23,9 +23,8 @@ import java.security.AccessControlContext;
 import java.security.AccessController;
 import java.security.Principal;
 import java.util.Set;
-import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.management.MBeanServer;
 import javax.management.MalformedObjectNameException;
@@ -33,6 +32,7 @@ import javax.management.ObjectName;
 import javax.security.auth.Subject;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,7 +52,7 @@ import org.apache.cassandra.service.StorageService;
  *
  * Because an ObjectName may contain wildcards, meaning it represents a set of individual MBeans,
  * JMX resources don't fit well with the hierarchical approach modelled by other IResource
- * implementations and utilised by ClientState::ensurePermission etc. To enable grants to use
+ * implementations and utilised by ClientState::ensureHasPermission etc. To enable grants to use
  * pattern-type ObjectNames, this class performs its own custom matching and filtering of resources
  * rather than pushing that down to the configured IAuthorizer. To that end, during authorization
  * it pulls back all permissions for the active subject, filtering them to retain only grants on
@@ -110,7 +110,7 @@ public class AuthorizationProxy implements InvocationHandler
      Used to check whether the Role associated with the authenticated Subject has superuser
      status. By default, just delegates to Roles::hasSuperuserStatus, but can be overridden for testing.
      */
-    protected Predicate<RoleResource> isSuperuser = Roles::hasSuperuserStatus;
+    protected Function<RoleResource, Boolean> isSuperuser = Roles::hasSuperuserStatus;
 
     /*
      Used to retrieve the set of all permissions granted to a given role. By default, this fetches
@@ -123,7 +123,7 @@ public class AuthorizationProxy implements InvocationHandler
      Used to decide whether authorization is enabled or not, usually this depends on the configured
      IAuthorizer, but can be overridden for testing.
      */
-    protected BooleanSupplier isAuthzRequired = () -> DatabaseDescriptor.getAuthorizer().requireAuthorization();
+    protected Supplier<Boolean> isAuthzRequired = () -> DatabaseDescriptor.getAuthorizer().requireAuthorization();
 
     /*
      Used to find matching MBeans when the invocation target is a pattern type ObjectName.
@@ -135,7 +135,7 @@ public class AuthorizationProxy implements InvocationHandler
      Used to determine whether auth setup has completed so we know whether the expect the IAuthorizer
      to be ready. Can be overridden for testing.
      */
-    protected BooleanSupplier isAuthSetupComplete = () -> StorageService.instance.isAuthSetupComplete();
+    protected Supplier<Boolean> isAuthSetupComplete = () -> StorageService.instance.isAuthSetupComplete();
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args)
@@ -188,14 +188,14 @@ public class AuthorizationProxy implements InvocationHandler
                      methodName,
                      subject == null ? "" :subject.toString().replaceAll("\\n", " "));
 
-        if (!isAuthSetupComplete.getAsBoolean())
+        if (!isAuthSetupComplete.get())
         {
             logger.trace("Auth setup is not complete, refusing access");
             return false;
         }
 
         // Permissive authorization is enabled
-        if (!isAuthzRequired.getAsBoolean())
+        if (!isAuthzRequired.get())
             return true;
 
         // Allow operations performed locally on behalf of the connector server itself
@@ -220,7 +220,7 @@ public class AuthorizationProxy implements InvocationHandler
         // might choose to associate with the Subject following successful authentication
         RoleResource userResource = RoleResource.role(principals.iterator().next().getName());
         // A role with superuser status can do anything
-        if (isSuperuser.test(userResource))
+        if (isSuperuser.apply(userResource))
             return true;
 
         // The method being invoked may be a method on an MBean, or it could belong
@@ -489,6 +489,21 @@ public class AuthorizationProxy implements InvocationHandler
                   DatabaseDescriptor::getPermissionsCacheMaxEntries,
                   AuthorizationProxy::loadPermissions,
                   () -> true);
+        }
+
+        public Set<PermissionDetails> get(RoleResource roleResource)
+        {
+            try
+            {
+                return super.get(roleResource);
+            }
+            catch (Exception e)
+            {
+                // because the outer class uses this method as Function<RoleResource, Set<PermissionDetails>>,
+                // which can be overridden for testing, it cannot throw checked exceptions. So here we simply
+                // use guava's propagation helper.
+                throw Throwables.propagate(e);
+            }
         }
     }
 }

@@ -159,7 +159,7 @@ public final class UDHelper
     public static ByteBuffer serialize(TypeCodec<?> codec, ProtocolVersion protocolVersion, Object value)
     {
         if (!codec.getJavaType().getRawType().isAssignableFrom(value.getClass()))
-            throw new InvalidTypeException("Invalid value for CQL type " + codec.getCqlType().getName());
+            throw new InvalidTypeException("Invalid value for CQL type " + codec.getCqlType().getName().toString());
 
         return ((TypeCodec)codec).serialize(value, com.datastax.driver.core.ProtocolVersion.fromInt(protocolVersion.asInt()));
     }

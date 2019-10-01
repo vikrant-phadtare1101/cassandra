@@ -17,10 +17,13 @@
  */
 package org.apache.cassandra;
 
-import org.apache.cassandra.schema.TableMetadata;
+import java.nio.ByteBuffer;
+
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.utils.FBUtilities;
 
 
 /**
@@ -39,7 +42,7 @@ public class UpdateBuilder
         this.updateBuilder = updateBuilder;
     }
 
-    public static UpdateBuilder create(TableMetadata metadata, Object... partitionKey)
+    public static UpdateBuilder create(CFMetaData metadata, Object... partitionKey)
     {
         return new UpdateBuilder(PartitionUpdate.simpleBuilder(metadata, partitionKey));
     }

@@ -101,16 +101,6 @@ public class ByteBufferUtil
         return FastByteOperations.compareUnsigned(o1, o2, 0, o2.length);
     }
 
-    public static int compare(ByteBuffer o1, int s1, int l1, byte[] o2)
-    {
-        return FastByteOperations.compareUnsigned(o1, s1, l1, o2, 0, o2.length);
-    }
-
-    public static int compare(byte[] o1, ByteBuffer o2, int s2, int l2)
-    {
-        return FastByteOperations.compareUnsigned(o1, 0, o1.length, o2, s2, l2);
-    }
-
     /**
      * Decode a String representation.
      * This method assumes that the encoding charset is UTF_8.
@@ -171,25 +161,16 @@ public class ByteBufferUtil
      */
     public static byte[] getArray(ByteBuffer buffer)
     {
-        return getArray(buffer, buffer.position(), buffer.remaining());
-    }
-
-    /**
-     * You should almost never use this.  Instead, use the write* methods to avoid copies.
-     */
-    public static byte[] getArray(ByteBuffer buffer, int position, int length)
-    {
+        int length = buffer.remaining();
         if (buffer.hasArray())
         {
-            int boff = buffer.arrayOffset() + position;
+            int boff = buffer.arrayOffset() + buffer.position();
             return Arrays.copyOfRange(buffer.array(), boff, boff + length);
         }
-
         // else, DirectByteBuffer.get() is the fastest route
         byte[] bytes = new byte[length];
-        ByteBuffer dup = buffer.duplicate();
-        dup.position(position).limit(position + length);
-        dup.get(bytes);
+        buffer.duplicate().get(bytes);
+
         return bytes;
     }
 
@@ -274,14 +255,14 @@ public class ByteBufferUtil
         return clone;
     }
 
-    public static void copyBytes(ByteBuffer src, int srcPos, byte[] dst, int dstPos, int length)
+    public static void arrayCopy(ByteBuffer src, int srcPos, byte[] dst, int dstPos, int length)
     {
         FastByteOperations.copy(src, srcPos, dst, dstPos, length);
     }
 
     /**
      * Transfer bytes from one ByteBuffer to another.
-     * This function acts as System.arrayCopy() but for ByteBuffers, and operates safely on direct memory.
+     * This function acts as System.arrayCopy() but for ByteBuffers.
      *
      * @param src the source ByteBuffer
      * @param srcPos starting position in the source ByteBuffer
@@ -289,7 +270,7 @@ public class ByteBufferUtil
      * @param dstPos starting position in the destination ByteBuffer
      * @param length the number of bytes to copy
      */
-    public static void copyBytes(ByteBuffer src, int srcPos, ByteBuffer dst, int dstPos, int length)
+    public static void arrayCopy(ByteBuffer src, int srcPos, ByteBuffer dst, int dstPos, int length)
     {
         FastByteOperations.copy(src, srcPos, dst, dstPos, length);
     }
@@ -297,35 +278,10 @@ public class ByteBufferUtil
     public static int put(ByteBuffer src, ByteBuffer trg)
     {
         int length = Math.min(src.remaining(), trg.remaining());
-        copyBytes(src, src.position(), trg, trg.position(), length);
+        arrayCopy(src, src.position(), trg, trg.position(), length);
         trg.position(trg.position() + length);
         src.position(src.position() + length);
         return length;
-    }
-
-    public static void writeZeroes(ByteBuffer dest, int count)
-    {
-        if (count >= 8)
-        {
-            // align
-            while ((dest.position() & 0x7) != 0)
-            {
-                dest.put((byte) 0);
-                --count;
-            }
-        }
-        // write aligned longs
-        while (count >= 8)
-        {
-            dest.putLong(0L);
-            count -= 8;
-        }
-        // finish up
-        while (count > 0)
-        {
-            dest.put((byte) 0);
-            --count;
-        }
     }
 
     public static void writeWithLength(ByteBuffer bytes, DataOutputPlus out) throws IOException
@@ -455,15 +411,6 @@ public class ByteBufferUtil
         return bytes;
     }
 
-    public static byte[] readBytesWithLength(DataInput in) throws IOException
-    {
-        int length = in.readInt();
-        if (length < 0)
-            throw new IOException("Corrupt (negative) value length encountered");
-
-        return readBytes(in, length);
-    }
-
     /**
      * Convert a byte buffer to an integer.
      * Does not change the byte buffer position.
@@ -488,18 +435,6 @@ public class ByteBufferUtil
         return bytes.getShort(bytes.position());
     }
 
-    /**
-     * Convert a byte buffer to a short.
-     * Does not change the byte buffer position.
-     *
-     * @param bytes byte buffer to convert to byte
-     * @return byte representation of the byte buffer
-     */
-    public static byte toByte(ByteBuffer bytes)
-    {
-        return bytes.get(bytes.position());
-    }
-
     public static long toLong(ByteBuffer bytes)
     {
         return bytes.getLong(bytes.position());
@@ -513,37 +448,6 @@ public class ByteBufferUtil
     public static double toDouble(ByteBuffer bytes)
     {
         return bytes.getDouble(bytes.position());
-    }
-
-    public static ByteBuffer objectToBytes(Object obj)
-    {
-        if (obj instanceof Integer)
-            return ByteBufferUtil.bytes((int) obj);
-        else if (obj instanceof Byte)
-            return ByteBufferUtil.bytes((byte) obj);
-        else if (obj instanceof Short)
-            return ByteBufferUtil.bytes((short) obj);
-        else if (obj instanceof Long)
-            return ByteBufferUtil.bytes((long) obj);
-        else if (obj instanceof Float)
-            return ByteBufferUtil.bytes((float) obj);
-        else if (obj instanceof Double)
-            return ByteBufferUtil.bytes((double) obj);
-        else if (obj instanceof UUID)
-            return ByteBufferUtil.bytes((UUID) obj);
-        else if (obj instanceof InetAddress)
-            return ByteBufferUtil.bytes((InetAddress) obj);
-        else if (obj instanceof String)
-            return ByteBufferUtil.bytes((String) obj);
-        else
-            throw new IllegalArgumentException(String.format("Cannot convert value %s of type %s",
-                                                             obj,
-                                                             obj.getClass()));
-    }
-
-    public static ByteBuffer bytes(byte b)
-    {
-        return ByteBuffer.allocate(1).put(0, b);
     }
 
     public static ByteBuffer bytes(short s)
@@ -650,7 +554,6 @@ public class ByteBufferUtil
 
         assert bytes1.limit() >= offset1 + length : "The first byte array isn't long enough for the specified offset and length.";
         assert bytes2.limit() >= offset2 + length : "The second byte array isn't long enough for the specified offset and length.";
-
         for (int i = 0; i < length; i++)
         {
             byte byte1 = bytes1.get(offset1 + i);
@@ -689,7 +592,7 @@ public class ByteBufferUtil
         return buf.capacity() > buf.remaining() || !buf.hasArray() ? ByteBuffer.wrap(getArray(buf)) : buf;
     }
 
-    // doesn't change bb position
+    // Doesn't change bb position
     public static int getShortLength(ByteBuffer bb, int position)
     {
         int length = (bb.get(position) & 0xFF) << 8;

@@ -178,21 +178,15 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
     }
 
     @Override
-    public synchronized void addSSTable(SSTableReader sstable)
+    public void addSSTable(SSTableReader sstable)
     {
         sstables.add(sstable);
     }
 
     @Override
-    public synchronized void removeSSTable(SSTableReader sstable)
+    public void removeSSTable(SSTableReader sstable)
     {
         sstables.remove(sstable);
-    }
-
-    @Override
-    protected Set<SSTableReader> getSSTables()
-    {
-        return ImmutableSet.copyOf(sstables);
     }
 
     /**

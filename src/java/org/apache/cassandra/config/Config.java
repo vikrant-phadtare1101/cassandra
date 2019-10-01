@@ -25,17 +25,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Sets;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.cassandra.audit.AuditLogOptions;
-import org.apache.cassandra.audit.FullQueryLoggerOptions;
-import org.apache.cassandra.db.ConsistencyLevel;
 
 /**
  * A class that contains configuration properties for the cassandra node it runs within.
@@ -55,7 +50,6 @@ public class Config
     public String authenticator;
     public String authorizer;
     public String role_manager;
-    public String network_authorizer;
     public volatile int permissions_validity_in_ms = 2000;
     public volatile int permissions_cache_max_entries = 1000;
     public volatile int permissions_update_interval_in_ms = -1;
@@ -86,10 +80,6 @@ public class Config
     public int num_tokens = 1;
     /** Triggers automatic allocation of tokens if set, using the replication strategy of the referenced keyspace */
     public String allocate_tokens_for_keyspace = null;
-    /** Triggers automatic allocation of tokens if set, based on the provided replica count for a datacenter */
-    public Integer allocate_tokens_for_local_replication_factor = null;
-
-    public long native_transport_idle_timeout_in_ms = 0L;
 
     public volatile long request_timeout_in_ms = 10000L;
 
@@ -105,7 +95,12 @@ public class Config
 
     public volatile long truncate_request_timeout_in_ms = 60000L;
 
-    public Integer streaming_connections_per_host = 1;
+    /**
+     * @deprecated use {@link this#streaming_keep_alive_period_in_secs} instead
+     */
+    @Deprecated
+    public int streaming_socket_timeout_in_ms = 86400000; //24 hours
+
     public Integer streaming_keep_alive_period_in_secs = 300; //5 minutes
 
     public boolean cross_node_timeout = false;
@@ -127,13 +122,6 @@ public class Config
     public Integer memtable_offheap_space_in_mb;
     public Float memtable_cleanup_threshold = null;
 
-    // Limit the maximum depth of repair session merkle trees
-    @Deprecated
-    public volatile Integer repair_session_max_tree_depth = null;
-    public volatile Integer repair_session_space_in_mb = null;
-
-    public volatile boolean use_offheap_merkle_trees = true;
-
     public int storage_port = 7000;
     public int ssl_storage_port = 7001;
     public String listen_address;
@@ -143,56 +131,35 @@ public class Config
     public boolean listen_on_broadcast_address = false;
     public String internode_authenticator;
 
-    /*
-     * RPC address and interface refer to the address/interface used for the native protocol used to communicate with
-     * clients. It's still called RPC in some places even though Thrift RPC is gone. If you see references to native
-     * address or native port it's derived from the RPC address configuration.
-     *
-     * native_transport_port is the port that is paired with RPC address to bind on.
-     */
+    /* intentionally left set to true, despite being set to false in stock 2.2 cassandra.yaml
+       we don't want to surprise Thrift users who have the setting blank in the yaml during 2.1->2.2 upgrade */
+    public boolean start_rpc = true;
     public String rpc_address;
     public String rpc_interface;
     public boolean rpc_interface_prefer_ipv6 = false;
     public String broadcast_rpc_address;
+    public int rpc_port = 9160;
+    public int rpc_listen_backlog = 50;
+    public String rpc_server_type = "sync";
     public boolean rpc_keepalive = true;
+    public int rpc_min_threads = 16;
+    public int rpc_max_threads = Integer.MAX_VALUE;
+    public Integer rpc_send_buff_size_in_bytes;
+    public Integer rpc_recv_buff_size_in_bytes;
+    public int internode_send_buff_size_in_bytes = 0;
+    public int internode_recv_buff_size_in_bytes = 0;
 
-    public Integer internode_max_message_size_in_bytes;
-
-    public int internode_socket_send_buffer_size_in_bytes = 0;
-    public int internode_socket_receive_buffer_size_in_bytes = 0;
-
-    // TODO: derive defaults from system memory settings?
-    public int internode_application_send_queue_capacity_in_bytes = 1 << 22; // 4MiB
-    public int internode_application_send_queue_reserve_endpoint_capacity_in_bytes = 1 << 27; // 128MiB
-    public int internode_application_send_queue_reserve_global_capacity_in_bytes = 1 << 29; // 512MiB
-
-    public int internode_application_receive_queue_capacity_in_bytes = 1 << 22; // 4MiB
-    public int internode_application_receive_queue_reserve_endpoint_capacity_in_bytes = 1 << 27; // 128MiB
-    public int internode_application_receive_queue_reserve_global_capacity_in_bytes = 1 << 29; // 512MiB
-
-    // Defensive settings for protecting Cassandra from true network partitions. See (CASSANDRA-14358) for details.
-    // The amount of time to wait for internode tcp connections to establish.
-    public int internode_tcp_connect_timeout_in_ms = 2000;
-    // The amount of time unacknowledged data is allowed on a connection before we throw out the connection
-    // Note this is only supported on Linux + epoll, and it appears to behave oddly above a setting of 30000
-    // (it takes much longer than 30s) as of Linux 4.12. If you want something that high set this to 0
-    // (which picks up the OS default) and configure the net.ipv4.tcp_retries2 sysctl to be ~8.
-    public int internode_tcp_user_timeout_in_ms = 30000;
-
-    public boolean start_native_transport = true;
+    public boolean start_native_transport = false;
     public int native_transport_port = 9042;
     public Integer native_transport_port_ssl = null;
     public int native_transport_max_threads = 128;
     public int native_transport_max_frame_size_in_mb = 256;
     public volatile long native_transport_max_concurrent_connections = -1L;
     public volatile long native_transport_max_concurrent_connections_per_ip = -1L;
-    public boolean native_transport_flush_in_batches_legacy = false;
-    public volatile boolean native_transport_allow_older_protocols = true;
-    public int native_transport_frame_block_size_in_kb = 32;
-    public volatile long native_transport_max_concurrent_requests_in_bytes_per_ip = -1L;
-    public volatile long native_transport_max_concurrent_requests_in_bytes = -1L;
+    public boolean native_transport_flush_in_batches_legacy = true;
 
-
+    @Deprecated
+    public int thrift_max_message_length_in_mb = 16;
     /**
      * Max size of values in SSTables, in MegaBytes.
      * Default is the same as the native protocol frame limit: 256Mb.
@@ -200,6 +167,7 @@ public class Config
      */
     public int max_value_size_in_mb = 256;
 
+    public int thrift_framed_transport_size_in_mb = 15;
     public boolean snapshot_before_compaction = false;
     public boolean auto_snapshot = true;
 
@@ -213,9 +181,6 @@ public class Config
     public volatile int compaction_throughput_mb_per_sec = 16;
     public volatile int compaction_large_partition_warning_threshold_mb = 100;
     public int min_free_space_per_drive_in_mb = 50;
-
-    public volatile int concurrent_validations = Integer.MAX_VALUE;
-    public volatile int concurrent_materialized_view_builders = 1;
 
     /**
      * @deprecated retry support removed on CASSANDRA-10992
@@ -234,17 +199,11 @@ public class Config
     public String commitlog_directory;
     public Integer commitlog_total_space_in_mb;
     public CommitLogSync commitlog_sync;
-
-    /**
-     * @deprecated since 4.0 This value was near useless, and we're not using it anymore
-     */
     public double commitlog_sync_batch_window_in_ms = Double.NaN;
-    public double commitlog_sync_group_window_in_ms = Double.NaN;
     public int commitlog_sync_period_in_ms;
     public int commitlog_segment_size_in_mb = 32;
     public ParameterizedClass commitlog_compression;
     public int commitlog_max_compression_buffers_in_pool = 3;
-    public Integer periodic_commitlog_sync_lag_block_in_ms;
     public TransparentDataEncryptionOptions transparent_data_encryption_options = new TransparentDataEncryptionOptions();
 
     public Integer max_mutation_size_in_kb;
@@ -264,10 +223,19 @@ public class Config
     public int dynamic_snitch_reset_interval_in_ms = 600000;
     public double dynamic_snitch_badness_threshold = 0.1;
 
+    public String request_scheduler;
+    public RequestSchedulerId request_scheduler_id;
+    public RequestSchedulerOptions request_scheduler_options;
+
     public EncryptionOptions.ServerEncryptionOptions server_encryption_options = new EncryptionOptions.ServerEncryptionOptions();
-    public EncryptionOptions client_encryption_options = new EncryptionOptions();
+    public EncryptionOptions.ClientEncryptionOptions client_encryption_options = new EncryptionOptions.ClientEncryptionOptions();
+    // this encOptions is for backward compatibility (a warning is logged by DatabaseDescriptor)
+    public EncryptionOptions.ServerEncryptionOptions encryption_options;
 
     public InternodeCompression internode_compression = InternodeCompression.none;
+
+    @Deprecated
+    public Integer index_interval = null;
 
     public int hinted_handoff_throttle_in_kb = 1024;
     public int batchlog_replay_throttle_in_kb = 1024;
@@ -275,14 +243,12 @@ public class Config
     public int hints_flush_period_in_ms = 10000;
     public int max_hints_file_size_in_mb = 128;
     public ParameterizedClass hints_compression;
+    public int sstable_preemptive_open_interval_in_mb = 50;
 
     public volatile boolean incremental_backups = false;
     public boolean trickle_fsync = false;
     public int trickle_fsync_interval_in_kb = 10240;
 
-    public volatile int sstable_preemptive_open_interval_in_mb = 50;
-
-    public volatile boolean key_cache_migrate_during_compaction = true;
     public Long key_cache_size_in_mb = null;
     public volatile int key_cache_save_period = 14400;
     public volatile int key_cache_keys_to_save = Integer.MAX_VALUE;
@@ -297,7 +263,6 @@ public class Config
     public volatile int counter_cache_keys_to_save = Integer.MAX_VALUE;
 
     private static boolean isClientMode = false;
-    private static Supplier<Config> overrideLoadConfig = null;
 
     public Integer file_cache_size_in_mb;
 
@@ -331,23 +296,16 @@ public class Config
     public volatile int index_summary_resize_interval_in_minutes = 60;
 
     public int gc_log_threshold_in_ms = 200;
-    public int gc_warn_threshold_in_ms = 1000;
+    public int gc_warn_threshold_in_ms = 0;
 
     // TTL for different types of trace events.
     public int tracetype_query_ttl = (int) TimeUnit.DAYS.toSeconds(1);
     public int tracetype_repair_ttl = (int) TimeUnit.DAYS.toSeconds(7);
 
-    /**
-     * Maintain statistics on whether writes achieve the ideal consistency level
-     * before expiring and becoming hints
-     */
-    public volatile ConsistencyLevel ideal_consistency_level = null;
-
     /*
-     * Strategy to use for coalescing messages in {@link OutboundConnections}.
+     * Strategy to use for coalescing messages in OutboundTcpConnection.
      * Can be fixed, movingaverage, timehorizon, disabled. Setting is case and leading/trailing
-     * whitespace insensitive. You can also specify a subclass of
-     * {@link org.apache.cassandra.utils.CoalescingStrategies.CoalescingStrategy} by name.
+     * whitespace insensitive. You can also specify a subclass of CoalescingStrategies.CoalescingStrategy by name.
      */
     public String otc_coalescing_strategy = "DISABLED";
 
@@ -361,6 +319,12 @@ public class Config
     public int otc_coalescing_window_us = otc_coalescing_window_us_default;
     public int otc_coalescing_enough_coalesced_messages = 8;
 
+    /**
+     * Backlog expiration interval in milliseconds for the OutboundTcpConnection.
+     */
+    public static final int otc_backlog_expiration_interval_ms_default = 200;
+    public volatile int otc_backlog_expiration_interval_ms = otc_backlog_expiration_interval_ms_default;
+
     public int windows_timer_interval = 0;
 
     /**
@@ -368,15 +332,16 @@ public class Config
      * Defaults to 1/256th of the heap size or 10MB, whichever is greater.
      */
     public Long prepared_statements_cache_size_mb = null;
+    /**
+     * Size of the Thrift prepared statements cache in MB.
+     * Defaults to 1/256th of the heap size or 10MB, whichever is greater.
+     */
+    public Long thrift_prepared_statements_cache_size_mb = null;
 
     public boolean enable_user_defined_functions = false;
     public boolean enable_scripted_user_defined_functions = false;
 
-    public boolean enable_materialized_views = false;
-
-    public boolean enable_transient_replication = false;
-
-    public boolean enable_sasi_indexes = false;
+    public boolean enable_materialized_views = true;
 
     /**
      * Optionally disable asynchronous UDF execution.
@@ -412,62 +377,6 @@ public class Config
     public volatile boolean back_pressure_enabled = false;
     public volatile ParameterizedClass back_pressure_strategy;
 
-    public RepairCommandPoolFullStrategy repair_command_pool_full_strategy = RepairCommandPoolFullStrategy.queue;
-    public int repair_command_pool_size = concurrent_validations;
-
-    /**
-     * When a node first starts up it intially considers all other peers as DOWN and is disconnected from all of them.
-     * To be useful as a coordinator (and not introduce latency penalties on restart) this node must have successfully
-     * opened all three internode TCP connections (gossip, small, and large messages) before advertising to clients.
-     * Due to this, by default, Casssandra will prime these internode TCP connections and wait for all but a single
-     * node to be DOWN/disconnected in the local datacenter before offering itself as a coordinator, subject to a
-     * timeout. See CASSANDRA-13993 and CASSANDRA-14297 for more details.
-     *
-     * We provide two tunables to control this behavior as some users may want to block until all datacenters are
-     * available (global QUORUM/EACH_QUORUM), some users may not want to block at all (clients that already work
-     * around the problem), and some users may want to prime the connections but not delay startup.
-     *
-     * block_for_peers_timeout_in_secs: controls how long this node will wait to connect to peers. To completely disable
-     * any startup connectivity checks set this to -1. To trigger the internode connections but immediately continue
-     * startup, set this to to 0. The default is 10 seconds.
-     *
-     * block_for_peers_in_remote_dcs: controls if this node will consider remote datacenters to wait for. The default
-     * is to _not_ wait on remote datacenters.
-     */
-    public int block_for_peers_timeout_in_secs = 10;
-    public boolean block_for_peers_in_remote_dcs = false;
-
-    public volatile boolean automatic_sstable_upgrade = false;
-    public volatile int max_concurrent_automatic_sstable_upgrades = 1;
-    public boolean stream_entire_sstables = true;
-
-    public volatile AuditLogOptions audit_logging_options = new AuditLogOptions();
-    public volatile FullQueryLoggerOptions full_query_logging_options = new FullQueryLoggerOptions();
-
-    public CorruptedTombstoneStrategy corrupted_tombstone_strategy = CorruptedTombstoneStrategy.disabled;
-
-    public volatile boolean diagnostic_events_enabled = false;
-
-    /**
-     * flags for enabling tracking repaired state of data during reads
-     * separate flags for range & single partition reads as single partition reads are only tracked
-     * when CL > 1 and a digest mismatch occurs. Currently, range queries don't use digests so if
-     * enabled for range reads, all such reads will include repaired data tracking. As this adds
-     * some overhead, operators may wish to disable it whilst still enabling it for partition reads
-     */
-    public volatile boolean repaired_data_tracking_for_range_reads_enabled = false;
-    public volatile boolean repaired_data_tracking_for_partition_reads_enabled = false;
-    /* If true, unconfirmed mismatches (those which cannot be considered conclusive proof of out of
-     * sync repaired data due to the presence of pending repair sessions, or unrepaired partition
-     * deletes) will increment a metric, distinct from confirmed mismatches. If false, unconfirmed
-     * mismatches are simply ignored by the coordinator.
-     * This is purely to allow operators to avoid potential signal:noise issues as these types of
-     * mismatches are considerably less actionable than their confirmed counterparts. Setting this
-     * to true only disables the incrementing of the counters when an unconfirmed mismatch is found
-     * and has no other effect on the collection or processing of the repaired data.
-     */
-    public volatile boolean report_unconfirmed_repaired_data_mismatches = false;
-
     /**
      * @deprecated migrate to {@link DatabaseDescriptor#isClientInitialized()}
      */
@@ -489,21 +398,10 @@ public class Config
         isClientMode = clientMode;
     }
 
-    public static Supplier<Config> getOverrideLoadConfig()
-    {
-        return overrideLoadConfig;
-    }
-
-    public static void setOverrideLoadConfig(Supplier<Config> loadConfig)
-    {
-        overrideLoadConfig = loadConfig;
-    }
-
     public enum CommitLogSync
     {
         periodic,
-        batch,
-        group
+        batch
     }
     public enum InternodeCompression
     {
@@ -550,23 +448,15 @@ public class Config
         die_immediate
     }
 
+    public enum RequestSchedulerId
+    {
+        keyspace
+    }
+
     public enum DiskOptimizationStrategy
     {
         ssd,
         spinning
-    }
-
-    public enum RepairCommandPoolFullStrategy
-    {
-        queue,
-        reject
-    }
-
-    public enum CorruptedTombstoneStrategy
-    {
-        disabled,
-        warn,
-        exception
     }
 
     private static final List<String> SENSITIVE_KEYS = new ArrayList<String>() {{
