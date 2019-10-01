@@ -30,22 +30,28 @@ import java.util.TreeSet;
 import java.util.UUID;
 
 import org.junit.Assert;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
+import com.datastax.driver.core.DataType;
+import com.datastax.driver.core.TupleType;
+import com.datastax.driver.core.TupleValue;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.dht.ByteOrderedPartitioner;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.utils.UUIDGen;
 
 public class UFScriptTest extends CQLTester
 {
-    // Just JavaScript UDFs to check how UDF - especially security/class-loading/sandboxing stuff -
-    // behaves, if no Java UDF has been executed before.
-
-    // Do not add any other test here - especially none using Java UDFs
+    @BeforeClass
+    public static void setUp()
+    {
+        DatabaseDescriptor.setPartitioner(ByteOrderedPartitioner.instance);
+    }
 
     @Test
     public void testJavascriptSimpleCollections() throws Throwable
@@ -86,7 +92,7 @@ public class UFScriptTest extends CQLTester
         assertRows(execute("SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                    row(list, set, map));
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version = Server.VERSION_2; version <= maxProtocolVersion; version++)
             assertRowsNet(version,
                           executeNet(version, "SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                           row(list, set, map));
@@ -116,6 +122,96 @@ public class UFScriptTest extends CQLTester
     }
 
     @Test
+    public void testJavascriptTupleTypeCollection() throws Throwable
+    {
+        String tupleTypeDef = "tuple<double, list<double>, set<text>, map<int, boolean>>";
+        createTable("CREATE TABLE %s (key int primary key, tup frozen<" + tupleTypeDef + ">)");
+
+        String fTup1 = createFunction(KEYSPACE_PER_TEST, tupleTypeDef,
+                                      "CREATE FUNCTION %s( tup " + tupleTypeDef + " ) " +
+                                      "RETURNS NULL ON NULL INPUT " +
+                                      "RETURNS tuple<double, list<double>, set<text>, map<int, boolean>> " +
+                                      "LANGUAGE javascript\n" +
+                                      "AS $$" +
+                                      "       tup;$$;");
+        String fTup2 = createFunction(KEYSPACE_PER_TEST, tupleTypeDef,
+                                      "CREATE FUNCTION %s( tup " + tupleTypeDef + " ) " +
+                                      "RETURNS NULL ON NULL INPUT " +
+                                      "RETURNS double " +
+                                      "LANGUAGE javascript\n" +
+                                      "AS $$" +
+                                      "       tup.getDouble(0);$$;");
+        String fTup3 = createFunction(KEYSPACE_PER_TEST, tupleTypeDef,
+                                      "CREATE FUNCTION %s( tup " + tupleTypeDef + " ) " +
+                                      "RETURNS NULL ON NULL INPUT " +
+                                      "RETURNS list<double> " +
+                                      "LANGUAGE javascript\n" +
+                                      "AS $$" +
+                                      "       tup.getList(1, java.lang.Class.forName(\"java.lang.Double\"));$$;");
+        String fTup4 = createFunction(KEYSPACE_PER_TEST, tupleTypeDef,
+                                      "CREATE FUNCTION %s( tup " + tupleTypeDef + " ) " +
+                                      "RETURNS NULL ON NULL INPUT " +
+                                      "RETURNS set<text> " +
+                                      "LANGUAGE javascript\n" +
+                                      "AS $$" +
+                                      "       tup.getSet(2, java.lang.Class.forName(\"java.lang.String\"));$$;");
+        String fTup5 = createFunction(KEYSPACE_PER_TEST, tupleTypeDef,
+                                      "CREATE FUNCTION %s( tup " + tupleTypeDef + " ) " +
+                                      "RETURNS NULL ON NULL INPUT " +
+                                      "RETURNS map<int, boolean> " +
+                                      "LANGUAGE javascript\n" +
+                                      "AS $$" +
+                                      "       tup.getMap(3, java.lang.Class.forName(\"java.lang.Integer\"), java.lang.Class.forName(\"java.lang.Boolean\"));$$;");
+
+        List<Double> list = Arrays.asList(1d, 2d, 3d);
+        Set<String> set = new TreeSet<>(Arrays.asList("one", "three", "two"));
+        Map<Integer, Boolean> map = new TreeMap<>();
+        map.put(1, true);
+        map.put(2, false);
+        map.put(3, true);
+
+        Object t = tuple(1d, list, set, map);
+
+        execute("INSERT INTO %s (key, tup) VALUES (1, ?)", t);
+
+        assertRows(execute("SELECT " + fTup1 + "(tup) FROM %s WHERE key = 1"),
+                   row(t));
+        assertRows(execute("SELECT " + fTup2 + "(tup) FROM %s WHERE key = 1"),
+                   row(1d));
+        assertRows(execute("SELECT " + fTup3 + "(tup) FROM %s WHERE key = 1"),
+                   row(list));
+        assertRows(execute("SELECT " + fTup4 + "(tup) FROM %s WHERE key = 1"),
+                   row(set));
+        assertRows(execute("SELECT " + fTup5 + "(tup) FROM %s WHERE key = 1"),
+                   row(map));
+
+        // same test - but via native protocol
+        TupleType tType = TupleType.of(DataType.cdouble(),
+                                       DataType.list(DataType.cdouble()),
+                                       DataType.set(DataType.text()),
+                                       DataType.map(DataType.cint(), DataType.cboolean()));
+        TupleValue tup = tType.newValue(1d, list, set, map);
+        for (int version = Server.VERSION_2; version <= maxProtocolVersion; version++)
+        {
+            assertRowsNet(version,
+                          executeNet(version, "SELECT " + fTup1 + "(tup) FROM %s WHERE key = 1"),
+                          row(tup));
+            assertRowsNet(version,
+                          executeNet(version, "SELECT " + fTup2 + "(tup) FROM %s WHERE key = 1"),
+                          row(1d));
+            assertRowsNet(version,
+                          executeNet(version, "SELECT " + fTup3 + "(tup) FROM %s WHERE key = 1"),
+                          row(list));
+            assertRowsNet(version,
+                          executeNet(version, "SELECT " + fTup4 + "(tup) FROM %s WHERE key = 1"),
+                          row(set));
+            assertRowsNet(version,
+                          executeNet(version, "SELECT " + fTup5 + "(tup) FROM %s WHERE key = 1"),
+                          row(map));
+        }
+    }
+
+    @Test
     public void testJavascriptUserType() throws Throwable
     {
         String type = createType("CREATE TYPE %s (txt text, i int)");
@@ -125,7 +221,7 @@ public class UFScriptTest extends CQLTester
         String fUdt1 = createFunction(KEYSPACE, type,
                                       "CREATE FUNCTION %s( udt " + type + " ) " +
                                       "RETURNS NULL ON NULL INPUT " +
-                                      "RETURNS " + type + ' ' +
+                                      "RETURNS " + type + " " +
                                       "LANGUAGE javascript\n" +
                                       "AS $$" +
                                       "     udt;$$;");
@@ -205,7 +301,7 @@ public class UFScriptTest extends CQLTester
                    row("three", "one", "two"));
 
         // same test - but via native protocol
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version = Server.VERSION_2; version <= maxProtocolVersion; version++)
             assertRowsNet(version,
                           executeNet(version, cqlSelect),
                           row("three", "one", "two"));
@@ -228,7 +324,7 @@ public class UFScriptTest extends CQLTester
 
         FunctionName fNameName = parseFunctionName(fName);
 
-        assertRows(execute("SELECT language, body FROM system_schema.functions WHERE keyspace_name=? AND function_name=?",
+        assertRows(execute("SELECT language, body FROM system.schema_functions WHERE keyspace_name=? AND function_name=?",
                            fNameName.keyspace, fNameName.name),
                    row("javascript", functionBody));
 
@@ -275,6 +371,28 @@ public class UFScriptTest extends CQLTester
         // throws IRE with ScriptException
         assertInvalidThrowMessage("fool", FunctionExecutionException.class,
                                   "SELECT key, val, " + fName + "(val) FROM %s");
+    }
+
+    @Test
+    public void testJavascriptCompileFailure() throws Throwable
+    {
+        assertInvalidMessage("Failed to compile function 'cql_test_keyspace.scrinv'",
+                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".scrinv(val double) " +
+                             "RETURNS NULL ON NULL INPUT " +
+                             "RETURNS double " +
+                             "LANGUAGE javascript\n" +
+                             "AS 'foo bar';");
+    }
+
+    @Test
+    public void testScriptInvalidLanguage() throws Throwable
+    {
+        assertInvalidMessage("Invalid language 'artificial_intelligence' for function 'cql_test_keyspace.scrinv'",
+                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".scrinv(val double) " +
+                             "RETURNS NULL ON NULL INPUT " +
+                             "RETURNS double " +
+                             "LANGUAGE artificial_intelligence\n" +
+                             "AS 'question for 42?';");
     }
 
     @Test
@@ -382,47 +500,5 @@ public class UFScriptTest extends CQLTester
             assertRows(execute("SELECT key, " + col + ", " + fName + '(' + col + ") FROM %s"),
                        row(1, expected1, expected2));
         }
-    }
-
-    @Test
-    public void testJavascriptDisabled() throws Throwable
-    {
-        createTable("CREATE TABLE %s (key int primary key, val double)");
-
-        DatabaseDescriptor.enableScriptedUserDefinedFunctions(false);
-        try
-        {
-            assertInvalid("CREATE OR REPLACE FUNCTION " + KEYSPACE + ".assertNotEnabled(val double) " +
-                          "RETURNS NULL ON NULL INPUT " +
-                          "RETURNS double " +
-                          "LANGUAGE javascript\n" +
-                          "AS 'Math.sin(val);';");
-        }
-        finally
-        {
-            DatabaseDescriptor.enableScriptedUserDefinedFunctions(true);
-        }
-    }
-
-    @Test
-    public void testJavascriptCompileFailure() throws Throwable
-    {
-        assertInvalidMessage("Failed to compile function 'cql_test_keyspace.scrinv'",
-                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".scrinv(val double) " +
-                             "RETURNS NULL ON NULL INPUT " +
-                             "RETURNS double " +
-                             "LANGUAGE javascript\n" +
-                             "AS 'foo bar';");
-    }
-
-    @Test
-    public void testScriptInvalidLanguage() throws Throwable
-    {
-        assertInvalidMessage("Invalid language 'artificial_intelligence' for function 'cql_test_keyspace.scrinv'",
-                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".scrinv(val double) " +
-                             "RETURNS NULL ON NULL INPUT " +
-                             "RETURNS double " +
-                             "LANGUAGE artificial_intelligence\n" +
-                             "AS 'question for 42?';");
     }
 }

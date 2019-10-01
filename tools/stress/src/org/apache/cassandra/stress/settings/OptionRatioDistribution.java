@@ -87,7 +87,7 @@ public class OptionRatioDistribution extends Option
             return new DelegateFactory(delegate.get(), divisor);
         if (defaultSpec == null)
             return null;
-        OptionRatioDistribution sub = new OptionRatioDistribution("", null, null, true);
+        OptionRatioDistribution sub = new OptionRatioDistribution(delegate.prefix, null, null, true);
         if (!sub.accept(defaultSpec))
             throw new IllegalStateException("Invalid default spec: " + defaultSpec);
         return sub.get();
@@ -134,11 +134,6 @@ public class OptionRatioDistribution extends Option
     {
         return delegate.shortDisplay();
     }
-    public String getOptionAsString()
-    {
-        return delegate.getOptionAsString();
-    }
-
 
     // factories
 
@@ -158,10 +153,6 @@ public class OptionRatioDistribution extends Option
         {
             return new RatioDistribution(delegate.get(), divisor);
         }
-
-        @Override
-        public String getConfigAsString(){return String.format("Ratio: divisor=%f;delegate=%s",divisor, delegate.getConfigAsString());};
-
     }
 
     @Override

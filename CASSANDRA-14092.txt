@@ -17,7 +17,7 @@ the maximum supported expiration date:
   - CAP_NOWARN: same as previous, except that the client warning will not be emitted.
 
 These policies may be specified via the -Dcassandra.expiration_date_overflow_policy=POLICY
-startup option in the jvm.options configuration file.
+startup option.
 
 # Potential data loss on earlier versions
 
@@ -47,8 +47,8 @@ be recovered by reinserting overflowed entries with a valid expiration time and 
 timestamp, since tombstones may have been generated with the original timestamp.
 
 To find out if an SSTable has an entry with overflowed expiration, inspect it with the
-'sstablemetadata' tool and look for a negative "Minimum local deletion time" field. SSTables
-in this condition should be backed up immediately, as they are subject to data loss during
+sstable2json tool and look for a negative "local deletion time" field. SSTables in this
+condition should be backed up immediately, as they are subject to data loss during
 compaction.
 
 A "--reinsert-overflowed-ttl" option was added to scrub to rewrite SSTables containing

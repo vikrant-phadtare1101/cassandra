@@ -17,70 +17,62 @@
  */
 package org.apache.cassandra.db;
 
-import org.apache.cassandra.exceptions.WriteTimeoutException;
-import org.apache.cassandra.locator.InetAddressAndPort;
+import java.io.DataInputStream;
+import java.io.IOError;
+import java.io.IOException;
+import java.net.InetAddress;
+
+import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.net.*;
 import org.apache.cassandra.tracing.Tracing;
 
 public class MutationVerbHandler implements IVerbHandler<Mutation>
 {
-    public static final MutationVerbHandler instance = new MutationVerbHandler();
+    private static final boolean TEST_FAIL_WRITES = System.getProperty("cassandra.test.fail_writes", "false").equalsIgnoreCase("true");
 
-    private void respond(Message<?> respondTo, InetAddressAndPort respondToAddress)
+    public void doVerb(MessageIn<Mutation> message, int id)  throws IOException
     {
-        Tracing.trace("Enqueuing response to {}", respondToAddress);
-        MessagingService.instance().send(respondTo.emptyResponse(), respondToAddress);
+            // Check if there were any forwarding headers in this message
+            byte[] from = message.parameters.get(Mutation.FORWARD_FROM);
+            InetAddress replyTo;
+            if (from == null)
+            {
+                replyTo = message.from;
+                byte[] forwardBytes = message.parameters.get(Mutation.FORWARD_TO);
+                if (forwardBytes != null)
+                    forwardToLocalNodes(message.payload, message.verb, forwardBytes, message.from);
+            }
+            else
+            {
+                replyTo = InetAddress.getByAddress(from);
+            }
+
+            message.payload.apply();
+            WriteResponse response = new WriteResponse();
+            Tracing.trace("Enqueuing response to {}", replyTo);
+            MessagingService.instance().sendReply(response.createMessage(), id, replyTo);
     }
 
-    private void failed()
+    /**
+     * Older version (< 1.0) will not send this message at all, hence we don't
+     * need to check the version of the data.
+     */
+    private void forwardToLocalNodes(Mutation mutation, MessagingService.Verb verb, byte[] forwardBytes, InetAddress from) throws IOException
     {
-        Tracing.trace("Payload application resulted in WriteTimeout, not replying");
-    }
-
-    public void doVerb(Message<Mutation> message)
-    {
-        // Check if there were any forwarding headers in this message
-        InetAddressAndPort from = message.respondTo();
-        InetAddressAndPort respondToAddress;
-        if (from == null)
+        try (DataInputStream in = new DataInputStream(new FastByteArrayInputStream(forwardBytes)))
         {
-            respondToAddress = message.from();
-            ForwardingInfo forwardTo = message.forwardTo();
-            if (forwardTo != null) forwardToLocalNodes(message, forwardTo);
+            int size = in.readInt();
+
+            // tell the recipients who to send their ack to
+            MessageOut<Mutation> message = new MessageOut<>(verb, mutation, Mutation.serializer).withParameter(Mutation.FORWARD_FROM, from.getAddress());
+            // Send a message to each of the addresses on our Forward List
+            for (int i = 0; i < size; i++)
+            {
+                InetAddress address = CompactEndpointSerializationHelper.deserialize(in);
+                int id = in.readInt();
+                Tracing.trace("Enqueuing forwarded write to {}", address);
+                MessagingService.instance().sendOneWay(message, id, address);
+            }
         }
-        else
-        {
-            respondToAddress = from;
-        }
-
-        try
-        {
-            message.payload.applyFuture().thenAccept(o -> respond(message, respondToAddress)).exceptionally(wto -> {
-                failed();
-                return null;
-            });
-        }
-        catch (WriteTimeoutException wto)
-        {
-            failed();
-        }
-    }
-
-    private static void forwardToLocalNodes(Message<Mutation> originalMessage, ForwardingInfo forwardTo)
-    {
-        Message.Builder<Mutation> builder =
-            Message.builder(originalMessage)
-                   .withParam(ParamType.RESPOND_TO, originalMessage.from())
-                   .withoutParam(ParamType.FORWARD_TO);
-
-        boolean useSameMessageID = forwardTo.useSameMessageID();
-        // reuse the same Message if all ids are identical (as they will be for 4.0+ node originated messages)
-        Message<Mutation> message = useSameMessageID ? builder.build() : null;
-
-        forwardTo.forEach((id, target) ->
-        {
-            Tracing.trace("Enqueuing forwarded write to {}", target);
-            MessagingService.instance().send(useSameMessageID ? message : builder.withId(id).build(), target);
-        });
     }
 }

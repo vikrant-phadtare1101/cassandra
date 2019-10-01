@@ -19,101 +19,57 @@ package org.apache.cassandra.cql3.selection;
 
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnSpecification;
-import org.apache.cassandra.cql3.QueryOptions;
-import org.apache.cassandra.db.filter.ColumnFilter;
-import org.apache.cassandra.db.filter.ColumnFilter.Builder;
+import org.apache.cassandra.cql3.selection.Selection.ResultSetBuilder;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.transport.ProtocolVersion;
 
 public final class SimpleSelector extends Selector
 {
-    /**
-     * The Factory for {@code SimpleSelector}.
-     */
-    public static final class SimpleSelectorFactory extends Factory
-    {
-        private final int idx;
-
-        private final ColumnMetadata column;
-
-        private SimpleSelectorFactory(int idx, ColumnMetadata def)
-        {
-            this.idx = idx;
-            this.column = def;
-        }
-
-        @Override
-        protected String getColumnName()
-        {
-            return column.name.toString();
-        }
-
-        @Override
-        protected AbstractType<?> getReturnType()
-        {
-            return column.type;
-        }
-
-        protected void addColumnMapping(SelectionColumnMapping mapping, ColumnSpecification resultColumn)
-        {
-           mapping.addMapping(resultColumn, column);
-        }
-
-        @Override
-        public Selector newInstance(QueryOptions options)
-        {
-            return new SimpleSelector(column, idx);
-        }
-
-        @Override
-        public boolean isSimpleSelectorFactory()
-        {
-            return true;
-        }
-
-        @Override
-        public boolean isSimpleSelectorFactoryFor(int index)
-        {
-            return index == idx;
-        }
-
-        public boolean areAllFetchedColumnsKnown()
-        {
-            return true;
-        }
-
-        public void addFetchedColumns(ColumnFilter.Builder builder)
-        {
-            builder.add(column);
-        }
-
-        public ColumnMetadata getColumn()
-        {
-            return column;
-        }
-    }
-
-    public final ColumnMetadata column;
+    private final String columnName;
     private final int idx;
+    private final AbstractType<?> type;
     private ByteBuffer current;
     private boolean isSet;
 
-    public static Factory newFactory(final ColumnMetadata def, final int idx)
+    public static Factory newFactory(final ColumnDefinition def, final int idx)
     {
-        return new SimpleSelectorFactory(idx, def);
+        return new Factory()
+        {
+            @Override
+            protected String getColumnName()
+            {
+                return def.name.toString();
+            }
+
+            @Override
+            protected AbstractType<?> getReturnType()
+            {
+                return def.type;
+            }
+
+            protected void addColumnMapping(SelectionColumnMapping mapping, ColumnSpecification resultColumn)
+            {
+               mapping.addMapping(resultColumn, def);
+            }
+
+            @Override
+            public Selector newInstance()
+            {
+                return new SimpleSelector(def.name.toString(), idx, def.type);
+            }
+
+            @Override
+            public boolean isSimpleSelectorFactory(int index)
+            {
+                return index == idx;
+            }
+        };
     }
 
     @Override
-    public void addFetchedColumns(Builder builder)
-    {
-        builder.add(column);
-    }
-
-    @Override
-    public void addInput(ProtocolVersion protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
+    public void addInput(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException
     {
         if (!isSet)
         {
@@ -123,7 +79,7 @@ public final class SimpleSelector extends Selector
     }
 
     @Override
-    public ByteBuffer getOutput(ProtocolVersion protocolVersion) throws InvalidRequestException
+    public ByteBuffer getOutput(int protocolVersion) throws InvalidRequestException
     {
         return current;
     }
@@ -138,18 +94,19 @@ public final class SimpleSelector extends Selector
     @Override
     public AbstractType<?> getType()
     {
-        return column.type;
+        return type;
     }
 
     @Override
     public String toString()
     {
-        return column.name.toString();
+        return columnName;
     }
 
-    private SimpleSelector(ColumnMetadata column, int idx)
+    private SimpleSelector(String columnName, int idx, AbstractType<?> type)
     {
-        this.column = column;
+        this.columnName = columnName;
         this.idx = idx;
+        this.type = type;
     }
 }

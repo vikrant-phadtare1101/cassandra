@@ -25,17 +25,23 @@ import com.google.common.collect.ImmutableSet;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.cql3.*;
+import org.apache.cassandra.cql3.Attributes;
+import org.apache.cassandra.cql3.CQLStatement;
+import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.cql3.functions.Functions;
 import org.apache.cassandra.cql3.statements.BatchStatement;
 import org.apache.cassandra.cql3.statements.ModificationStatement;
+import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
+import org.apache.cassandra.utils.Pair;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -43,6 +49,8 @@ import static org.junit.Assert.fail;
 
 public class UFAuthTest extends CQLTester
 {
+    private static final Logger logger = LoggerFactory.getLogger(UFAuthTest.class);
+
     String roleName = "test_role";
     AuthenticatedUser user;
     RoleResource role;
@@ -226,7 +234,7 @@ public class UFAuthTest extends CQLTester
             functions.add(functionName);
             statements.add(stmt);
         }
-        BatchStatement batch = new BatchStatement(BatchStatement.Type.LOGGED, VariableSpecifications.empty(), statements, Attributes.none());
+        BatchStatement batch = new BatchStatement(-1, BatchStatement.Type.LOGGED, statements, Attributes.none());
         assertUnauthorized(batch, functions);
 
         grantExecuteOnFunction(functions.get(0));
@@ -236,7 +244,7 @@ public class UFAuthTest extends CQLTester
         assertUnauthorized(batch, functions.subList(2, functions.size()));
 
         grantExecuteOnFunction(functions.get(2));
-        batch.authorize(clientState);
+        batch.checkAccess(clientState);
     }
 
     @Test
@@ -250,17 +258,6 @@ public class UFAuthTest extends CQLTester
                                                   " LANGUAGE java" +
                                                   " AS 'return Integer.valueOf(0);'");
         assertPermissionsOnNestedFunctions(innerFunctionName, outerFunctionName);
-    }
-
-    @Test
-    public void functionInStaticColumnRestrictionInSelect() throws Throwable
-    {
-        setupTable("CREATE TABLE %s (k int, s int STATIC, v1 int, v2 int, PRIMARY KEY(k, v1))");
-        String functionName = createSimpleFunction();
-        String cql = String.format("SELECT k FROM %s WHERE k = 0 AND s = %s ALLOW FILTERING",
-                                   KEYSPACE + "." + currentTable(),
-                                   functionCall(functionName));
-        assertPermissionsOnFunction(cql, functionName);
     }
 
     @Test
@@ -311,17 +308,17 @@ public class UFAuthTest extends CQLTester
     public void systemFunctionsRequireNoExplicitPrivileges() throws Throwable
     {
         // with terminal arguments, so evaluated at prepare time
-        String cql = String.format("UPDATE %s SET v2 = 0 WHERE k = blobasint(intasblob(0)) and v1 = 0",
+        String cql = String.format("UPDATE %s SET v2 = 0 WHERE k = blobasint(intasblob(0))",
                                    KEYSPACE + "." + currentTable());
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
 
         // with non-terminal arguments, so evaluated at execution
         String functionName = createSimpleFunction();
         grantExecuteOnFunction(functionName);
-        cql = String.format("UPDATE %s SET v2 = 0 WHERE k = blobasint(intasblob(%s)) and v1 = 0",
+        cql = String.format("UPDATE %s SET v2 = 0 WHERE k = blobasint(intasblob(%s))",
                             KEYSPACE + "." + currentTable(),
                             functionCall(functionName));
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
     }
 
     @Test
@@ -343,7 +340,7 @@ public class UFAuthTest extends CQLTester
         assertUnauthorized(aggDef, fFunc, "int");
         grantExecuteOnFunction(fFunc);
 
-        getStatement(aggDef).authorize(clientState);
+        getStatement(aggDef).checkAccess(clientState);
     }
 
     @Test
@@ -361,24 +358,24 @@ public class UFAuthTest extends CQLTester
         String cql = String.format("SELECT %s(v1) FROM %s",
                                    aggregate,
                                    KEYSPACE + "." + currentTable());
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
 
         // check that revoking EXECUTE permission on any one of the
         // component functions means we lose the ability to execute it
         revokeExecuteOnFunction(aggregate);
         assertUnauthorized(cql, aggregate, "int");
         grantExecuteOnFunction(aggregate);
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
 
         revokeExecuteOnFunction(sFunc);
         assertUnauthorized(cql, sFunc, "int, int");
         grantExecuteOnFunction(sFunc);
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
 
         revokeExecuteOnFunction(fFunc);
         assertUnauthorized(cql, fFunc, "int");
         grantExecuteOnFunction(fFunc);
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
     }
 
     @Test
@@ -410,7 +407,7 @@ public class UFAuthTest extends CQLTester
         assertUnauthorized(cql, aggregate, "int");
         grantExecuteOnFunction(aggregate);
 
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
     }
 
     @Test
@@ -442,32 +439,7 @@ public class UFAuthTest extends CQLTester
         assertUnauthorized(cql, innerFunc, "int");
         grantExecuteOnFunction(innerFunc);
 
-        getStatement(cql).authorize(clientState);
-    }
-
-    @Test
-    public void grantAndRevokeSyntaxRequiresExplicitKeyspace() throws Throwable
-    {
-        setupTable("CREATE TABLE %s (k int, s int STATIC, v1 int, v2 int, PRIMARY KEY(k, v1))");
-        String functionName = shortFunctionName(createSimpleFunction());
-        assertRequiresKeyspace(String.format("GRANT EXECUTE ON FUNCTION %s() TO %s",
-                                             functionName,
-                                             role.getRoleName()));
-        assertRequiresKeyspace(String.format("REVOKE EXECUTE ON FUNCTION %s() FROM %s",
-                                             functionName,
-                                             role.getRoleName()));
-    }
-
-    private void assertRequiresKeyspace(String cql) throws Throwable
-    {
-        try
-        {
-            getStatement(cql);
-        }
-        catch (InvalidRequestException e)
-        {
-            assertEquals("In this context function name must be explictly qualified by a keyspace", e.getMessage());
-        }
+        getStatement(cql).checkAccess(clientState);
     }
 
     private void assertPermissionsOnNestedFunctions(String innerFunction, String outerFunction) throws Throwable
@@ -484,7 +456,7 @@ public class UFAuthTest extends CQLTester
         grantExecuteOnFunction(innerFunction);
 
         // now execution of both is permitted
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
     }
 
     private void assertPermissionsOnFunction(String cql, String functionName) throws Throwable
@@ -496,14 +468,14 @@ public class UFAuthTest extends CQLTester
     {
         assertUnauthorized(cql, functionName, argTypes);
         grantExecuteOnFunction(functionName);
-        getStatement(cql).authorize(clientState);
+        getStatement(cql).checkAccess(clientState);
     }
 
     private void assertUnauthorized(BatchStatement batch, Iterable<String> functionNames) throws Throwable
     {
         try
         {
-            batch.authorize(clientState);
+            batch.checkAccess(clientState);
             fail("Expected an UnauthorizedException, but none was thrown");
         }
         catch (UnauthorizedException e)
@@ -520,7 +492,7 @@ public class UFAuthTest extends CQLTester
     {
         try
         {
-            getStatement(cql).authorize(clientState);
+            getStatement(cql).checkAccess(clientState);
             fail("Expected an UnauthorizedException, but none was thrown");
         }
         catch (UnauthorizedException e)
@@ -625,7 +597,7 @@ public class UFAuthTest extends CQLTester
 
     private CQLStatement getStatement(String cql)
     {
-        return QueryProcessor.getStatement(cql, clientState);
+        return QueryProcessor.getStatement(cql, clientState).statement;
     }
 
     private FunctionResource functionResource(String functionName)
@@ -635,16 +607,111 @@ public class UFAuthTest extends CQLTester
         // It is here to avoid having to duplicate the functionality of CqlParser
         // for transforming cql types into AbstractTypes
         FunctionName fn = parseFunctionName(functionName);
-        Collection<Function> functions = Schema.instance.getFunctions(fn);
+        List<Function> functions = Functions.find(fn);
         assertEquals(String.format("Expected a single function definition for %s, but found %s",
                                    functionName,
                                    functions.size()),
                      1, functions.size());
-        return FunctionResource.function(fn.keyspace, fn.name, functions.iterator().next().argTypes());
+        return FunctionResource.function(fn.keyspace, fn.name, functions.get(0).argTypes());
     }
 
     private String functionCall(String functionName, String...args)
     {
         return String.format("%s(%s)", functionName, Joiner.on(",").join(args));
+    }
+
+    static class StubAuthorizer implements IAuthorizer
+    {
+        Map<Pair<String, IResource>, Set<Permission>> userPermissions = new HashMap<>();
+
+        private void clear()
+        {
+            userPermissions.clear();
+        }
+
+        public Set<Permission> authorize(AuthenticatedUser user, IResource resource)
+        {
+            Pair<String, IResource> key = Pair.create(user.getName(), resource);
+            Set<Permission> perms = userPermissions.get(key);
+            return perms != null ? perms : Collections.<Permission>emptySet();
+        }
+
+        public void grant(AuthenticatedUser performer,
+                          Set<Permission> permissions,
+                          IResource resource,
+                          RoleResource grantee) throws RequestValidationException, RequestExecutionException
+        {
+            Pair<String, IResource> key = Pair.create(grantee.getRoleName(), resource);
+            Set<Permission> perms = userPermissions.get(key);
+            if (null == perms)
+            {
+                perms = new HashSet<>();
+                userPermissions.put(key, perms);
+            }
+            perms.addAll(permissions);
+        }
+
+        public void revoke(AuthenticatedUser performer,
+                           Set<Permission> permissions,
+                           IResource resource,
+                           RoleResource revokee) throws RequestValidationException, RequestExecutionException
+        {
+            Pair<String, IResource> key = Pair.create(revokee.getRoleName(), resource);
+            Set<Permission> perms = userPermissions.get(key);
+            if (null != perms)
+                perms.removeAll(permissions);
+            if (perms.isEmpty())
+                userPermissions.remove(key);
+        }
+
+        public Set<PermissionDetails> list(AuthenticatedUser performer,
+                                           Set<Permission> permissions,
+                                           IResource resource,
+                                           RoleResource grantee) throws RequestValidationException, RequestExecutionException
+        {
+            Pair<String, IResource> key = Pair.create(grantee.getRoleName(), resource);
+            Set<Permission> perms = userPermissions.get(key);
+            if (perms == null)
+                return Collections.emptySet();
+
+
+            Set<PermissionDetails> details = new HashSet<>();
+            for (Permission permission : perms)
+            {
+                if (permissions.contains(permission))
+                    details.add(new PermissionDetails(grantee.getRoleName(), resource, permission));
+            }
+            return details;
+        }
+
+        public void revokeAllFrom(RoleResource revokee)
+        {
+            for (Pair<String, IResource> key : userPermissions.keySet())
+                if (key.left.equals(revokee.getRoleName()))
+                    userPermissions.remove(key);
+        }
+
+        public void revokeAllOn(IResource droppedResource)
+        {
+            for (Pair<String, IResource> key : userPermissions.keySet())
+                if (key.right.equals(droppedResource))
+                    userPermissions.remove(key);
+
+        }
+
+        public Set<? extends IResource> protectedResources()
+        {
+            return Collections.emptySet();
+        }
+
+        public void validateConfiguration() throws ConfigurationException
+        {
+
+        }
+
+        public void setup()
+        {
+
+        }
     }
 }

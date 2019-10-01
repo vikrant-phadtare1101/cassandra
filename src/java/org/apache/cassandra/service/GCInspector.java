@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.service;
 
-import java.io.IOException;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
@@ -28,11 +27,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import javax.management.InstanceAlreadyExistsException;
-import javax.management.MBeanRegistrationException;
 import javax.management.MBeanServer;
-import javax.management.MalformedObjectNameException;
-import javax.management.NotCompliantMBeanException;
 import javax.management.Notification;
 import javax.management.NotificationListener;
 import javax.management.ObjectName;
@@ -46,15 +41,16 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 
-import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.io.sstable.SSTableDeletingTask;
 import org.apache.cassandra.utils.StatusLogger;
 
 public class GCInspector implements NotificationListener, GCInspectorMXBean
 {
     public static final String MBEAN_NAME = "org.apache.cassandra.service:type=GCInspector";
     private static final Logger logger = LoggerFactory.getLogger(GCInspector.class);
-    private volatile long gcLogThreshholdInMs = DatabaseDescriptor.getGCLogThreshold();
-    private volatile long gcWarnThreasholdInMs = DatabaseDescriptor.getGCWarnThreshold();
+    final static long MIN_LOG_DURATION = DatabaseDescriptor.getGCLogThreshold();
+    final static long GC_WARN_THRESHOLD_IN_MS = DatabaseDescriptor.getGCWarnThreshold();
+    final static long STAT_THRESHOLD = GC_WARN_THRESHOLD_IN_MS != 0 ? GC_WARN_THRESHOLD_IN_MS : MIN_LOG_DURATION;
 
     /*
      * The field from java.nio.Bits that tracks the total number of allocated
@@ -62,23 +58,13 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
      */
     final static Field BITS_TOTAL_CAPACITY;
 
-    
     static
     {
         Field temp = null;
         try
         {
             Class<?> bitsClass = Class.forName("java.nio.Bits");
-            Field f;
-            try
-            {
-                f = bitsClass.getDeclaredField("totalCapacity");
-            }
-            catch (NoSuchFieldException ex)
-            {
-                // in Java11 it changed name to "TOTAL_CAPACITY"
-                f = bitsClass.getDeclaredField("TOTAL_CAPACITY");
-            }
+            Field f = bitsClass.getDeclaredField("totalCapacity");
             f.setAccessible(true);
             temp = f;
         }
@@ -160,12 +146,10 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
                 GarbageCollectorMXBean gc = ManagementFactory.newPlatformMXBeanProxy(mbs, name.getCanonicalName(), GarbageCollectorMXBean.class);
                 gcStates.put(gc.getName(), new GCState(gc, assumeGCIsPartiallyConcurrent(gc), assumeGCIsOldGen(gc)));
             }
-            ObjectName me = new ObjectName(MBEAN_NAME);
-            if (!mbs.isRegistered(me))
-                mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
+
+            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
         }
-        catch (RuntimeException | InstanceAlreadyExistsException | MBeanRegistrationException | 
-                NotCompliantMBeanException | MalformedObjectNameException | IOException e)
+        catch (Exception e)
         {
             throw new RuntimeException(e);
         }
@@ -213,10 +197,10 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
     }
 
     /*
-     * Assume that a GC type is an old generation collection so TransactionLogs.rescheduleFailedTasks()
+     * Assume that a GC type is an old generation collection so SSTableDeletingTask.rescheduleFailedTasks()
      * should be invoked.
      *
-     * Defaults to not invoking TransactionLogs.rescheduleFailedTasks() on unrecognized GC names
+     * Defaults to not invoking SSTableDeletingTask.rescheduleFailedTasks() on unrecognized GC names
      */
     private static boolean assumeGCIsOldGen(GarbageCollectorMXBean gc)
     {
@@ -234,7 +218,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
                 return true;
             default:
                 //Assume not old gen otherwise, don't call
-                //TransactionLogs.rescheduleFailedTasks()
+                //SSTableDeletingTask.rescheduleFailedTasks()
                 return false;
         }
     }
@@ -292,20 +276,21 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
                 if (state.compareAndSet(prev, new State(duration, bytes, prev)))
                     break;
             }
-            
-            if (gcWarnThreasholdInMs != 0 && duration > gcWarnThreasholdInMs)
-                logger.warn(sb.toString());
-            else if (duration > gcLogThreshholdInMs)
-                logger.info(sb.toString());
-            else if (logger.isTraceEnabled())
-                logger.trace(sb.toString());
 
-            if (duration > this.getStatusThresholdInMs())
+            String st = sb.toString();
+            if (GC_WARN_THRESHOLD_IN_MS != 0 && duration > GC_WARN_THRESHOLD_IN_MS)
+                logger.warn(st);
+            else if (duration > MIN_LOG_DURATION)
+                logger.info(st);
+            else if (logger.isTraceEnabled())
+                logger.trace(st);
+
+            if (duration > STAT_THRESHOLD)
                 StatusLogger.log();
 
             // if we just finished an old gen collection and we're still using a lot of memory, try to reduce the pressure
             if (gcState.assumeGCIsOldGen)
-                LifecycleTransaction.rescheduleFailedDeletions();
+                SSTableDeletingTask.rescheduleFailedTasks();
         }
     }
 
@@ -343,40 +328,4 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
             return -1;
         }
     }
-
-    public void setGcWarnThresholdInMs(long threshold)
-    {
-        if (threshold < 0)
-            throw new IllegalArgumentException("Threshold must be greater than or equal to 0");
-        if (threshold != 0 && threshold <= gcLogThreshholdInMs)
-            throw new IllegalArgumentException("Threshold must be greater than gcLogTreasholdInMs which is currently " 
-                    + gcLogThreshholdInMs);
-        gcWarnThreasholdInMs = threshold;
-    }
-
-    public long getGcWarnThresholdInMs()
-    {
-        return gcWarnThreasholdInMs;
-    }
-
-    public void setGcLogThresholdInMs(long threshold)
-    {
-        if (threshold <= 0)
-            throw new IllegalArgumentException("Threashold must be greater than 0");
-        if (gcWarnThreasholdInMs != 0 && threshold > gcWarnThreasholdInMs)
-            throw new IllegalArgumentException("Threashold must be less than gcWarnTreasholdInMs which is currently " 
-                    + gcWarnThreasholdInMs);
-        gcLogThreshholdInMs = threshold;
-    }
-
-    public long getGcLogThresholdInMs()
-    {
-        return gcLogThreshholdInMs;
-    }
-
-    public long getStatusThresholdInMs()
-    {
-        return gcWarnThreasholdInMs != 0 ? gcWarnThreasholdInMs : gcLogThreshholdInMs;
-    }
-
 }

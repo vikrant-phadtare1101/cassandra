@@ -27,14 +27,13 @@ import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.db.marshal.SimpleDateType;
 import org.apache.cassandra.db.marshal.TimeUUIDType;
 import org.apache.cassandra.db.marshal.TimestampType;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.UUIDGen;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.format.DateTimeFormat;
 
-import static org.apache.cassandra.cql3.functions.TimeFcts.*;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
@@ -88,7 +87,7 @@ public class TimeFctsTest
 
         long timeInMillis = dateTime.getMillis();
         ByteBuffer input = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes(timeInMillis, 0));
-        ByteBuffer output = executeFunction(toTimestamp(TimeUUIDType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.timeUuidToTimestamp, input);
         assertEquals(dateTime.toDate(), TimestampType.instance.compose(output));
     }
 
@@ -114,7 +113,7 @@ public class TimeFctsTest
 
         long timeInMillis = dateTime.getMillis();
         ByteBuffer input = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes(timeInMillis, 0));
-        ByteBuffer output = executeFunction(toUnixTimestamp(TimeUUIDType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.timeUuidToUnixTimestamp, input);
         assertEquals(timeInMillis, LongType.instance.compose(output).longValue());
     }
 
@@ -127,7 +126,7 @@ public class TimeFctsTest
 
         long timeInMillis = dateTime.getMillis();
         ByteBuffer input = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes(timeInMillis, 0));
-        ByteBuffer output = executeFunction(toDate(TimeUUIDType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.timeUuidtoDate, input);
 
         long expectedTime = DateTimeFormat.forPattern("yyyy-MM-dd")
                                           .withZone(DateTimeZone.UTC)
@@ -145,7 +144,7 @@ public class TimeFctsTest
                                           .parseDateTime("2015-05-21");
 
         ByteBuffer input = SimpleDateType.instance.fromString("2015-05-21");
-        ByteBuffer output = executeFunction(toTimestamp(SimpleDateType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.dateToTimestamp, input);
         assertEquals(dateTime.toDate(), TimestampType.instance.compose(output));
     }
 
@@ -157,7 +156,7 @@ public class TimeFctsTest
                                           .parseDateTime("2015-05-21");
 
         ByteBuffer input = SimpleDateType.instance.fromString("2015-05-21");
-        ByteBuffer output = executeFunction(toUnixTimestamp(SimpleDateType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.dateToUnixTimestamp, input);
         assertEquals(dateTime.getMillis(), LongType.instance.compose(output).longValue());
     }
 
@@ -169,14 +168,14 @@ public class TimeFctsTest
                                           .parseDateTime("2015-05-21");
 
         ByteBuffer input = TimestampType.instance.fromString("2015-05-21 11:03:02+00");
-        ByteBuffer output = executeFunction(toDate(TimestampType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.timestampToDate, input);
         assertEquals(dateTime.getMillis(), SimpleDateType.instance.toTimeInMillis(output));
     }
 
     @Test
     public void testTimestampToDateWithEmptyInput()
     {
-        ByteBuffer output = executeFunction(toDate(TimestampType.instance), ByteBufferUtil.EMPTY_BYTE_BUFFER);
+        ByteBuffer output = executeFunction(TimeFcts.timestampToDate, ByteBufferUtil.EMPTY_BYTE_BUFFER);
         assertNull(output);
     }
 
@@ -188,20 +187,20 @@ public class TimeFctsTest
                                           .parseDateTime("2015-05-21 11:03:02");
 
         ByteBuffer input = TimestampType.instance.decompose(dateTime.toDate());
-        ByteBuffer output = executeFunction(toUnixTimestamp(TimestampType.instance), input);
+        ByteBuffer output = executeFunction(TimeFcts.timestampToUnixTimestamp, input);
         assertEquals(dateTime.getMillis(), LongType.instance.compose(output).longValue());
     }
 
     @Test
     public void testTimestampToUnixTimestampWithEmptyInput()
     {
-        ByteBuffer output = executeFunction(TimeFcts.toUnixTimestamp(TimestampType.instance), ByteBufferUtil.EMPTY_BYTE_BUFFER);
+        ByteBuffer output = executeFunction(TimeFcts.timestampToUnixTimestamp, ByteBufferUtil.EMPTY_BYTE_BUFFER);
         assertNull(output);
     }
 
     private static ByteBuffer executeFunction(Function function, ByteBuffer input)
     {
         List<ByteBuffer> params = Arrays.asList(input);
-        return ((ScalarFunction) function).execute(ProtocolVersion.CURRENT, params);
+        return ((ScalarFunction) function).execute(Server.CURRENT_VERSION, params);
     }
 }
