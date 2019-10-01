@@ -607,7 +607,7 @@ public class AuditLoggerTest extends CQLTester
     {
         AuditLogOptions options = new AuditLogOptions();
         options.included_categories = "QUERY,DML,PREPARE";
-        options.excluded_keyspaces = "system_schema,system_virtual_schema";
+        options.excluded_keyspaces = "system_schema";
         enableAuditLogOptions(options);
 
         Session session = sessionNet();
@@ -625,7 +625,7 @@ public class AuditLoggerTest extends CQLTester
     {
         AuditLogOptions options = new AuditLogOptions();
         options.included_categories = "QUERY,DML,PREPARE";
-        options.excluded_keyspaces = "system,system_schema,system_virtual_schema";
+        options.excluded_keyspaces = "system,system_schema";
         enableAuditLogOptions(options);
 
         Session session = sessionNet();

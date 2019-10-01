@@ -164,8 +164,8 @@ public final class SchemaKeyspace
               + "table_name text,"
               + "column_name text,"
               + "dropped_time timestamp,"
-              + "kind text,"
               + "type text,"
+              + "kind text,"
               + "PRIMARY KEY ((keyspace_name), table_name, column_name))");
 
     private static final TableMetadata Triggers =

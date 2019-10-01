@@ -42,11 +42,12 @@ import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.gms.IEndpointStateChangeSubscriber;
 import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType;
 import org.apache.cassandra.utils.FBUtilities;
 
-import static org.apache.cassandra.net.Verb.PING_REQ;
-import static org.apache.cassandra.net.ConnectionType.LARGE_MESSAGES;
-import static org.apache.cassandra.net.ConnectionType.SMALL_MESSAGES;
+import static org.apache.cassandra.net.MessagingService.Verb.PING;
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType.LARGE_MESSAGE;
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType.SMALL_MESSAGE;
 
 public class StartupClusterConnectivityChecker
 {
@@ -148,11 +149,11 @@ public class StartupClusterConnectivityChecker
         }
 
         boolean succeeded = true;
-        for (CountDownLatch countDownLatch : dcToRemainingPeers.values())
+        for (String datacenter: dcToRemainingPeers.keySet())
         {
             long remainingNanos = Math.max(1, timeoutNanos - (System.nanoTime() - startNanos));
-            //noinspection UnstableApiUsage
-            succeeded &= Uninterruptibles.awaitUninterruptibly(countDownLatch, remainingNanos, TimeUnit.NANOSECONDS);
+            succeeded &= Uninterruptibles.awaitUninterruptibly(dcToRemainingPeers.get(datacenter),
+                                                               remainingNanos, TimeUnit.NANOSECONDS);
         }
 
         Gossiper.instance.unregister(listener);
@@ -182,22 +183,33 @@ public class StartupClusterConnectivityChecker
     private void sendPingMessages(Set<InetAddressAndPort> peers, Map<String, CountDownLatch> dcToRemainingPeers,
                                   AckMap acks, Function<InetAddressAndPort, String> getDatacenter)
     {
-        RequestCallback responseHandler = msg -> {
-            if (acks.incrementAndCheck(msg.from()))
+        IAsyncCallback responseHandler = new IAsyncCallback()
+        {
+            public boolean isLatencyForSnitch()
             {
-                String datacenter = getDatacenter.apply(msg.from());
-                // We have to check because we might only have the local DC in the map
-                if (dcToRemainingPeers.containsKey(datacenter))
-                    dcToRemainingPeers.get(datacenter).countDown();
+                return false;
+            }
+
+            public void response(MessageIn msg)
+            {
+                if (acks.incrementAndCheck(msg.from))
+                {
+                    String datacenter = getDatacenter.apply(msg.from);
+                    // We have to check because we might only have the local DC in the map
+                    if (dcToRemainingPeers.containsKey(datacenter))
+                        dcToRemainingPeers.get(datacenter).countDown();
+                }
             }
         };
 
-        Message<PingRequest> small = Message.out(PING_REQ, PingRequest.forSmall);
-        Message<PingRequest> large = Message.out(PING_REQ, PingRequest.forLarge);
+        MessageOut<PingMessage> smallChannelMessageOut = new MessageOut<>(PING, PingMessage.smallChannelMessage,
+                                                                          PingMessage.serializer, SMALL_MESSAGE);
+        MessageOut<PingMessage> largeChannelMessageOut = new MessageOut<>(PING, PingMessage.largeChannelMessage,
+                                                                          PingMessage.serializer, LARGE_MESSAGE);
         for (InetAddressAndPort peer : peers)
         {
-            MessagingService.instance().sendWithCallback(small, peer, responseHandler, SMALL_MESSAGES);
-            MessagingService.instance().sendWithCallback(large, peer, responseHandler, LARGE_MESSAGES);
+            MessagingService.instance().sendRR(smallChannelMessageOut, peer, responseHandler);
+            MessagingService.instance().sendRR(largeChannelMessageOut, peer, responseHandler);
         }
     }
 
