@@ -19,10 +19,10 @@ package org.apache.cassandra.db.partitions;
 
 import java.io.IOError;
 import java.io.IOException;
+import java.security.MessageDigest;
 import java.util.*;
 
-import com.google.common.hash.Hasher;
-
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.rows.*;
@@ -31,7 +31,7 @@ import org.apache.cassandra.db.transform.MorePartitions;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.MergeIterator;
 
 /**
@@ -49,16 +49,6 @@ public abstract class UnfilteredPartitionIterators
     {
         public UnfilteredRowIterators.MergeListener getRowMergeListener(DecoratedKey partitionKey, List<UnfilteredRowIterator> versions);
         public void close();
-
-        public static MergeListener NOOP = new MergeListener()
-        {
-            public UnfilteredRowIterators.MergeListener getRowMergeListener(DecoratedKey partitionKey, List<UnfilteredRowIterator> versions)
-            {
-                return UnfilteredRowIterators.MergeListener.NOOP;
-            }
-
-            public void close() {}
-        };
     }
 
     @SuppressWarnings("resource") // The created resources are returned right away
@@ -111,13 +101,13 @@ public abstract class UnfilteredPartitionIterators
         return FilteredPartitions.filter(iterator, nowInSec);
     }
 
-    @SuppressWarnings("resource")
-    public static UnfilteredPartitionIterator merge(final List<? extends UnfilteredPartitionIterator> iterators, final MergeListener listener)
+    public static UnfilteredPartitionIterator merge(final List<? extends UnfilteredPartitionIterator> iterators, final int nowInSec, final MergeListener listener)
     {
         assert listener != null;
         assert !iterators.isEmpty();
 
-        final TableMetadata metadata = iterators.get(0).metadata();
+        final boolean isForThrift = iterators.get(0).isForThrift();
+        final CFMetaData metadata = iterators.get(0).metadata();
 
         final MergeIterator<UnfilteredRowIterator, UnfilteredRowIterator> merged = MergeIterator.get(iterators, partitionComparator, new MergeIterator.Reducer<UnfilteredRowIterator, UnfilteredRowIterator>()
         {
@@ -136,26 +126,16 @@ public abstract class UnfilteredPartitionIterators
                 toMerge.set(idx, current);
             }
 
-            @SuppressWarnings("resource")
             protected UnfilteredRowIterator getReduced()
             {
                 UnfilteredRowIterators.MergeListener rowListener = listener.getRowMergeListener(partitionKey, toMerge);
 
-                // Make a single empty iterator object to merge, we don't need toMerge.size() copiess
-                UnfilteredRowIterator empty = null;
-
                 // Replace nulls by empty iterators
                 for (int i = 0; i < toMerge.size(); i++)
-                {
                     if (toMerge.get(i) == null)
-                    {
-                        if (null == empty)
-                            empty = EmptyIterators.unfilteredRow(metadata, partitionKey, isReverseOrder);
-                        toMerge.set(i, empty);
-                    }
-                }
+                        toMerge.set(i, EmptyIterators.unfilteredRow(metadata, partitionKey, isReverseOrder));
 
-                return UnfilteredRowIterators.merge(toMerge, rowListener);
+                return UnfilteredRowIterators.merge(toMerge, nowInSec, rowListener);
             }
 
             protected void onKeyChange()
@@ -168,7 +148,12 @@ public abstract class UnfilteredPartitionIterators
 
         return new AbstractUnfilteredPartitionIterator()
         {
-            public TableMetadata metadata()
+            public boolean isForThrift()
+            {
+                return isForThrift;
+            }
+
+            public CFMetaData metadata()
             {
                 return metadata;
             }
@@ -192,15 +177,15 @@ public abstract class UnfilteredPartitionIterators
         };
     }
 
-    @SuppressWarnings("resource")
-    public static UnfilteredPartitionIterator mergeLazily(final List<? extends UnfilteredPartitionIterator> iterators)
+    public static UnfilteredPartitionIterator mergeLazily(final List<? extends UnfilteredPartitionIterator> iterators, final int nowInSec)
     {
         assert !iterators.isEmpty();
 
         if (iterators.size() == 1)
             return iterators.get(0);
 
-        final TableMetadata metadata = iterators.get(0).metadata();
+        final boolean isForThrift = iterators.get(0).isForThrift();
+        final CFMetaData metadata = iterators.get(0).metadata();
 
         final MergeIterator<UnfilteredRowIterator, UnfilteredRowIterator> merged = MergeIterator.get(iterators, partitionComparator, new MergeIterator.Reducer<UnfilteredRowIterator, UnfilteredRowIterator>()
         {
@@ -217,7 +202,7 @@ public abstract class UnfilteredPartitionIterators
                 {
                     protected UnfilteredRowIterator initializeIterator()
                     {
-                        return UnfilteredRowIterators.merge(toMerge);
+                        return UnfilteredRowIterators.merge(toMerge, nowInSec);
                     }
                 };
             }
@@ -230,7 +215,12 @@ public abstract class UnfilteredPartitionIterators
 
         return new AbstractUnfilteredPartitionIterator()
         {
-            public TableMetadata metadata()
+            public boolean isForThrift()
+            {
+                return isForThrift;
+            }
+
+            public CFMetaData metadata()
             {
                 return metadata;
             }
@@ -258,17 +248,19 @@ public abstract class UnfilteredPartitionIterators
      *
      * Caller must close the provided iterator.
      *
+     * @param command the command that has yield {@code iterator}. This can be null if {@code version >= MessagingService.VERSION_30}
+     * as this is only used when producing digest to be sent to legacy nodes.
      * @param iterator the iterator to digest.
-     * @param hasher the {@link Hasher} to use for the digest.
+     * @param digest the {@code MessageDigest} to use for the digest.
      * @param version the messaging protocol to use when producing the digest.
      */
-    public static void digest(UnfilteredPartitionIterator iterator, Hasher hasher, int version)
+    public static void digest(ReadCommand command, UnfilteredPartitionIterator iterator, MessageDigest digest, int version)
     {
         while (iterator.hasNext())
         {
             try (UnfilteredRowIterator partition = iterator.next())
             {
-                    UnfilteredRowIterators.digest(partition, hasher, version);
+                UnfilteredRowIterators.digest(command, partition, digest, version);
             }
         }
     }
@@ -304,9 +296,9 @@ public abstract class UnfilteredPartitionIterators
     {
         public void serialize(UnfilteredPartitionIterator iter, ColumnFilter selection, DataOutputPlus out, int version) throws IOException
         {
-            // Previously, a boolean indicating if this was for a thrift query.
-            // Unused since 4.0 but kept on wire for compatibility.
-            out.writeBoolean(false);
+            assert version >= MessagingService.VERSION_30; // We handle backward compatibility directy in ReadResponse.LegacyRangeSliceReplySerializer
+
+            out.writeBoolean(iter.isForThrift());
             while (iter.hasNext())
             {
                 out.writeBoolean(true);
@@ -318,10 +310,10 @@ public abstract class UnfilteredPartitionIterators
             out.writeBoolean(false);
         }
 
-        public UnfilteredPartitionIterator deserialize(final DataInputPlus in, final int version, final TableMetadata metadata, final ColumnFilter selection, final SerializationHelper.Flag flag) throws IOException
+        public UnfilteredPartitionIterator deserialize(final DataInputPlus in, final int version, final CFMetaData metadata, final ColumnFilter selection, final SerializationHelper.Flag flag) throws IOException
         {
-            // Skip now unused isForThrift boolean
-            in.readBoolean();
+            assert version >= MessagingService.VERSION_30; // We handle backward compatibility directy in ReadResponse.LegacyRangeSliceReplySerializer
+            final boolean isForThrift = in.readBoolean();
 
             return new AbstractUnfilteredPartitionIterator()
             {
@@ -329,7 +321,12 @@ public abstract class UnfilteredPartitionIterators
                 private boolean hasNext;
                 private boolean nextReturned = true;
 
-                public TableMetadata metadata()
+                public boolean isForThrift()
+                {
+                    return isForThrift;
+                }
+
+                public CFMetaData metadata()
                 {
                     return metadata;
                 }

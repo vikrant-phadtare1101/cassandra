@@ -18,14 +18,13 @@
 package org.apache.cassandra.auth;
 
 import java.util.Set;
-import java.util.function.BooleanSupplier;
-import java.util.stream.Collectors;
+import java.util.concurrent.ExecutionException;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 
-public class RolesCache extends AuthCache<RoleResource, Set<Role>>
+public class RolesCache extends AuthCache<RoleResource, Set<RoleResource>> implements RolesCacheMBean
 {
-    public RolesCache(IRoleManager roleManager, BooleanSupplier enableCache)
+    public RolesCache(IRoleManager roleManager)
     {
         super("RolesCache",
               DatabaseDescriptor::setRolesValidity,
@@ -34,32 +33,19 @@ public class RolesCache extends AuthCache<RoleResource, Set<Role>>
               DatabaseDescriptor::getRolesUpdateInterval,
               DatabaseDescriptor::setRolesCacheMaxEntries,
               DatabaseDescriptor::getRolesCacheMaxEntries,
-              roleManager::getRoleDetails,
-              enableCache);
+              (r) -> roleManager.getRoles(r, true),
+              () -> DatabaseDescriptor.getAuthenticator().requireAuthentication());
     }
 
-    /**
-     * Read or return from the cache the Set of the RoleResources identifying the roles granted to the primary resource
-     * @see Roles#getRoles(RoleResource)
-     * @param primaryRole identifier for the primary role
-     * @return the set of identifiers of all the roles granted to (directly or through inheritance) the primary role
-     */
-    Set<RoleResource> getRoleResources(RoleResource primaryRole)
+    public Set<RoleResource> getRoles(RoleResource role)
     {
-        return get(primaryRole).stream()
-                               .map(r -> r.resource)
-                               .collect(Collectors.toSet());
-    }
-
-    /**
-     * Read or return from cache the set of Role objects representing the roles granted to the primary resource
-     * @see Roles#getRoleDetails(RoleResource)
-     * @param primaryRole identifier for the primary role
-     * @return the set of Role objects containing info of all roles granted to (directly or through inheritance)
-     * the primary role.
-     */
-    Set<Role> getRoles(RoleResource primaryRole)
-    {
-        return get(primaryRole);
+        try
+        {
+            return get(role);
+        }
+        catch (ExecutionException e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 }

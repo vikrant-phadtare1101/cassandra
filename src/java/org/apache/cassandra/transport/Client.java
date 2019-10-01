@@ -28,29 +28,24 @@ import com.google.common.base.Splitter;
 
 import org.apache.cassandra.auth.PasswordAuthenticator;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.transport.frame.checksum.ChecksummingTransformer;
-import org.apache.cassandra.transport.frame.compress.CompressingTransformer;
-import org.apache.cassandra.transport.frame.compress.Compressor;
-import org.apache.cassandra.transport.frame.compress.LZ4Compressor;
-import org.apache.cassandra.transport.frame.compress.SnappyCompressor;
 import org.apache.cassandra.transport.messages.*;
-import org.apache.cassandra.utils.ChecksumType;
 import org.apache.cassandra.utils.Hex;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.MD5Digest;
+
+import static org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 
 public class Client extends SimpleClient
 {
     private final SimpleEventHandler eventHandler = new SimpleEventHandler();
 
-    public Client(String host, int port, ProtocolVersion version, EncryptionOptions encryptionOptions)
+    public Client(String host, int port, ProtocolVersion version, ClientEncryptionOptions encryptionOptions)
     {
-        super(host, port, version, version.isBeta(), encryptionOptions);
+        super(host, port, version, encryptionOptions);
         setEventHandler(eventHandler);
     }
 
@@ -111,56 +106,15 @@ public class Client extends SimpleClient
         {
             Map<String, String> options = new HashMap<String, String>();
             options.put(StartupMessage.CQL_VERSION, "3.0.0");
-            Compressor compressor = null;
-            ChecksumType checksumType = null;
             while (iter.hasNext())
             {
-               String next = iter.next().toLowerCase();
-               switch (next)
+               String next = iter.next();
+               if (next.toLowerCase().equals("snappy"))
                {
-                   case "snappy": {
-                       if (options.containsKey(StartupMessage.COMPRESSION))
-                           throw new RuntimeException("Multiple compression types supplied");
-                       options.put(StartupMessage.COMPRESSION, "snappy");
-                       compressor = SnappyCompressor.INSTANCE;
-                       break;
-                   }
-                   case "lz4": {
-                       if (options.containsKey(StartupMessage.COMPRESSION))
-                           throw new RuntimeException("Multiple compression types supplied");
-                       options.put(StartupMessage.COMPRESSION, "lz4");
-                       compressor = LZ4Compressor.INSTANCE;
-                       break;
-                   }
-                   case "crc32": {
-                       if (options.containsKey(StartupMessage.CHECKSUM))
-                           throw new RuntimeException("Multiple checksum types supplied");
-                       options.put(StartupMessage.CHECKSUM, ChecksumType.CRC32.name());
-                       checksumType = ChecksumType.CRC32;
-                       break;
-                   }
-                   case "adler32": {
-                       if (options.containsKey(StartupMessage.CHECKSUM))
-                           throw new RuntimeException("Multiple checksum types supplied");
-                       options.put(StartupMessage.CHECKSUM, ChecksumType.ADLER32.name());
-                       checksumType = ChecksumType.ADLER32;
-                       break;
-                   }
+                   options.put(StartupMessage.COMPRESSION, "snappy");
+                   connection.setCompressor(FrameCompressor.SnappyCompressor.instance);
                }
             }
-
-            if (checksumType == null)
-            {
-               if (compressor != null)
-               {
-                   connection.setTransformer(CompressingTransformer.getTransformer(compressor));
-               }
-            }
-            else
-            {
-                connection.setTransformer(ChecksummingTransformer.getTransformer(checksumType, compressor));
-            }
-
             return new StartupMessage(options);
         }
         else if (msgType.equals("QUERY"))
@@ -182,20 +136,18 @@ public class Client extends SimpleClient
                     return null;
                 }
             }
-            return new QueryMessage(query, QueryOptions.create(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList(), false, pageSize, null, null, version, null));
+            return new QueryMessage(query, QueryOptions.create(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList(), false, pageSize, null, null, version));
         }
         else if (msgType.equals("PREPARE"))
         {
             String query = line.substring(8);
-            return new PrepareMessage(query, null);
+            return new PrepareMessage(query);
         }
         else if (msgType.equals("EXECUTE"))
         {
             try
             {
-                byte[] preparedStatementId = Hex.hexToBytes(iter.next());
-                byte[] resultMetadataId = Hex.hexToBytes(iter.next());
-
+                byte[] id = Hex.hexToBytes(iter.next());
                 List<ByteBuffer> values = new ArrayList<ByteBuffer>();
                 while(iter.hasNext())
                 {
@@ -212,7 +164,7 @@ public class Client extends SimpleClient
                     }
                     values.add(bb);
                 }
-                return new ExecuteMessage(MD5Digest.wrap(preparedStatementId), MD5Digest.wrap(resultMetadataId), QueryOptions.forInternalCalls(ConsistencyLevel.ONE, values));
+                return new ExecuteMessage(MD5Digest.wrap(id), QueryOptions.forInternalCalls(ConsistencyLevel.ONE, values));
             }
             catch (Exception e)
             {
@@ -222,6 +174,13 @@ public class Client extends SimpleClient
         else if (msgType.equals("OPTIONS"))
         {
             return new OptionsMessage();
+        }
+        else if (msgType.equals("CREDENTIALS"))
+        {
+            System.err.println("[WARN] CREDENTIALS command is deprecated, use AUTHENTICATE instead");
+            CredentialsMessage msg = new CredentialsMessage();
+            msg.credentials.putAll(readCredentials(iter));
+            return msg;
         }
         else if (msgType.equals("AUTHENTICATE"))
         {
@@ -292,9 +251,9 @@ public class Client extends SimpleClient
         // Parse options.
         String host = args[0];
         int port = Integer.parseInt(args[1]);
-        ProtocolVersion version = args.length == 3 ? ProtocolVersion.decode(Integer.parseInt(args[2]), DatabaseDescriptor.getNativeTransportAllowOlderProtocols()) : ProtocolVersion.CURRENT;
+        ProtocolVersion version = args.length == 3 ? ProtocolVersion.decode(Integer.parseInt(args[2])) : ProtocolVersion.CURRENT;
 
-        EncryptionOptions encryptionOptions = new EncryptionOptions();
+        ClientEncryptionOptions encryptionOptions = new ClientEncryptionOptions();
         System.out.println("CQL binary protocol console " + host + "@" + port + " using native protocol version " + version);
 
         new Client(host, port, version, encryptionOptions).run();

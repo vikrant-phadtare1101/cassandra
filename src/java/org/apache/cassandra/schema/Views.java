@@ -15,32 +15,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.cassandra.schema;
 
-import java.util.HashMap;
+
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Optional;
-import java.util.function.Predicate;
 
 import javax.annotation.Nullable;
 
-import com.google.common.collect.*;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.MapDifference;
+import com.google.common.collect.Maps;
 
-import org.apache.cassandra.db.marshal.UserType;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ViewDefinition;
 
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
+import static com.google.common.collect.Iterables.filter;
 
-public final class Views implements Iterable<ViewMetadata>
+public final class Views implements Iterable<ViewDefinition>
 {
-    private static final Views NONE = builder().build();
-
-    private final ImmutableMap<String, ViewMetadata> views;
+    private final ImmutableMap<String, ViewDefinition> views;
 
     private Views(Builder builder)
     {
-        views = ImmutableMap.copyOf(builder.views);
+        views = builder.views.build();
     }
 
     public static Builder builder()
@@ -48,22 +48,17 @@ public final class Views implements Iterable<ViewMetadata>
         return new Builder();
     }
 
-    public Builder unbuild()
-    {
-        return builder().put(this);
-    }
-
     public static Views none()
     {
-        return NONE;
+        return builder().build();
     }
 
-    public Iterator<ViewMetadata> iterator()
+    public Iterator<ViewDefinition> iterator()
     {
         return views.values().iterator();
     }
 
-    Iterable<TableMetadata> allTableMetadata()
+    public Iterable<CFMetaData> metadatas()
     {
         return Iterables.transform(views.values(), view -> view.metadata);
     }
@@ -78,18 +73,13 @@ public final class Views implements Iterable<ViewMetadata>
         return views.isEmpty();
     }
 
-    public Iterable<ViewMetadata> forTable(TableId tableId)
-    {
-        return Iterables.filter(this, v -> v.baseTableId.equals(tableId));
-    }
-
     /**
      * Get the materialized view with the specified name
      *
      * @param name a non-qualified materialized view name
-     * @return an empty {@link Optional} if the materialized view name is not found; a non-empty optional of {@link ViewMetadata} otherwise
+     * @return an empty {@link Optional} if the materialized view name is not found; a non-empty optional of {@link ViewDefinition} otherwise
      */
-    public Optional<ViewMetadata> get(String name)
+    public Optional<ViewDefinition> get(String name)
     {
         return Optional.ofNullable(views.get(name));
     }
@@ -98,40 +88,23 @@ public final class Views implements Iterable<ViewMetadata>
      * Get the view with the specified name
      *
      * @param name a non-qualified view name
-     * @return null if the view name is not found; the found {@link ViewMetadata} otherwise
+     * @return null if the view name is not found; the found {@link ViewDefinition} otherwise
      */
     @Nullable
-    public ViewMetadata getNullable(String name)
+    public ViewDefinition getNullable(String name)
     {
         return views.get(name);
-    }
-
-    boolean containsView(String name)
-    {
-        return views.containsKey(name);
-    }
-
-    Views filter(Predicate<ViewMetadata> predicate)
-    {
-        Builder builder = builder();
-        views.values().stream().filter(predicate).forEach(builder::put);
-        return builder.build();
     }
 
     /**
      * Create a MaterializedViews instance with the provided materialized view added
      */
-    public Views with(ViewMetadata view)
+    public Views with(ViewDefinition view)
     {
-        if (get(view.name()).isPresent())
-            throw new IllegalStateException(String.format("Materialized View %s already exists", view.name()));
+        if (get(view.viewName).isPresent())
+            throw new IllegalStateException(String.format("Materialized View %s already exists", view.viewName));
 
-        return builder().put(this).put(view).build();
-    }
-
-    public Views withSwapped(ViewMetadata view)
-    {
-        return without(view.name()).with(view);
+        return builder().add(this).add(view).build();
     }
 
     /**
@@ -139,17 +112,23 @@ public final class Views implements Iterable<ViewMetadata>
      */
     public Views without(String name)
     {
-        ViewMetadata materializedView =
+        ViewDefinition materializedView =
             get(name).orElseThrow(() -> new IllegalStateException(String.format("Materialized View %s doesn't exists", name)));
 
-        return filter(v -> v != materializedView);
+        return builder().add(filter(this, v -> v != materializedView)).build();
     }
 
-    Views withUpdatedUserTypes(UserType udt)
+    /**
+     * Creates a MaterializedViews instance which contains an updated materialized view
+     */
+    public Views replace(ViewDefinition view, CFMetaData cfm)
     {
-        return any(this, v -> v.referencesUserType(udt.name))
-             ? builder().put(transform(this, v -> v.withUpdatedUserType(udt))).build()
-             : this;
+        return without(view.viewName).with(view);
+    }
+
+    MapDifference<String, ViewDefinition> diff(Views other)
+    {
+        return Maps.difference(views, other.views);
     }
 
     @Override
@@ -172,7 +151,7 @@ public final class Views implements Iterable<ViewMetadata>
 
     public static final class Builder
     {
-        final Map<String, ViewMetadata> views = new HashMap<>();
+        final ImmutableMap.Builder<String, ViewDefinition> views = new ImmutableMap.Builder<>();
 
         private Builder()
         {
@@ -183,61 +162,17 @@ public final class Views implements Iterable<ViewMetadata>
             return new Views(this);
         }
 
-        public ViewMetadata get(String name)
-        {
-            return views.get(name);
-        }
 
-        public Builder put(ViewMetadata view)
+        public Builder add(ViewDefinition view)
         {
-            views.put(view.name(), view);
+            views.put(view.viewName, view);
             return this;
         }
 
-        public Builder remove(String name)
+        public Builder add(Iterable<ViewDefinition> views)
         {
-            views.remove(name);
+            views.forEach(this::add);
             return this;
-        }
-
-        public Builder put(Iterable<ViewMetadata> views)
-        {
-            views.forEach(this::put);
-            return this;
-        }
-    }
-
-    static ViewsDiff diff(Views before, Views after)
-    {
-        return ViewsDiff.diff(before, after);
-    }
-
-    static final class ViewsDiff extends Diff<Views, ViewMetadata>
-    {
-        private static final ViewsDiff NONE = new ViewsDiff(Views.none(), Views.none(), ImmutableList.of());
-
-        private ViewsDiff(Views created, Views dropped, ImmutableCollection<Altered<ViewMetadata>> altered)
-        {
-            super(created, dropped, altered);
-        }
-
-        private static ViewsDiff diff(Views before, Views after)
-        {
-            if (before == after)
-                return NONE;
-
-            Views created = after.filter(v -> !before.containsView(v.name()));
-            Views dropped = before.filter(v -> !after.containsView(v.name()));
-
-            ImmutableList.Builder<Altered<ViewMetadata>> altered = ImmutableList.builder();
-            before.forEach(viewBefore ->
-            {
-                ViewMetadata viewAfter = after.getNullable(viewBefore.name());
-                if (null != viewAfter)
-                    viewBefore.compare(viewAfter).ifPresent(kind -> altered.add(new Altered<>(viewBefore, viewAfter, kind)));
-            });
-
-            return new ViewsDiff(created, dropped, altered.build());
         }
     }
 }

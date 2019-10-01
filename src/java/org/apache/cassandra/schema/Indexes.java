@@ -15,15 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.cassandra.schema;
 
 import java.util.*;
-import java.util.stream.Stream;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
 
-import static java.lang.String.format;
+import org.apache.cassandra.config.Schema;
 
 import static com.google.common.collect.Iterables.filter;
 
@@ -36,7 +35,7 @@ import static com.google.common.collect.Iterables.filter;
  * support is added for multiple target columns per-index and for indexes with
  * TargetType.ROW
  */
-public final class Indexes implements Iterable<IndexMetadata>
+public class Indexes implements Iterable<IndexMetadata>
 {
     private final ImmutableMap<String, IndexMetadata> indexesByName;
     private final ImmutableMap<UUID, IndexMetadata> indexesById;
@@ -57,24 +56,9 @@ public final class Indexes implements Iterable<IndexMetadata>
         return builder().build();
     }
 
-    public static Indexes of(IndexMetadata... indexes)
-    {
-        return builder().add(indexes).build();
-    }
-
-    public static Indexes of(Iterable<IndexMetadata> indexes)
-    {
-        return builder().add(indexes).build();
-    }
-
     public Iterator<IndexMetadata> iterator()
     {
         return indexesByName.values().iterator();
-    }
-
-    public Stream<IndexMetadata> stream()
-    {
-        return indexesById.values().stream();
     }
 
     public int size()
@@ -137,7 +121,7 @@ public final class Indexes implements Iterable<IndexMetadata>
     public Indexes with(IndexMetadata index)
     {
         if (get(index.name).isPresent())
-            throw new IllegalStateException(format("Index %s already exists", index.name));
+            throw new IllegalStateException(String.format("Index %s already exists", index.name));
 
         return builder().add(this).add(index).build();
     }
@@ -147,7 +131,7 @@ public final class Indexes implements Iterable<IndexMetadata>
      */
     public Indexes without(String name)
     {
-        IndexMetadata index = get(name).orElseThrow(() -> new IllegalStateException(format("Index %s doesn't exist", name)));
+        IndexMetadata index = get(name).orElseThrow(() -> new IllegalStateException(String.format("Index %s doesn't exist", name)));
         return builder().add(filter(this, v -> v != index)).build();
     }
 
@@ -165,11 +149,6 @@ public final class Indexes implements Iterable<IndexMetadata>
         return this == o || (o instanceof Indexes && indexesByName.equals(((Indexes) o).indexesByName));
     }
 
-    public void validate(TableMetadata table)
-    {
-        indexesByName.values().forEach(i -> i.validate(table));
-    }
-
     @Override
     public int hashCode()
     {
@@ -180,6 +159,20 @@ public final class Indexes implements Iterable<IndexMetadata>
     public String toString()
     {
         return indexesByName.values().toString();
+    }
+
+    public static String getAvailableIndexName(String ksName, String cfName, String indexNameRoot)
+    {
+
+        KeyspaceMetadata ksm = Schema.instance.getKSMetaData(ksName);
+        Set<String> existingNames = ksm == null ? new HashSet<>() : ksm.existingIndexNames(null);
+        String baseName = IndexMetadata.getDefaultIndexName(cfName, indexNameRoot);
+        String acceptedName = baseName;
+        int i = 0;
+        while (existingNames.contains(acceptedName))
+            acceptedName = baseName + '_' + (++i);
+
+        return acceptedName;
     }
 
     public static final class Builder
@@ -200,13 +193,6 @@ public final class Indexes implements Iterable<IndexMetadata>
         {
             indexesByName.put(index.name, index);
             indexesById.put(index.id, index);
-            return this;
-        }
-
-        public Builder add(IndexMetadata... indexes)
-        {
-            for (IndexMetadata index : indexes)
-                add(index);
             return this;
         }
 

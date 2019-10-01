@@ -22,8 +22,8 @@ import java.util.*;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.PartitionStatisticsCollector;
 import org.apache.cassandra.utils.MergeIterator;
@@ -70,7 +70,7 @@ public abstract class Rows
      * only argument.
      * @return a newly created builder.
      */
-    public static Row.SimpleBuilder simpleBuilder(TableMetadata metadata, Object... clusteringValues)
+    public static Row.SimpleBuilder simpleBuilder(CFMetaData metadata, Object... clusteringValues)
     {
         return new SimpleBuilders.RowBuilder(metadata, clusteringValues);
     }
@@ -131,7 +131,6 @@ public abstract class Rows
      * @param merged the result of merging {@code inputs}.
      * @param inputs the inputs whose merge yielded {@code merged}.
      */
-    @SuppressWarnings("resource")
     public static void diff(RowDiffListener diffListener, Row merged, Row...inputs)
     {
         Clustering clustering = merged.clustering();
@@ -173,7 +172,7 @@ public abstract class Rows
                     ColumnData input = inputDatas[i];
                     if (mergedData != null || input != null)
                     {
-                        ColumnMetadata column = (mergedData != null ? mergedData : input).column;
+                        ColumnDefinition column = (mergedData != null ? mergedData : input).column;
                         if (column.isSimple())
                         {
                             diffListener.onCell(i, clustering, (Cell) mergedData, (Cell) input);
@@ -239,10 +238,10 @@ public abstract class Rows
             iter.next();
     }
 
-    public static Row merge(Row row1, Row row2)
+    public static Row merge(Row row1, Row row2, int nowInSec)
     {
         Row.Builder builder = BTreeRow.sortedBuilder();
-        merge(row1, row2, builder);
+        merge(row1, row2, builder, nowInSec);
         return builder.build();
     }
 
@@ -256,6 +255,9 @@ public abstract class Rows
      * @param existing
      * @param update
      * @param builder the row build to which the result of the reconciliation is written.
+     * @param nowInSec the current time in seconds (which plays a role during reconciliation
+     * because deleted cells always have precedence on timestamp equality and deciding if a
+     * cell is a live or not depends on the current time due to expiring cells).
      *
      * @return the smallest timestamp delta between corresponding rows from existing and update. A
      * timestamp delta being computed as the difference between the cells and DeletionTimes from {@code existing}
@@ -263,7 +265,8 @@ public abstract class Rows
      */
     public static long merge(Row existing,
                              Row update,
-                             Row.Builder builder)
+                             Row.Builder builder,
+                             int nowInSec)
     {
         Clustering clustering = existing.clustering();
         builder.newRow(clustering);
@@ -294,10 +297,11 @@ public abstract class Rows
             int comparison = nexta == null ? 1 : nextb == null ? -1 : nexta.column.compareTo(nextb.column);
             ColumnData cura = comparison <= 0 ? nexta : null;
             ColumnData curb = comparison >= 0 ? nextb : null;
-            ColumnMetadata column = getColumnMetadata(cura, curb);
+            ColumnDefinition column = getColumnDefinition(cura, curb);
+
             if (column.isSimple())
             {
-                timeDelta = Math.min(timeDelta, Cells.reconcile((Cell) cura, (Cell) curb, deletion, builder));
+                timeDelta = Math.min(timeDelta, Cells.reconcile((Cell) cura, (Cell) curb, deletion, builder, nowInSec));
             }
             else
             {
@@ -314,7 +318,7 @@ public abstract class Rows
 
                 Iterator<Cell> existingCells = existingData == null ? null : existingData.iterator();
                 Iterator<Cell> updateCells = updateData == null ? null : updateData.iterator();
-                timeDelta = Math.min(timeDelta, Cells.reconcileComplex(column, existingCells, updateCells, maxDt, builder));
+                timeDelta = Math.min(timeDelta, Cells.reconcileComplex(column, existingCells, updateCells, maxDt, builder, nowInSec));
             }
 
             if (cura != null)
@@ -333,8 +337,11 @@ public abstract class Rows
      * @param existing source row
      * @param update shadowing row
      * @param rangeDeletion extra {@code DeletionTime} from covering tombstone
+     * @param nowInSec the current time in seconds (which plays a role during reconciliation
+     * because deleted cells always have precedence on timestamp equality and deciding if a
+     * cell is a live or not depends on the current time due to expiring cells).
      */
-    public static Row removeShadowedCells(Row existing, Row update, DeletionTime rangeDeletion)
+    public static Row removeShadowedCells(Row existing, Row update, DeletionTime rangeDeletion, int nowInSec)
     {
         Row.Builder builder = BTreeRow.sortedBuilder();
         Clustering clustering = existing.clustering();
@@ -360,11 +367,11 @@ public abstract class Rows
             if (comparison <= 0)
             {
                 ColumnData cura = nexta;
-                ColumnMetadata column = cura.column;
+                ColumnDefinition column = cura.column;
                 ColumnData curb = comparison == 0 ? nextb : null;
                 if (column.isSimple())
                 {
-                    Cells.addNonShadowed((Cell) cura, (Cell) curb, deletion, builder);
+                    Cells.addNonShadowed((Cell) cura, (Cell) curb, deletion, builder, nowInSec);
                 }
                 else
                 {
@@ -383,7 +390,7 @@ public abstract class Rows
 
                     Iterator<Cell> existingCells = existingData.iterator();
                     Iterator<Cell> updateCells = updateData == null ? null : updateData.iterator();
-                    Cells.addNonShadowedComplex(column, existingCells, updateCells, maxDt, builder);
+                    Cells.addNonShadowedComplex(column, existingCells, updateCells, maxDt, builder, nowInSec);
                 }
                 nexta = a.hasNext() ? a.next() : null;
                 if (curb != null)
@@ -399,10 +406,10 @@ public abstract class Rows
     }
 
     /**
-     * Returns the {@code ColumnMetadata} to use for merging the columns.
-     * If the 2 column metadata are different the latest one will be returned.
+     * Returns the {@code ColumnDefinition} to use for merging the columns.
+     * If the 2 column definitions are different the latest one will be returned.
      */
-    private static ColumnMetadata getColumnMetadata(ColumnData cura, ColumnData curb)
+    private static ColumnDefinition getColumnDefinition(ColumnData cura, ColumnData curb)
     {
         if (cura == null)
             return curb.column;

@@ -101,7 +101,7 @@ public class LimitingRebufferer implements Rebufferer, Rebufferer.BufferHolder
     @Override
     public String toString()
     {
-        return "LimitingRebufferer[" + limiter + "]:" + wrapped;
+        return "LimitingRebufferer[" + limiter.toString() + "]:" + wrapped.toString();
     }
 
     // BufferHolder methods

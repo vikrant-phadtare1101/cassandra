@@ -17,13 +17,11 @@
  */
 package org.apache.cassandra.db.commitlog;
 
-import java.util.concurrent.TimeUnit;
-
 import org.apache.cassandra.config.DatabaseDescriptor;
 
 class PeriodicCommitLogService extends AbstractCommitLogService
 {
-    private static final long blockWhenSyncLagsNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getPeriodicCommitLogSyncBlock());
+    private static final long blockWhenSyncLagsNanos = (long) (DatabaseDescriptor.getCommitLogSyncPeriod() * 1.5e6);
 
     public PeriodicCommitLogService(final CommitLog commitLog)
     {

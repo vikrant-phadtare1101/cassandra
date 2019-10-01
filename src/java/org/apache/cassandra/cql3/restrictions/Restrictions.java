@@ -19,7 +19,7 @@ package org.apache.cassandra.cql3.restrictions;
 
 import java.util.Set;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 
 /**
  * Sets of restrictions
@@ -32,7 +32,7 @@ public interface Restrictions extends Restriction
      * @param columnDef the column definition
      * @return the restrictions applied to the specified column
      */
-    Set<Restriction> getRestrictions(ColumnMetadata columnDef);
+    Set<Restriction> getRestrictions(ColumnDefinition columnDef);
 
     /**
      * Checks if this <code>Restrictions</code> is empty or not.

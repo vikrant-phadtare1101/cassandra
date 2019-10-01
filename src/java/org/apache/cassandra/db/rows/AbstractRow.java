@@ -17,21 +17,23 @@
 package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.AbstractCollection;
+import java.util.Collections;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
 import com.google.common.collect.Iterables;
-import com.google.common.hash.Hasher;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Base abstract class for {@code Row} implementations.
@@ -61,19 +63,25 @@ public abstract class AbstractRow implements Row
         return clustering() == Clustering.STATIC_CLUSTERING;
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
-        HashingUtils.updateWithByte(hasher, kind().ordinal());
-        clustering().digest(hasher);
-
-        deletion().digest(hasher);
-        primaryKeyLivenessInfo().digest(hasher);
-
-        for (ColumnData cd : this)
-            cd.digest(hasher);
+        digest(digest, Collections.emptySet());
     }
 
-    public void validateData(TableMetadata metadata)
+    public void digest(MessageDigest digest, Set<ByteBuffer> columnsToExclude)
+    {
+        FBUtilities.updateWithByte(digest, kind().ordinal());
+        clustering().digest(digest);
+
+        deletion().digest(digest);
+        primaryKeyLivenessInfo().digest(digest);
+
+        for (ColumnData cd : this)
+            if (!columnsToExclude.contains(cd.column.name.bytes))
+                cd.digest(digest);
+    }
+
+    public void validateData(CFMetaData metadata)
     {
         Clustering clustering = clustering();
         for (int i = 0; i < clustering.size(); i++)
@@ -91,34 +99,22 @@ public abstract class AbstractRow implements Row
             cd.validate();
     }
 
-    public boolean hasInvalidDeletions()
-    {
-        if (primaryKeyLivenessInfo().isExpiring() && (primaryKeyLivenessInfo().ttl() < 0 || primaryKeyLivenessInfo().localExpirationTime() < 0))
-            return true;
-        if (!deletion().time().validate())
-            return true;
-        for (ColumnData cd : this)
-            if (cd.hasInvalidDeletions())
-                return true;
-        return false;
-    }
-
     public String toString()
     {
         return columnData().toString();
     }
 
-    public String toString(TableMetadata metadata)
+    public String toString(CFMetaData metadata)
     {
         return toString(metadata, false);
     }
 
-    public String toString(TableMetadata metadata, boolean fullDetails)
+    public String toString(CFMetaData metadata, boolean fullDetails)
     {
         return toString(metadata, true, fullDetails);
     }
 
-    public String toString(TableMetadata metadata, boolean includeClusterKeys, boolean fullDetails)
+    public String toString(CFMetaData metadata, boolean includeClusterKeys, boolean fullDetails)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("Row");
@@ -188,12 +184,8 @@ public abstract class AbstractRow implements Row
                                                  ut.fieldType(fId).getString(cell.value()));
                         };
                     }
-                    else
-                    {
-                        transform = cell -> "";
-                    }
                     sb.append(StreamSupport.stream(complexData.spliterator(), false)
-                                           .map(transform)
+                                           .map(transform != null ? transform : cell -> "")
                                            .collect(Collectors.joining(", ", "{", "}")));
                 }
             }

@@ -25,11 +25,11 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-import com.google.common.base.Preconditions;
-
 import net.nicoulaj.compilecommand.annotations.DontInline;
 import org.apache.cassandra.utils.FastByteOperations;
 import org.apache.cassandra.utils.vint.VIntCoding;
+
+import com.google.common.base.Preconditions;
 
 /**
  * Rough equivalent of BufferedInputStream and DataInputStream wrapping a ByteBuffer that can be refilled
@@ -112,7 +112,7 @@ public abstract class RebufferingInputStream extends InputStream implements Data
     @Override
     public int skipBytes(int n) throws IOException
     {
-        if (n <= 0)
+        if (n < 0)
             return 0;
         int requested = n;
         int position = buffer.position(), limit = buffer.limit(), remaining;

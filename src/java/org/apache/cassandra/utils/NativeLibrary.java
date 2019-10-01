@@ -29,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.sun.jna.LastErrorException;
+import sun.nio.ch.FileChannelImpl;
 
 import org.apache.cassandra.io.FSWriteError;
 
@@ -50,7 +51,7 @@ public final class NativeLibrary
         OTHER;
     }
 
-    public static final OSType osType;
+    private static final OSType osType;
 
     private static final int MCL_CURRENT;
     private static final int MCL_FUTURE;
@@ -79,14 +80,7 @@ public final class NativeLibrary
     static
     {
         FILE_DESCRIPTOR_FD_FIELD = FBUtilities.getProtectedField(FileDescriptor.class, "fd");
-        try
-        {
-            FILE_CHANNEL_FD_FIELD = FBUtilities.getProtectedField(Class.forName("sun.nio.ch.FileChannelImpl"), "fd");
-        }
-        catch (ClassNotFoundException e)
-        {
-            throw new RuntimeException(e);
-        }
+        FILE_CHANNEL_FD_FIELD = FBUtilities.getProtectedField(FileChannelImpl.class, "fd");
 
         // detect the OS type the JVM is running on and then set the CLibraryWrapper
         // instance to a compatable implementation of CLibraryWrapper for that OS type
@@ -134,15 +128,11 @@ public final class NativeLibrary
     private static OSType getOsType()
     {
         String osName = System.getProperty("os.name").toLowerCase();
-        if  (osName.contains("linux"))
-            return LINUX;
-        else if (osName.contains("mac"))
+        if (osName.contains("mac"))
             return MAC;
         else if (osName.contains("windows"))
             return WINDOWS;
-
-        logger.warn("the current operating system, {}, is unsupported by cassandra", osName);
-        if (osName.contains("aix"))
+        else if (osName.contains("aix"))
             return AIX;
         else
             // fall back to the Linux impl for all unknown OS types until otherwise implicitly supported as needed
@@ -337,7 +327,7 @@ public final class NativeLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            String errMsg = String.format("fsync(%s) failed, errno (%s) %s", fd, errno(e), e.getMessage());
+            String errMsg = String.format("fsync(%s) failed, errno %s", fd, errno(e));
             logger.warn(errMsg);
             throw new FSWriteError(e, errMsg);
         }

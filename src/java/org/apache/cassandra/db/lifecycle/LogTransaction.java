@@ -34,7 +34,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.OperationType;
@@ -229,7 +230,7 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
                 {
                     e.printStackTrace(ps);
                 }
-                logger.debug("Unable to delete {} as it does not exist, stack trace:\n {}", file, baos);
+                logger.debug("Unable to delete {} as it does not exist, stack trace:\n {}", file, baos.toString());
             }
         }
         catch (IOException e)
@@ -424,14 +425,14 @@ class LogTransaction extends Transactional.AbstractTransactional implements Tran
      * for further details on transaction logs.
      *
      * This method is called on startup and by the standalone sstableutil tool when the cleanup option is specified,
-     * @see org.apache.cassandra.tools.StandaloneSSTableUtil
+     * @see StandaloneSSTableUtil
      *
      * @return true if the leftovers of all transaction logs found were removed, false otherwise.
      *
      */
-    static boolean removeUnfinishedLeftovers(TableMetadata metadata)
+    static boolean removeUnfinishedLeftovers(CFMetaData metadata)
     {
-        return removeUnfinishedLeftovers(new Directories(metadata).getCFDirectories());
+        return removeUnfinishedLeftovers(new Directories(metadata, ColumnFamilyStore.getInitialDirectories()).getCFDirectories());
     }
 
     @VisibleForTesting

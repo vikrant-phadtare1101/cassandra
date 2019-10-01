@@ -22,14 +22,12 @@ import static org.apache.cassandra.cql3.Constants.UNSET_VALUE;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
-import org.apache.cassandra.schema.ColumnMetadata;
 import com.google.common.annotations.VisibleForTesting;
+
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.*;
@@ -57,67 +55,7 @@ public abstract class Lists
 
     public static ColumnSpecification valueSpecOf(ColumnSpecification column)
     {
-        return new ColumnSpecification(column.ksName, column.cfName, new ColumnIdentifier("value(" + column.name + ")", true), ((ListType<?>)column.type).getElementsType());
-    }
-
-    /**
-     * Tests that the list with the specified elements can be assigned to the specified column.
-     *
-     * @param receiver the receiving column
-     * @param elements the list elements
-     */
-    public static AssignmentTestable.TestResult testListAssignment(ColumnSpecification receiver,
-                                                                   List<? extends AssignmentTestable> elements)
-    {
-        if (!(receiver.type instanceof ListType))
-            return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
-
-        // If there is no elements, we can't say it's an exact match (an empty list if fundamentally polymorphic).
-        if (elements.isEmpty())
-            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-
-        ColumnSpecification valueSpec = valueSpecOf(receiver);
-        return AssignmentTestable.TestResult.testAll(receiver.ksName, valueSpec, elements);
-    }
-
-    /**
-     * Create a <code>String</code> representation of the list containing the specified elements.
-     *
-     * @param elements the list elements
-     * @return a <code>String</code> representation of the list
-     */
-    public static String listToString(List<?> elements)
-    {
-        return listToString(elements, Object::toString);
-    }
-
-    /**
-     * Create a <code>String</code> representation of the list from the specified items associated to
-     * the list elements.
-     *
-     * @param items items associated to the list elements
-     * @param mapper the mapper used to map the items to the <code>String</code> representation of the list elements
-     * @return a <code>String</code> representation of the list
-     */
-    public static <T> String listToString(Iterable<T> items, java.util.function.Function<T, String> mapper)
-    {
-        return StreamSupport.stream(items.spliterator(), false)
-                            .map(e -> mapper.apply(e))
-                            .collect(Collectors.joining(", ", "[", "]"));
-    }
-
-    /**
-     * Returns the exact ListType from the items if it can be known.
-     *
-     * @param items the items mapped to the list elements
-     * @param mapper the mapper used to retrieve the element types from the items
-     * @return the exact ListType from the items if it can be known or <code>null</code>
-     */
-    public static <T> AbstractType<?> getExactListTypeIfKnown(List<T> items,
-                                                              java.util.function.Function<T, AbstractType<?>> mapper)
-    {
-        Optional<AbstractType<?>> type = items.stream().map(mapper).filter(Objects::nonNull).findFirst();
-        return type.isPresent() ? ListType.getInstance(type.get(), false) : null;
+        return new ColumnSpecification(column.ksName, column.cfName, new ColumnIdentifier("value(" + column.name + ")", true), ((ListType)column.type).getElementsType());
     }
 
     public static class Literal extends Term.Raw
@@ -167,18 +105,32 @@ public abstract class Lists
 
         public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            return testListAssignment(receiver, elements);
+            if (!(receiver.type instanceof ListType))
+                return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
+
+            // If there is no elements, we can't say it's an exact match (an empty list if fundamentally polymorphic).
+            if (elements.isEmpty())
+                return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+            ColumnSpecification valueSpec = Lists.valueSpecOf(receiver);
+            return AssignmentTestable.TestResult.testAll(keyspace, valueSpec, elements);
         }
 
         @Override
         public AbstractType<?> getExactTypeIfKnown(String keyspace)
         {
-            return getExactListTypeIfKnown(elements, p -> p.getExactTypeIfKnown(keyspace));
+            for (Term.Raw term : elements)
+            {
+                AbstractType<?> type = term.getExactTypeIfKnown(keyspace);
+                if (type != null)
+                    return ListType.getInstance(type, false);
+            }
+            return null;
         }
 
         public String getText()
         {
-            return listToString(elements, Term.Raw::getText);
+            return elements.stream().map(Term.Raw::getText).collect(Collectors.joining(", ", "[", "]"));
         }
     }
 
@@ -378,7 +330,7 @@ public abstract class Lists
 
     public static class Setter extends Operation
     {
-        public Setter(ColumnMetadata column, Term t)
+        public Setter(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -396,7 +348,7 @@ public abstract class Lists
         }
     }
 
-    private static int existingSize(Row row, ColumnMetadata column)
+    private static int existingSize(Row row, ColumnDefinition column)
     {
         if (row == null)
             return 0;
@@ -409,7 +361,7 @@ public abstract class Lists
     {
         private final Term idx;
 
-        public SetterByIndex(ColumnMetadata column, Term idx, Term t)
+        public SetterByIndex(ColumnDefinition column, Term idx, Term t)
         {
             super(column, t);
             this.idx = idx;
@@ -459,7 +411,7 @@ public abstract class Lists
 
     public static class Appender extends Operation
     {
-        public Appender(ColumnMetadata column, Term t)
+        public Appender(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -471,7 +423,7 @@ public abstract class Lists
             doAppend(value, column, params);
         }
 
-        static void doAppend(Term.Terminal value, ColumnMetadata column, UpdateParameters params) throws InvalidRequestException
+        static void doAppend(Term.Terminal value, ColumnDefinition column, UpdateParameters params) throws InvalidRequestException
         {
             if (column.type.isMultiCell())
             {
@@ -499,7 +451,7 @@ public abstract class Lists
 
     public static class Prepender extends Operation
     {
-        public Prepender(ColumnMetadata column, Term t)
+        public Prepender(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -535,7 +487,7 @@ public abstract class Lists
 
     public static class Discarder extends Operation
     {
-        public Discarder(ColumnMetadata column, Term t)
+        public Discarder(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -573,7 +525,7 @@ public abstract class Lists
 
     public static class DiscarderByIndex extends Operation
     {
-        public DiscarderByIndex(ColumnMetadata column, Term idx)
+        public DiscarderByIndex(ColumnDefinition column, Term idx)
         {
             super(column, idx);
         }

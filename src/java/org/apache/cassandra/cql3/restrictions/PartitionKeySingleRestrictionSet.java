@@ -20,14 +20,14 @@ package org.apache.cassandra.cql3.restrictions;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.statements.Bound;
 import org.apache.cassandra.db.ClusteringComparator;
 import org.apache.cassandra.db.ClusteringPrefix;
 import org.apache.cassandra.db.MultiCBuilder;
 import org.apache.cassandra.db.filter.RowFilter;
-import org.apache.cassandra.index.IndexRegistry;
+import org.apache.cassandra.index.SecondaryIndexManager;
 
 /**
  * A set of single restrictions on the partition key.
@@ -59,7 +59,7 @@ final class PartitionKeySingleRestrictionSet extends RestrictionSetWrapper imple
     {
         List<ByteBuffer> l = new ArrayList<>(clusterings.size());
         for (ClusteringPrefix clustering : clusterings)
-            l.add(clustering.serializeAsPartitionKey());
+            l.add(CFMetaData.serializePartitionKey(clustering));
         return l;
     }
 
@@ -121,29 +121,29 @@ final class PartitionKeySingleRestrictionSet extends RestrictionSetWrapper imple
 
     @Override
     public void addRowFilterTo(RowFilter filter,
-                               IndexRegistry indexRegistry,
+                               SecondaryIndexManager indexManager,
                                QueryOptions options)
     {
         for (SingleRestriction restriction : restrictions)
         {
-             restriction.addRowFilterTo(filter, indexRegistry, options);
+             restriction.addRowFilterTo(filter, indexManager, options);
         }
     }
 
     @Override
-    public boolean needFiltering(TableMetadata table)
+    public boolean needFiltering(CFMetaData cfm)
     {
         if (isEmpty())
             return false;
 
         // slice or has unrestricted key component
-        return hasUnrestrictedPartitionKeyComponents(table) || hasSlice() || hasContains();
+        return hasUnrestrictedPartitionKeyComponents(cfm) || hasSlice() || hasContains();
     }
 
     @Override
-    public boolean hasUnrestrictedPartitionKeyComponents(TableMetadata table)
+    public boolean hasUnrestrictedPartitionKeyComponents(CFMetaData cfm)
     {
-        return size() < table.partitionKeyColumns().size();
+        return size() < cfm.partitionKeyColumns().size();
     }
 
     @Override

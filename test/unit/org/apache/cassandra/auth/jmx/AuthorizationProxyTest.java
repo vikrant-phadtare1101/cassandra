@@ -20,9 +20,8 @@ package org.apache.cassandra.auth.jmx;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
@@ -496,9 +495,9 @@ public class AuthorizationProxyTest
     {
         Function<RoleResource, Set<PermissionDetails>> getPermissions;
         Function<ObjectName, Set<ObjectName>> queryNames;
-        Predicate<RoleResource> isSuperuser;
-        BooleanSupplier isAuthzRequired;
-        BooleanSupplier isAuthSetupComplete = () -> true;
+        Function<RoleResource, Boolean> isSuperuser;
+        Supplier<Boolean> isAuthzRequired;
+        Supplier<Boolean> isAuthSetupComplete = () -> true;
 
         AuthorizationProxy build()
         {
@@ -533,19 +532,19 @@ public class AuthorizationProxyTest
             return this;
         }
 
-        ProxyBuilder isSuperuser(Predicate<RoleResource> f)
+        ProxyBuilder isSuperuser(Function<RoleResource, Boolean> f)
         {
             isSuperuser = f;
             return this;
         }
 
-        ProxyBuilder isAuthzRequired(BooleanSupplier s)
+        ProxyBuilder isAuthzRequired(Supplier<Boolean> s)
         {
             isAuthzRequired = s;
             return this;
         }
 
-        ProxyBuilder isAuthSetupComplete(BooleanSupplier s)
+        ProxyBuilder isAuthSetupComplete(Supplier<Boolean> s)
         {
             isAuthSetupComplete = s;
             return this;
@@ -563,17 +562,17 @@ public class AuthorizationProxyTest
                 this.queryNames = f;
             }
 
-            void setIsSuperuser(Predicate<RoleResource> f)
+            void setIsSuperuser(Function<RoleResource, Boolean> f)
             {
                 this.isSuperuser = f;
             }
 
-            void setIsAuthzRequired(BooleanSupplier s)
+            void setIsAuthzRequired(Supplier<Boolean> s)
             {
                 this.isAuthzRequired = s;
             }
 
-            void setIsAuthSetupComplete(BooleanSupplier s)
+            void setIsAuthSetupComplete(Supplier<Boolean> s)
             {
                 this.isAuthSetupComplete = s;
             }

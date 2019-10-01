@@ -17,14 +17,14 @@
  */
 package org.apache.cassandra.streaming;
 
+import java.net.InetAddress;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-
+import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * {@link StreamCoordinator} is a helper class that abstracts away maintaining multiple
@@ -37,25 +37,27 @@ public class StreamCoordinator
 {
     private static final Logger logger = LoggerFactory.getLogger(StreamCoordinator.class);
 
+    // Executor strictly for establishing the initial connections. Once we're connected to the other end the rest of the
+    // streaming is handled directly by the ConnectionHandler's incoming and outgoing threads.
+    private static final DebuggableThreadPoolExecutor streamExecutor = DebuggableThreadPoolExecutor.createWithFixedPoolSize("StreamConnectionEstablisher",
+                                                                                                                            FBUtilities.getAvailableProcessors());
     private final boolean connectSequentially;
 
-    private final Map<InetAddressAndPort, HostStreamingData> peerSessions = new HashMap<>();
-    private final StreamOperation streamOperation;
+    private Map<InetAddress, HostStreamingData> peerSessions = new HashMap<>();
     private final int connectionsPerHost;
     private StreamConnectionFactory factory;
+    private final boolean keepSSTableLevel;
+    private final boolean isIncremental;
     private Iterator<StreamSession> sessionsToConnect = null;
-    private final UUID pendingRepair;
-    private final PreviewKind previewKind;
 
-    public StreamCoordinator(StreamOperation streamOperation, int connectionsPerHost, StreamConnectionFactory factory,
-                             boolean connectSequentially, UUID pendingRepair, PreviewKind previewKind)
+    public StreamCoordinator(int connectionsPerHost, boolean keepSSTableLevel, boolean isIncremental,
+                             StreamConnectionFactory factory, boolean connectSequentially)
     {
-        this.streamOperation = streamOperation;
         this.connectionsPerHost = connectionsPerHost;
         this.factory = factory;
+        this.keepSSTableLevel = keepSSTableLevel;
+        this.isIncremental = isIncremental;
         this.connectSequentially = connectSequentially;
-        this.pendingRepair = pendingRepair;
-        this.previewKind = previewKind;
     }
 
     public void setConnectionFactory(StreamConnectionFactory factory)
@@ -137,32 +139,26 @@ public class StreamCoordinator
         if (sessionsToConnect.hasNext())
         {
             StreamSession next = sessionsToConnect.next();
-            if (logger.isDebugEnabled())
-                logger.debug("Connecting next session {} with {}.", next.planId(), next.peer.toString());
-            startSession(next);
+            logger.debug("Connecting next session {} with {}.", next.planId(), next.peer.getHostAddress());
+            streamExecutor.execute(new StreamSessionConnector(next));
         }
         else
             logger.debug("Finished connecting all sessions");
     }
 
-    public synchronized Set<InetAddressAndPort> getPeers()
+    public synchronized Set<InetAddress> getPeers()
     {
         return new HashSet<>(peerSessions.keySet());
     }
 
-    public synchronized StreamSession getOrCreateNextSession(InetAddressAndPort peer)
+    public synchronized StreamSession getOrCreateNextSession(InetAddress peer, InetAddress connecting)
     {
-        return getOrCreateHostData(peer).getOrCreateNextSession(peer);
+        return getOrCreateHostData(peer).getOrCreateNextSession(peer, connecting);
     }
 
-    public synchronized StreamSession getOrCreateSessionById(InetAddressAndPort peer, int id)
+    public synchronized StreamSession getOrCreateSessionById(InetAddress peer, int id, InetAddress connecting)
     {
-        return getOrCreateHostData(peer).getOrCreateSessionById(peer, id);
-    }
-
-    public StreamSession getSessionById(InetAddressAndPort peer, int id)
-    {
-        return getHostData(peer).getSessionById(id);
+        return getOrCreateHostData(peer).getOrCreateSessionById(peer, id, connecting);
     }
 
     public synchronized void updateProgress(ProgressInfo info)
@@ -186,60 +182,63 @@ public class StreamCoordinator
         return result;
     }
 
-    public synchronized void transferStreams(InetAddressAndPort to, Collection<OutgoingStream> streams)
+    public synchronized void transferFiles(InetAddress to, Collection<StreamSession.SSTableStreamingSections> sstableDetails)
     {
         HostStreamingData sessionList = getOrCreateHostData(to);
 
         if (connectionsPerHost > 1)
         {
-            List<Collection<OutgoingStream>> buckets = bucketStreams(streams);
+            List<List<StreamSession.SSTableStreamingSections>> buckets = sliceSSTableDetails(sstableDetails);
 
-            for (Collection<OutgoingStream> bucket : buckets)
+            for (List<StreamSession.SSTableStreamingSections> subList : buckets)
             {
-                StreamSession session = sessionList.getOrCreateNextSession(to);
-                session.addTransferStreams(bucket);
+                StreamSession session = sessionList.getOrCreateNextSession(to, to);
+                session.addTransferFiles(subList);
             }
         }
         else
         {
-            StreamSession session = sessionList.getOrCreateNextSession(to);
-            session.addTransferStreams(streams);
+            StreamSession session = sessionList.getOrCreateNextSession(to, to);
+            session.addTransferFiles(sstableDetails);
         }
     }
 
-    private List<Collection<OutgoingStream>> bucketStreams(Collection<OutgoingStream> streams)
+    private List<List<StreamSession.SSTableStreamingSections>> sliceSSTableDetails(Collection<StreamSession.SSTableStreamingSections> sstableDetails)
     {
         // There's no point in divvying things up into more buckets than we have sstableDetails
-        int targetSlices = Math.min(streams.size(), connectionsPerHost);
-        int step = Math.round((float) streams.size() / (float) targetSlices);
+        int targetSlices = Math.min(sstableDetails.size(), connectionsPerHost);
+        int step = Math.round((float) sstableDetails.size() / (float) targetSlices);
         int index = 0;
 
-        List<Collection<OutgoingStream>> result = new ArrayList<>();
-        List<OutgoingStream> slice = null;
-
-        for (OutgoingStream stream: streams)
+        List<List<StreamSession.SSTableStreamingSections>> result = new ArrayList<>();
+        List<StreamSession.SSTableStreamingSections> slice = null;
+        Iterator<StreamSession.SSTableStreamingSections> iter = sstableDetails.iterator();
+        while (iter.hasNext())
         {
+            StreamSession.SSTableStreamingSections streamSession = iter.next();
+
             if (index % step == 0)
             {
                 slice = new ArrayList<>();
                 result.add(slice);
             }
-            slice.add(stream);
+            slice.add(streamSession);
             ++index;
+            iter.remove();
         }
+
         return result;
     }
 
-    private HostStreamingData getHostData(InetAddressAndPort peer)
+    private HostStreamingData getHostData(InetAddress peer)
     {
         HostStreamingData data = peerSessions.get(peer);
-
         if (data == null)
             throw new IllegalArgumentException("Unknown peer requested: " + peer);
         return data;
     }
 
-    private HostStreamingData getOrCreateHostData(InetAddressAndPort peer)
+    private HostStreamingData getOrCreateHostData(InetAddress peer)
     {
         HostStreamingData data = peerSessions.get(peer);
         if (data == null)
@@ -250,21 +249,26 @@ public class StreamCoordinator
         return data;
     }
 
-    public UUID getPendingRepair()
+    private static class StreamSessionConnector implements Runnable
     {
-        return pendingRepair;
-    }
+        private final StreamSession session;
+        public StreamSessionConnector(StreamSession session)
+        {
+            this.session = session;
+        }
 
-    private void startSession(StreamSession session)
-    {
-        session.start();
-        logger.info("[Stream #{}, ID#{}] Beginning stream session with {}", session.planId(), session.sessionIndex(), session.peer);
+        @Override
+        public void run()
+        {
+            session.start();
+            logger.info("[Stream #{}, ID#{}] Beginning stream session with {}", session.planId(), session.sessionIndex(), session.peer);
+        }
     }
 
     private class HostStreamingData
     {
-        private final Map<Integer, StreamSession> streamSessions = new HashMap<>();
-        private final Map<Integer, SessionInfo> sessionInfos = new HashMap<>();
+        private Map<Integer, StreamSession> streamSessions = new HashMap<>();
+        private Map<Integer, SessionInfo> sessionInfos = new HashMap<>();
 
         private int lastReturned = -1;
 
@@ -279,13 +283,12 @@ public class StreamCoordinator
             return false;
         }
 
-        public StreamSession getOrCreateNextSession(InetAddressAndPort peer)
+        public StreamSession getOrCreateNextSession(InetAddress peer, InetAddress connecting)
         {
             // create
             if (streamSessions.size() < connectionsPerHost)
             {
-                StreamSession session = new StreamSession(streamOperation, peer, factory, streamSessions.size(),
-                                                          pendingRepair, previewKind);
+                StreamSession session = new StreamSession(peer, connecting, factory, streamSessions.size(), keepSSTableLevel, isIncremental);
                 streamSessions.put(++lastReturned, session);
                 return session;
             }
@@ -303,7 +306,7 @@ public class StreamCoordinator
         {
             for (StreamSession session : streamSessions.values())
             {
-                startSession(session);
+                streamExecutor.execute(new StreamSessionConnector(session));
             }
         }
 
@@ -312,20 +315,15 @@ public class StreamCoordinator
             return Collections.unmodifiableCollection(streamSessions.values());
         }
 
-        public StreamSession getOrCreateSessionById(InetAddressAndPort peer, int id)
+        public StreamSession getOrCreateSessionById(InetAddress peer, int id, InetAddress connecting)
         {
             StreamSession session = streamSessions.get(id);
             if (session == null)
             {
-                session = new StreamSession(streamOperation, peer, factory, id, pendingRepair, previewKind);
+                session = new StreamSession(peer, connecting, factory, id, keepSSTableLevel, isIncremental);
                 streamSessions.put(id, session);
             }
             return session;
-        }
-
-        public StreamSession getSessionById(int id)
-        {
-            return streamSessions.get(id);
         }
 
         public void updateProgress(ProgressInfo info)
@@ -341,12 +339,6 @@ public class StreamCoordinator
         public Collection<SessionInfo> getAllSessionInfo()
         {
             return sessionInfos.values();
-        }
-
-        @VisibleForTesting
-        public void shutdown()
-        {
-            streamSessions.values().forEach(ss -> ss.sessionFailed());
         }
     }
 }

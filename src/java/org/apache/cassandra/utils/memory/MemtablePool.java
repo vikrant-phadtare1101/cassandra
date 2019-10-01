@@ -19,7 +19,6 @@
 package org.apache.cassandra.utils.memory;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -28,7 +27,6 @@ import com.codahale.metrics.Timer;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.metrics.DefaultNameFactory;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
-import org.apache.cassandra.utils.ExecutorUtils;
 
 
 /**
@@ -69,9 +67,10 @@ public abstract class MemtablePool
     }
 
     @VisibleForTesting
-    public void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    public void shutdown() throws InterruptedException
     {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, cleaner);
+        cleaner.shutdown();
+        cleaner.awaitTermination(60, TimeUnit.SECONDS);
     }
 
     public abstract MemtableAllocator newAllocator();
