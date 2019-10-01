@@ -346,7 +346,6 @@ public class CompactionManager implements CompactionManagerMBean
     @SuppressWarnings("resource")
     private AllSSTableOpStatus parallelAllSSTableOperation(final ColumnFamilyStore cfs, final OneSSTableOperation operation, int jobs, OperationType operationType) throws ExecutionException, InterruptedException
     {
-        logger.info("Starting {} for {}.{}", operationType, cfs.keyspace.getName(), cfs.getTableName());
         List<LifecycleTransaction> transactions = new ArrayList<>();
         List<Future<?>> futures = new ArrayList<>();
         try (LifecycleTransaction compacting = cfs.markAllCompacting(operationType))
@@ -388,7 +387,6 @@ public class CompactionManager implements CompactionManagerMBean
             }
             FBUtilities.waitOnFutures(futures);
             assert compacting.originals().isEmpty();
-            logger.info("Finished {} for {}.{} successfully", operationType, cfs.keyspace.getName(), cfs.getTableName());
             return AllSSTableOpStatus.SUCCESSFUL;
         }
         finally
@@ -404,7 +402,7 @@ public class CompactionManager implements CompactionManagerMBean
             }
             Throwable fail = Throwables.close(null, transactions);
             if (fail != null)
-                logger.error("Failed to cleanup lifecycle transactions ({} for {}.{})", operationType, cfs.keyspace.getName(), cfs.getTableName(), fail);
+                logger.error("Failed to cleanup lifecycle transactions", fail);
         }
     }
 
@@ -529,34 +527,7 @@ public class CompactionManager implements CompactionManagerMBean
             public Iterable<SSTableReader> filterSSTables(LifecycleTransaction transaction)
             {
                 List<SSTableReader> sortedSSTables = Lists.newArrayList(transaction.originals());
-                Iterator<SSTableReader> sstableIter = sortedSSTables.iterator();
-                int totalSSTables = 0;
-                int skippedSStables = 0;
-                while (sstableIter.hasNext())
-                {
-                    SSTableReader sstable = sstableIter.next();
-                    boolean needsCleanupFull = needsCleanup(sstable, fullRanges);
-                    boolean needsCleanupTransient = needsCleanup(sstable, transientRanges);
-                    //If there are no ranges for which the table needs cleanup either due to lack of intersection or lack
-                    //of the table being repaired.
-                    totalSSTables++;
-                    if (!needsCleanupFull && (!needsCleanupTransient || !sstable.isRepaired()))
-                    {
-                        logger.debug("Skipping {} ([{}, {}]) for cleanup; all rows should be kept. Needs cleanup full ranges: {} Needs cleanup transient ranges: {} Repaired: {}",
-                                    sstable,
-                                    sstable.first.getToken(),
-                                    sstable.last.getToken(),
-                                    needsCleanupFull,
-                                    needsCleanupTransient,
-                                    sstable.isRepaired());
-                        sstableIter.remove();
-                        transaction.cancel(sstable);
-                        skippedSStables++;
-                    }
-                }
-                logger.info("Skipping cleanup for {}/{} sstables for {}.{} since they are fully contained in owned ranges (full ranges: {}, transient ranges: {})",
-                            skippedSStables, totalSSTables, cfStore.keyspace.getName(), cfStore.getTableName(), fullRanges, transientRanges);
-                sortedSSTables.sort(SSTableReader.sizeComparator);
+                Collections.sort(sortedSSTables, SSTableReader.sizeComparator);
                 return sortedSSTables;
             }
 
@@ -846,15 +817,14 @@ public class CompactionManager implements CompactionManagerMBean
         FBUtilities.waitOnFutures(submitMaximal(cfStore, getDefaultGcBefore(cfStore, FBUtilities.nowInSeconds()), splitOutput));
     }
 
-    @SuppressWarnings("resource") // the tasks are executed in parallel on the executor, making sure that they get closed
     public List<Future<?>> submitMaximal(final ColumnFamilyStore cfStore, final int gcBefore, boolean splitOutput)
     {
         // here we compute the task off the compaction executor, so having that present doesn't
         // confuse runWithCompactionsDisabled -- i.e., we don't want to deadlock ourselves, waiting
         // for ourselves to finish/acknowledge cancellation before continuing.
-        CompactionTasks tasks = cfStore.getCompactionStrategyManager().getMaximalTasks(gcBefore, splitOutput);
+        final Collection<AbstractCompactionTask> tasks = cfStore.getCompactionStrategyManager().getMaximalTasks(gcBefore, splitOutput);
 
-        if (tasks.isEmpty())
+        if (tasks == null)
             return Collections.emptyList();
 
         List<Future<?>> futures = new ArrayList<>();
@@ -880,42 +850,42 @@ public class CompactionManager implements CompactionManagerMBean
         if (nonEmptyTasks > 1)
             logger.info("Major compaction will not result in a single sstable - repaired and unrepaired data is kept separate and compaction runs per data_file_directory.");
 
+
         return futures;
     }
 
     public void forceCompactionForTokenRange(ColumnFamilyStore cfStore, Collection<Range<Token>> ranges)
     {
-        Callable<CompactionTasks> taskCreator = () -> {
-            Collection<SSTableReader> sstables = sstablesInBounds(cfStore, ranges);
-            if (sstables == null || sstables.isEmpty())
+        final Collection<AbstractCompactionTask> tasks = cfStore.runWithCompactionsDisabled(() ->
+                   {
+                       Collection<SSTableReader> sstables = sstablesInBounds(cfStore, ranges);
+                       if (sstables == null || sstables.isEmpty())
+                       {
+                           logger.debug("No sstables found for the provided token range");
+                           return null;
+                       }
+                       return cfStore.getCompactionStrategyManager().getUserDefinedTasks(sstables, getDefaultGcBefore(cfStore, FBUtilities.nowInSeconds()));
+                   }, (sstable) -> new Bounds<>(sstable.first.getToken(), sstable.last.getToken()).intersects(ranges), false, false, false);
+
+        if (tasks == null)
+            return;
+
+        Runnable runnable = new WrappedRunnable()
+        {
+            protected void runMayThrow()
             {
-                logger.debug("No sstables found for the provided token range");
-                return CompactionTasks.empty();
+                for (AbstractCompactionTask task : tasks)
+                    if (task != null)
+                        task.execute(active);
             }
-            return cfStore.getCompactionStrategyManager().getUserDefinedTasks(sstables, getDefaultGcBefore(cfStore, FBUtilities.nowInSeconds()));
         };
 
-        try (CompactionTasks tasks = cfStore.runWithCompactionsDisabled(taskCreator,
-                                                                        (sstable) -> new Bounds<>(sstable.first.getToken(), sstable.last.getToken()).intersects(ranges),
-                                                                        false,
-                                                                        false,
-                                                                        false))
+        if (executor.isShutdown())
         {
-            if (tasks.isEmpty())
-                return;
-
-            Runnable runnable = new WrappedRunnable()
-            {
-                protected void runMayThrow()
-                {
-                    for (AbstractCompactionTask task : tasks)
-                        if (task != null)
-                            task.execute(active);
-                }
-            };
-
-            FBUtilities.waitOnFuture(executor.submitIfRunning(runnable, "force compaction for token range"));
+            logger.info("Compaction executor has shut down, not submitting task");
+            return;
         }
+        FBUtilities.waitOnFuture(executor.submit(runnable));
     }
 
     private static Collection<SSTableReader> sstablesInBounds(ColumnFamilyStore cfs, Collection<Range<Token>> tokenRangeCollection)
@@ -1020,7 +990,7 @@ public class CompactionManager implements CompactionManagerMBean
     {
         Runnable runnable = new WrappedRunnable()
         {
-            protected void runMayThrow() throws Exception
+            protected void runMayThrow()
             {
                 // look up the sstables now that we're on the compaction executor, so we don't try to re-compact
                 // something that was already being compacted earlier.
@@ -1045,13 +1015,11 @@ public class CompactionManager implements CompactionManagerMBean
                 }
                 else
                 {
-                    try (CompactionTasks tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstables, gcBefore))
+                    List<AbstractCompactionTask> tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstables, gcBefore);
+                    for (AbstractCompactionTask task : tasks)
                     {
-                        for (AbstractCompactionTask task : tasks)
-                        {
-                            if (task != null)
-                                task.execute(active);
-                        }
+                        if (task != null)
+                            task.execute(active);
                     }
                 }
             }
@@ -1203,7 +1171,16 @@ public class CompactionManager implements CompactionManagerMBean
         {
             txn.obsoleteOriginals();
             txn.finish();
-            logger.info("SSTable {} ([{}, {}]) does not intersect the owned ranges ({}), dropping it", sstable, sstable.first.getToken(), sstable.last.getToken(), allRanges);
+            return;
+        }
+
+        boolean needsCleanupFull = needsCleanup(sstable, fullRanges);
+        boolean needsCleanupTransient = needsCleanup(sstable, transientRanges);
+        //If there are no ranges for which the table needs cleanup either due to lack of intersection or lack
+        //of the table being repaired.
+        if (!needsCleanupFull && (!needsCleanupTransient || !sstable.isRepaired()))
+        {
+            logger.trace("Skipping {} for cleanup; all rows should be kept. Needs cleanup full ranges: {} Needs cleanup transient ranges: {} Repaired: {}", sstable, needsCleanupFull, needsCleanupTransient, sstable.isRepaired());
             return;
         }
 
@@ -2130,7 +2107,7 @@ public class CompactionManager implements CompactionManagerMBean
             if ((info.getTaskType() == OperationType.VALIDATION) && !interruptValidation)
                 continue;
 
-            if (info.getTableMetadata() == null || Iterables.contains(columnFamilies, info.getTableMetadata()))
+            if (Iterables.contains(columnFamilies, info.getTableMetadata()))
             {
                 if (info.shouldStop(sstablePredicate))
                     compactionHolder.stop();
