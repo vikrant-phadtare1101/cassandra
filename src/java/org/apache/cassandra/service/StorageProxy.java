@@ -39,6 +39,7 @@ import org.apache.cassandra.audit.AuditLogManager;
 import org.apache.cassandra.audit.FullQueryLoggerOptions;
 import org.apache.cassandra.batchlog.Batch;
 import org.apache.cassandra.batchlog.BatchlogManager;
+import org.apache.cassandra.concurrent.DebuggableTask;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.service.reads.AbstractReadExecutor;
@@ -582,6 +583,11 @@ public class StorageProxy implements StorageProxyMBean
                 }
             }
 
+            public String debug()
+            {
+                return "Paxos" + message.payload.toString();
+            }
+
             @Override
             protected Verb verb()
             {
@@ -994,7 +1000,7 @@ public class StorageProxy implements StorageProxyMBean
             logger.trace("Sending batchlog store request {} to {} for {} mutations", batch.id, replica, batch.size());
 
             if (replica.isSelf())
-                performLocally(Stage.MUTATION, replica, () -> BatchlogManager.store(batch), handler);
+                performLocally(Stage.MUTATION, replica, () -> BatchlogManager.store(batch), handler, "Batchlog store");
             else
                 MessagingService.instance().sendWithCallback(message, replica.endpoint(), handler);
         }
@@ -1010,7 +1016,7 @@ public class StorageProxy implements StorageProxyMBean
                 logger.trace("Sending batchlog remove request {} to {}", uuid, target);
 
             if (target.isSelf())
-                performLocally(Stage.MUTATION, target, () -> BatchlogManager.remove(uuid));
+                performLocally(Stage.MUTATION, target, () -> BatchlogManager.remove(uuid), "Batchlog remove");
             else
                 MessagingService.instance().send(message, target.endpoint());
         }
@@ -1250,7 +1256,7 @@ public class StorageProxy implements StorageProxyMBean
         if (insertLocal)
         {
             Preconditions.checkNotNull(localReplica);
-            performLocally(stage, localReplica, mutation::apply, responseHandler);
+            performLocally(stage, localReplica, mutation::apply, responseHandler, mutation);
         }
 
         if (localDc != null)
@@ -1312,7 +1318,7 @@ public class StorageProxy implements StorageProxyMBean
         logger.trace("Sending message to {}@{}", message.id(), targets.get(0));
     }
 
-    private static void performLocally(Stage stage, Replica localReplica, final Runnable runnable)
+    private static void performLocally(Stage stage, Replica localReplica, final Runnable runnable, String description)
     {
         StageManager.getStage(stage).maybeExecuteImmediately(new LocalMutationRunnable(localReplica)
         {
@@ -1328,6 +1334,11 @@ public class StorageProxy implements StorageProxyMBean
                 }
             }
 
+            public String debug()
+            {
+                return description;
+            }
+
             @Override
             protected Verb verb()
             {
@@ -1336,7 +1347,8 @@ public class StorageProxy implements StorageProxyMBean
         });
     }
 
-    private static void performLocally(Stage stage, Replica localReplica, final Runnable runnable, final RequestCallback<?> handler)
+    private static void performLocally(Stage stage, Replica localReplica, final Runnable runnable,
+                                       final RequestCallback<?> handler, Object description)
     {
         StageManager.getStage(stage).maybeExecuteImmediately(new LocalMutationRunnable(localReplica)
         {
@@ -1353,6 +1365,13 @@ public class StorageProxy implements StorageProxyMBean
                         logger.error("Failed to apply mutation locally : ", ex);
                     handler.onFailure(FBUtilities.getBroadcastAddressAndPort(), RequestFailureReason.forException(ex));
                 }
+            }
+
+            public String debug()
+            {
+                // description is an Object and toString() called so we do not have to evaluate the Mutation.toString()
+                // unless expliclitly checked
+                return description.toString();
             }
 
             @Override
@@ -1751,7 +1770,7 @@ public class StorageProxy implements StorageProxyMBean
         return concatAndBlockOnRepair(results, repairs);
     }
 
-    public static class LocalReadRunnable extends DroppableRunnable
+    public static class LocalReadRunnable extends DroppableRunnable implements DebuggableTask
     {
         private final ReadCommand command;
         private final ReadCallback handler;
@@ -1801,6 +1820,16 @@ public class StorageProxy implements StorageProxyMBean
                     throw t;
                 }
             }
+        }
+
+        public long approxStartNanos()
+        {
+            return approxStartNanos == 0 ? MonotonicClock.approxTime.now() : approxStartNanos;
+        }
+
+        public String debug()
+        {
+            return command.toCQLString();
         }
     }
 
@@ -2422,6 +2451,7 @@ public class StorageProxy implements StorageProxyMBean
     private static abstract class DroppableRunnable implements Runnable
     {
         final long approxCreationTimeNanos;
+        long approxStartNanos;
         final Verb verb;
 
         public DroppableRunnable(Verb verb)
@@ -2432,11 +2462,11 @@ public class StorageProxy implements StorageProxyMBean
 
         public final void run()
         {
-            long approxCurrentTimeNanos = MonotonicClock.approxTime.now();
+            approxStartNanos = MonotonicClock.approxTime.now();
             long expirationTimeNanos = verb.expiresAtNanos(approxCreationTimeNanos);
-            if (approxCurrentTimeNanos > expirationTimeNanos)
+            if (approxStartNanos > expirationTimeNanos)
             {
-                long timeTakenNanos = approxCurrentTimeNanos - approxCreationTimeNanos;
+                long timeTakenNanos = approxStartNanos - approxCreationTimeNanos;
                 MessagingService.instance().metrics.recordSelfDroppedMessage(verb, timeTakenNanos, NANOSECONDS);
                 return;
             }
@@ -2457,10 +2487,10 @@ public class StorageProxy implements StorageProxyMBean
      * Like DroppableRunnable, but if it aborts, it will rerun (on the mutation stage) after
      * marking itself as a hint in progress so that the hint backpressure mechanism can function.
      */
-    private static abstract class LocalMutationRunnable implements Runnable
+    private static abstract class LocalMutationRunnable implements Runnable, DebuggableTask
     {
         private final long approxCreationTimeNanos = MonotonicClock.approxTime.now();
-
+        private long approxStartNanos;
         private final Replica localReplica;
 
         LocalMutationRunnable(Replica localReplica)
@@ -2471,11 +2501,11 @@ public class StorageProxy implements StorageProxyMBean
         public final void run()
         {
             final Verb verb = verb();
-            long nowNanos = MonotonicClock.approxTime.now();
+            approxStartNanos = MonotonicClock.approxTime.now();
             long expirationTimeNanos = verb.expiresAtNanos(approxCreationTimeNanos);
-            if (nowNanos > expirationTimeNanos)
+            if (approxStartNanos > expirationTimeNanos)
             {
-                long timeTakenNanos = nowNanos - approxCreationTimeNanos;
+                long timeTakenNanos = approxStartNanos - approxCreationTimeNanos;
                 MessagingService.instance().metrics.recordSelfDroppedMessage(Verb.MUTATION_REQ, timeTakenNanos, NANOSECONDS);
 
                 HintRunnable runnable = new HintRunnable(EndpointsForToken.of(localReplica.range().right, localReplica))
@@ -2499,6 +2529,12 @@ public class StorageProxy implements StorageProxyMBean
             }
         }
 
+        public long approxStartNanos()
+        {
+            return approxStartNanos == 0 ? MonotonicClock.approxTime.now() : approxStartNanos;
+        }
+
+        abstract public String debug();
         abstract protected Verb verb();
         abstract protected void runMayThrow() throws Exception;
     }
