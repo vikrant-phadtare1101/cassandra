@@ -24,8 +24,6 @@ import java.util.List;
 
 public interface DynamicEndpointSnitchMBean 
 {
-    public Map<InetAddressAndPort, Double> getScoresWithPort();
-    @Deprecated
     public Map<InetAddress, Double> getScores();
     public int getUpdateInterval();
     public int getResetInterval();

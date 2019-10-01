@@ -57,8 +57,7 @@ public class RepairAdmin extends NodeTool.NodeToolCmd
                                                                   "state",
                                                                   "last activity",
                                                                   "coordinator",
-                                                                  "participants",
-                                                                  "participants_wp");
+                                                                  "participants");
 
 
     private List<String> sessionValues(Map<String, String> session, int now)
@@ -68,8 +67,7 @@ public class RepairAdmin extends NodeTool.NodeToolCmd
                                   session.get(LocalSessionInfo.STATE),
                                   Integer.toString(now - updated) + " (s)",
                                   session.get(LocalSessionInfo.COORDINATOR),
-                                  session.get(LocalSessionInfo.PARTICIPANTS),
-                                  session.get(LocalSessionInfo.PARTICIPANTS_WP));
+                                  session.get(LocalSessionInfo.PARTICIPANTS));
     }
 
     private void listSessions(ActiveRepairServiceMBean repairServiceProxy)

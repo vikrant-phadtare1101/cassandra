@@ -32,10 +32,11 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.*;
+import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.repair.CassandraKeyspaceRepairManager;
 import org.apache.cassandra.db.view.ViewManager;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.index.Index;
@@ -44,7 +45,6 @@ import org.apache.cassandra.index.transactions.UpdateTransaction;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.metrics.KeyspaceMetrics;
-import org.apache.cassandra.repair.KeyspaceRepairManager;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.ReplicationParams;
 import org.apache.cassandra.schema.Schema;
@@ -52,12 +52,10 @@ import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.schema.TableMetadataRef;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.utils.concurrent.OpOrder;
-
-import static java.util.concurrent.TimeUnit.*;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * It represents a Keyspace.
@@ -91,9 +89,7 @@ public class Keyspace
 
     private volatile AbstractReplicationStrategy replicationStrategy;
     public final ViewManager viewManager;
-    private final KeyspaceWriteHandler writeHandler;
     private volatile ReplicationParams replicationParams;
-    private final KeyspaceRepairManager repairManager;
 
     public static final Function<String,Keyspace> keyspaceTransformer = new Function<String, Keyspace>()
     {
@@ -329,8 +325,6 @@ public class Keyspace
     {
         metadata = Schema.instance.getKeyspaceMetadata(keyspaceName);
         assert metadata != null : "Unknown keyspace " + keyspaceName;
-        if (metadata.isVirtual())
-            throw new IllegalStateException("Cannot initialize Keyspace with virtual metadata " + keyspaceName);
         createReplicationStrategy(metadata);
 
         this.metric = new KeyspaceMetrics(this);
@@ -341,9 +335,6 @@ public class Keyspace
             initCf(Schema.instance.getTableMetadataRef(cfm.id), loadSSTables);
         }
         this.viewManager.reload(false);
-
-        this.repairManager = new CassandraKeyspaceRepairManager(this);
-        this.writeHandler = new CassandraKeyspaceWriteHandler(this);
     }
 
     private Keyspace(KeyspaceMetadata metadata)
@@ -352,13 +343,6 @@ public class Keyspace
         createReplicationStrategy(metadata);
         this.metric = new KeyspaceMetrics(this);
         this.viewManager = new ViewManager(this);
-        this.repairManager = new CassandraKeyspaceRepairManager(this);
-        this.writeHandler = new CassandraKeyspaceWriteHandler(this);
-    }
-
-    public KeyspaceRepairManager getRepairManager()
-    {
-        return repairManager;
     }
 
     public static Keyspace mockKS(KeyspaceMetadata metadata)
@@ -368,8 +352,11 @@ public class Keyspace
 
     private void createReplicationStrategy(KeyspaceMetadata ksm)
     {
-        logger.info("Creating replication strategy " + ksm.name + " params " + ksm.params);
-        replicationStrategy = ksm.createReplicationStrategy();
+        replicationStrategy = AbstractReplicationStrategy.createReplicationStrategy(ksm.name,
+                                                                                    ksm.params.replication.klass,
+                                                                                    StorageService.instance.getTokenMetadata(),
+                                                                                    DatabaseDescriptor.getEndpointSnitch(),
+                                                                                    ksm.params.replication.options);
         if (!ksm.params.replication.equals(replicationParams))
         {
             logger.debug("New replication settings for keyspace {} - invalidating disk boundary caches", ksm.name);
@@ -387,7 +374,7 @@ public class Keyspace
             return;
 
         cfs.getCompactionStrategyManager().shutdown();
-        CompactionManager.instance.interruptCompactionForCFs(cfs.concatWithIndexes(), (sstable) -> true, true);
+        CompactionManager.instance.interruptCompactionForCFs(cfs.concatWithIndexes(), true);
         // wait for any outstanding reads/writes that might affect the CFS
         cfs.keyspace.writeOrder.awaitNewBarrier();
         cfs.readOrdering.awaitNewBarrier();
@@ -424,11 +411,6 @@ public class Keyspace
         {
             throw new IllegalStateException("CFS is already initialized: " + cfs.name);
         }
-    }
-
-    public KeyspaceWriteHandler getWriteHandler()
-    {
-        return writeHandler;
     }
 
     /**
@@ -486,16 +468,16 @@ public class Keyspace
      *
      * @param mutation       the row to write.  Must not be modified after calling apply, since commitlog append
      *                       may happen concurrently, depending on the CL Executor type.
-     * @param makeDurable    if true, don't return unless write has been made durable
+     * @param writeCommitLog false to disable commitlog append entirely
      * @param updateIndexes  false to disable index updates (used by CollationController "defragmenting")
      * @param isDroppable    true if this should throw WriteTimeoutException if it does not acquire lock within write_request_timeout_in_ms
      */
     public void apply(final Mutation mutation,
-                      final boolean makeDurable,
+                      final boolean writeCommitLog,
                       boolean updateIndexes,
                       boolean isDroppable)
     {
-        applyInternal(mutation, makeDurable, updateIndexes, isDroppable, false, null);
+        applyInternal(mutation, writeCommitLog, updateIndexes, isDroppable, false, null);
     }
 
     /**
@@ -503,13 +485,13 @@ public class Keyspace
      *
      * @param mutation       the row to write.  Must not be modified after calling apply, since commitlog append
      *                       may happen concurrently, depending on the CL Executor type.
-     * @param makeDurable    if true, don't return unless write has been made durable
+     * @param writeCommitLog false to disable commitlog append entirely
      * @param updateIndexes  false to disable index updates (used by CollationController "defragmenting")
      * @param isDroppable    true if this should throw WriteTimeoutException if it does not acquire lock within write_request_timeout_in_ms
      * @param isDeferrable   true if caller is not waiting for future to complete, so that future may be deferred
      */
     private CompletableFuture<?> applyInternal(final Mutation mutation,
-                                               final boolean makeDurable,
+                                               final boolean writeCommitLog,
                                                boolean updateIndexes,
                                                boolean isDroppable,
                                                boolean isDeferrable,
@@ -547,13 +529,12 @@ public class Keyspace
                     if (lock == null)
                     {
                         //throw WTE only if request is droppable
-                        if (isDroppable && (approxTime.isAfter(mutation.approxCreatedAtNanos + DatabaseDescriptor.getWriteRpcTimeout(NANOSECONDS))))
+                        if (isDroppable && (System.currentTimeMillis() - mutation.createdAt) > DatabaseDescriptor.getWriteRpcTimeout())
                         {
                             for (int j = 0; j < i; j++)
                                 locks[j].unlock();
 
-                            if (logger.isTraceEnabled())
-                                logger.trace("Could not acquire lock for {} and table {}", ByteBufferUtil.bytesToHex(mutation.key().getKey()), columnFamilyStores.get(tableId).name);
+                            logger.trace("Could not acquire lock for {} and table {}", ByteBufferUtil.bytesToHex(mutation.key().getKey()), columnFamilyStores.get(tableId).name);
                             Tracing.trace("Could not acquire MV lock");
                             if (future != null)
                             {
@@ -572,7 +553,7 @@ public class Keyspace
                             // we will re-apply ourself to the queue and try again later
                             final CompletableFuture<?> mark = future;
                             StageManager.getStage(Stage.MUTATION).execute(() ->
-                                                                          applyInternal(mutation, makeDurable, true, isDroppable, true, mark)
+                                                                          applyInternal(mutation, writeCommitLog, true, isDroppable, true, mark)
                             );
                             return future;
                         }
@@ -608,12 +589,20 @@ public class Keyspace
             if (isDroppable)
             {
                 for(TableId tableId : tableIds)
-                    columnFamilyStores.get(tableId).metric.viewLockAcquireTime.update(acquireTime, MILLISECONDS);
+                    columnFamilyStores.get(tableId).metric.viewLockAcquireTime.update(acquireTime, TimeUnit.MILLISECONDS);
             }
         }
         int nowInSec = FBUtilities.nowInSeconds();
-        try (WriteContext ctx = getWriteHandler().beginWrite(mutation, makeDurable))
+        try (OpOrder.Group opGroup = writeOrder.start())
         {
+            // write the mutation to the commitlog and memtables
+            CommitLogPosition commitLogPosition = null;
+            if (writeCommitLog)
+            {
+                Tracing.trace("Appending to commitlog");
+                commitLogPosition = CommitLog.instance.add(mutation);
+            }
+
             for (PartitionUpdate upd : mutation.getPartitionUpdates())
             {
                 ColumnFamilyStore cfs = columnFamilyStores.get(upd.metadata().id);
@@ -629,7 +618,7 @@ public class Keyspace
                     try
                     {
                         Tracing.trace("Creating materialized view mutations from base table replica");
-                        viewManager.forTable(upd.metadata().id).pushViewReplicaUpdates(upd, makeDurable, baseComplete);
+                        viewManager.forTable(upd.metadata().id).pushViewReplicaUpdates(upd, writeCommitLog, baseComplete);
                     }
                     catch (Throwable t)
                     {
@@ -640,11 +629,11 @@ public class Keyspace
                     }
                 }
 
+                Tracing.trace("Adding to {} memtable", upd.metadata().name);
                 UpdateTransaction indexTransaction = updateIndexes
-                                                     ? cfs.indexManager.newUpdateTransaction(upd, ctx, nowInSec)
+                                                     ? cfs.indexManager.newUpdateTransaction(upd, opGroup, nowInSec)
                                                      : UpdateTransaction.NO_OP;
-                cfs.getWriteHandler().write(upd, ctx, indexTransaction);
-
+                cfs.apply(upd, indexTransaction, opGroup, commitLogPosition);
                 if (requiresViewUpdate)
                     baseComplete.set(System.currentTimeMillis());
             }

@@ -50,7 +50,7 @@ public class EndpointState
     private volatile long updateTimestamp;
     private volatile boolean isAlive;
 
-    public EndpointState(HeartBeatState initialHbState)
+    EndpointState(HeartBeatState initialHbState)
     {
         this(initialHbState, new EnumMap<ApplicationState, VersionedValue>(ApplicationState.class));
     }
@@ -144,22 +144,11 @@ public class EndpointState
         return rpcState != null && Boolean.parseBoolean(rpcState.value);
     }
 
-    public boolean isNormalState()
-    {
-        return getStatus().equals(VersionedValue.STATUS_NORMAL);
-    }
-
     public String getStatus()
     {
-        VersionedValue status = getApplicationState(ApplicationState.STATUS_WITH_PORT);
+        VersionedValue status = getApplicationState(ApplicationState.STATUS);
         if (status == null)
-        {
-            status = getApplicationState(ApplicationState.STATUS);
-        }
-        if (status == null)
-        {
             return "";
-        }
 
         String[] pieces = status.value.split(VersionedValue.DELIMITER_STR, -1);
         assert (pieces.length > 0);

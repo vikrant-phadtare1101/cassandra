@@ -56,16 +56,6 @@ for more details.
 For information on generating the keystore and truststore files used in SSL communications, see the
 `java documentation on creating keystores <http://download.oracle.com/javase/6/docs/technotes/guides/security/jsse/JSSERefGuide.html#CreateKeystore>`__
 
-SSL Certificate Hot Reloading
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Beginning with Cassandra 4, Cassandra supports hot reloading of SSL Certificates. If SSL/TLS support is enabled in Cassandra,
-the node periodically polls the Trust and Key Stores specified in cassandra.yaml. When the files are updated, Cassandra will
-reload them and use them for subsequent connections. Please note that the Trust & Key Store passwords are part of the yaml so
-the updated files should also use the same passwords. The default polling interval is 10 minutes.
-
-Certificate Hot reloading may also be triggered using the ``nodetool reloadssl`` command. Use this if you want to Cassandra to
-immediately notice the changed certificates.
-
 Inter-node Encryption
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -182,8 +172,6 @@ See also: :ref:`setting-credentials-for-internal-authentication`, :ref:`CREATE R
 :ref:`ALTER ROLE <alter-role-statement>`, :ref:`ALTER KEYSPACE <alter-keyspace-statement>` and :ref:`GRANT PERMISSION
 <grant-permission-statement>`,
 
-.. _authorization:
-
 Authorization
 ^^^^^^^^^^^^^
 
@@ -234,8 +222,6 @@ The following assumes that authentication has already been enabled via the proce
 
 See also: :ref:`GRANT PERMISSION <grant-permission-statement>`, `GRANT ALL <grant-all>` and :ref:`REVOKE PERMISSION
 <revoke-permission-statement>`
-
-.. _auth-caching:
 
 Caching
 ^^^^^^^
@@ -382,10 +368,6 @@ jconsole or jmc in read-only mode would be defined as:
     GRANT DESCRIBE ON ALL MBEANS TO jmx;
     GRANT EXECUTE ON MBEAN 'java.lang:type=Threading' TO jmx;
     GRANT EXECUTE ON MBEAN 'com.sun.management:type=HotSpotDiagnostic' TO jmx;
-
-    # Grant the role with necessary permissions to use nodetool commands (including nodetool status) in read-only mode
-    GRANT EXECUTE ON MBEAN 'org.apache.cassandra.db:type=EndpointSnitchInfo' TO jmx;
-    GRANT EXECUTE ON MBEAN 'org.apache.cassandra.db:type=StorageService' TO jmx;
 
     # Grant the jmx role to one with login permissions so that it can access the JMX tooling
     CREATE ROLE ks_user WITH PASSWORD = 'password' AND LOGIN = true AND SUPERUSER = false;

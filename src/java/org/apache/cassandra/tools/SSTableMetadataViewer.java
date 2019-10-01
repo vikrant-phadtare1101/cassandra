@@ -398,7 +398,7 @@ public class SSTableMetadataViewer
                                                       String::valueOf);
             rowSize.printHistogram(out, color, unicode);
             field("Column Count", "");
-            TermHistogram cellCount = new TermHistogram(stats.estimatedCellPerPartitionCount,
+            TermHistogram cellCount = new TermHistogram(stats.estimatedColumnCount,
                                                         "Columns",
                                                         String::valueOf,
                                                         String::valueOf);
@@ -425,7 +425,7 @@ public class SSTableMetadataViewer
             field("EncodingStats minTTL", encodingStats.minTTL,
                     toDurationString(encodingStats.minTTL, TimeUnit.SECONDS));
             field("EncodingStats minLocalDeletionTime", encodingStats.minLocalDeletionTime,
-                    toDateString(encodingStats.minLocalDeletionTime, TimeUnit.SECONDS));
+                    toDateString(encodingStats.minLocalDeletionTime, TimeUnit.MILLISECONDS));
             field("EncodingStats minTimestamp", encodingStats.minTimestamp,
                     toDateString(encodingStats.minTimestamp, tsUnit));
             field("KeyType", keyType.toString());

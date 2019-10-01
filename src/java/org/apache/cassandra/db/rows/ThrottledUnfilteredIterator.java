@@ -75,14 +75,8 @@ public class ThrottledUnfilteredIterator extends AbstractIterator<UnfilteredRowI
         while (throttledItr != null && throttledItr.hasNext())
             throttledItr.next();
 
-        // The original UnfilteredRowIterator may have only partition deletion or static column but without unfiltereds.
-        // Return the original UnfilteredRowIterator
         if (!origin.hasNext())
-        {
-            if (throttledItr != null)
-                return endOfData();
-            return throttledItr = origin;
-        }
+            return endOfData();
 
         throttledItr = new WrappingUnfilteredRowIterator(origin)
         {
@@ -218,18 +212,11 @@ public class ThrottledUnfilteredIterator extends AbstractIterator<UnfilteredRowI
     }
 
     /**
-     * Splits a {@link UnfilteredPartitionIterator} in {@link UnfilteredRowIterator} batches with size no higher than
-     * <b>maxBatchSize</b>
-     *
-     * @param partitionIterator
-     * @param maxBatchSize max number of unfiltereds in the UnfilteredRowIterator. if 0 is given, it means no throttle.
-     * @return
+     * Splits a {@link UnfilteredPartitionIterator} in {@link UnfilteredRowIterator} batches with size no higher
+     * than <b>maxBatchSize</b>
      */
     public static CloseableIterator<UnfilteredRowIterator> throttle(UnfilteredPartitionIterator partitionIterator, int maxBatchSize)
     {
-        if (maxBatchSize == 0) // opt out
-            return partitionIterator;
-
         return new AbstractIterator<UnfilteredRowIterator>()
         {
             ThrottledUnfilteredIterator current = null;
@@ -245,6 +232,7 @@ public class ThrottledUnfilteredIterator extends AbstractIterator<UnfilteredRowI
                 if (current == null && partitionIterator.hasNext())
                 {
                     current = new ThrottledUnfilteredIterator(partitionIterator.next(), maxBatchSize);
+                    assert current.hasNext() : "UnfilteredPartitionIterator should not contain empty partitions";
                 }
 
                 if (current != null && current.hasNext())

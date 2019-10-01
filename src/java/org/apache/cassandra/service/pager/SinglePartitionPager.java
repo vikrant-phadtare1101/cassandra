@@ -29,36 +29,40 @@ import org.apache.cassandra.transport.ProtocolVersion;
  *
  * For use by MultiPartitionPager.
  */
-public class SinglePartitionPager extends AbstractQueryPager<SinglePartitionReadQuery>
+public class SinglePartitionPager extends AbstractQueryPager
 {
+    private final SinglePartitionReadCommand command;
+
     private volatile PagingState.RowMark lastReturned;
 
-    public SinglePartitionPager(SinglePartitionReadQuery query, PagingState state, ProtocolVersion protocolVersion)
+    public SinglePartitionPager(SinglePartitionReadCommand command, PagingState state, ProtocolVersion protocolVersion)
     {
-        super(query, protocolVersion);
+        super(command, protocolVersion);
+        this.command = command;
 
         if (state != null)
         {
             lastReturned = state.rowMark;
-            restoreState(query.partitionKey(), state.remaining, state.remainingInPartition);
+            restoreState(command.partitionKey(), state.remaining, state.remainingInPartition);
         }
     }
 
-    private SinglePartitionPager(SinglePartitionReadQuery query,
+    private SinglePartitionPager(SinglePartitionReadCommand command,
                                  ProtocolVersion protocolVersion,
                                  PagingState.RowMark rowMark,
                                  int remaining,
                                  int remainingInPartition)
     {
-        super(query, protocolVersion);
+        super(command, protocolVersion);
+        this.command = command;
         this.lastReturned = rowMark;
-        restoreState(query.partitionKey(), remaining, remainingInPartition);
+        restoreState(command.partitionKey(), remaining, remainingInPartition);
     }
 
     @Override
     public SinglePartitionPager withUpdatedLimit(DataLimits newLimits)
     {
-        return new SinglePartitionPager(query.withUpdatedLimit(newLimits),
+        return new SinglePartitionPager(command.withUpdatedLimit(newLimits),
                                         protocolVersion,
                                         lastReturned,
                                         maxRemaining(),
@@ -67,12 +71,12 @@ public class SinglePartitionPager extends AbstractQueryPager<SinglePartitionRead
 
     public ByteBuffer key()
     {
-        return query.partitionKey().getKey();
+        return command.partitionKey().getKey();
     }
 
     public DataLimits limits()
     {
-        return query.limits();
+        return command.limits();
     }
 
     public PagingState state()
@@ -82,21 +86,20 @@ public class SinglePartitionPager extends AbstractQueryPager<SinglePartitionRead
              : new PagingState(null, lastReturned, maxRemaining(), remainingInPartition());
     }
 
-    @Override
-    protected SinglePartitionReadQuery nextPageReadQuery(int pageSize)
+    protected ReadCommand nextPageReadCommand(int pageSize)
     {
-        Clustering clustering = lastReturned == null ? null : lastReturned.clustering(query.metadata());
+        Clustering clustering = lastReturned == null ? null : lastReturned.clustering(command.metadata());
         DataLimits limits = lastReturned == null
                           ? limits().forPaging(pageSize)
                           : limits().forPaging(pageSize, key(), remainingInPartition());
 
-        return query.forPaging(clustering, limits);
+        return command.forPaging(clustering, limits);
     }
 
     protected void recordLast(DecoratedKey key, Row last)
     {
         if (last != null && last.clustering() != Clustering.STATIC_CLUSTERING)
-            lastReturned = PagingState.RowMark.create(query.metadata(), last, protocolVersion);
+            lastReturned = PagingState.RowMark.create(command.metadata(), last, protocolVersion);
     }
 
     protected boolean isPreviouslyReturnedPartition(DecoratedKey key)

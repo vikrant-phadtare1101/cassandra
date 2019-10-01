@@ -18,6 +18,7 @@
 package org.apache.cassandra.batchlog;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
@@ -28,7 +29,6 @@ import org.junit.*;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.Util.PartitionerSwitcher;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.schema.Schema;
@@ -54,7 +54,6 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 import static org.junit.Assert.*;
 
@@ -95,7 +94,7 @@ public class BatchlogManagerTest
     public void setUp() throws Exception
     {
         TokenMetadata metadata = StorageService.instance.getTokenMetadata();
-        InetAddressAndPort localhost = InetAddressAndPort.getByName("127.0.0.1");
+        InetAddress localhost = InetAddress.getByName("127.0.0.1");
         metadata.updateNormalToken(Util.token("A"), localhost);
         metadata.updateHostId(UUIDGen.getTimeUUID(), localhost);
         Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).truncateBlocking();
@@ -278,7 +277,7 @@ public class BatchlogManagerTest
         long initialAllBatches = BatchlogManager.instance.countAllBatches();
         TableMetadata cfm = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD5).metadata();
 
-        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout(MILLISECONDS) * 2) * 1000;
+        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout() * 2) * 1000;
         UUID uuid = UUIDGen.getTimeUUID();
 
         // Add a batch with 10 mutations
@@ -310,7 +309,7 @@ public class BatchlogManagerTest
         long initialAllBatches = BatchlogManager.instance.countAllBatches();
         TableMetadata cfm = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD5).metadata();
 
-        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout(MILLISECONDS) * 2) * 1000;
+        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout() * 2) * 1000;
         UUID uuid = UUIDGen.getTimeUUID();
 
         // Add a batch with 10 mutations
@@ -345,14 +344,14 @@ public class BatchlogManagerTest
     @Test
     public void testReplayWithNoPeers() throws Exception
     {
-        StorageService.instance.getTokenMetadata().removeEndpoint(InetAddressAndPort.getByName("127.0.0.1"));
+        StorageService.instance.getTokenMetadata().removeEndpoint(InetAddress.getByName("127.0.0.1"));
 
         long initialAllBatches = BatchlogManager.instance.countAllBatches();
         long initialReplayedBatches = BatchlogManager.instance.getTotalBatchesReplayed();
 
         TableMetadata cfm = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD1).metadata();
 
-        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout(MILLISECONDS) * 2) * 1000;
+        long timestamp = (System.currentTimeMillis() - DatabaseDescriptor.getWriteRpcTimeout() * 2) * 1000;
         UUID uuid = UUIDGen.getTimeUUID();
 
         // Add a batch with 10 mutations

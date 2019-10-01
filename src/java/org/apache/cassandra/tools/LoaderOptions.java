@@ -27,18 +27,13 @@ import java.net.*;
 import java.util.HashSet;
 import java.util.Set;
 
-import com.google.common.base.Throwables;
-import com.google.common.net.HostAndPort;
-
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
 
 import com.datastax.driver.core.AuthProvider;
 import com.datastax.driver.core.PlainTextAuthProvider;
 import org.apache.commons.cli.*;
-import org.apache.commons.lang3.StringUtils;
 
 public class LoaderOptions
 {
@@ -59,8 +54,6 @@ public class LoaderOptions
     public static final String THROTTLE_MBITS = "throttle";
     public static final String INTER_DC_THROTTLE_MBITS = "inter-dc-throttle";
     public static final String TOOL_NAME = "sstableloader";
-    public static final String ALLOW_SERVER_PORT_DISCOVERY_OPTION = "server-port-discovery";
-    public static final String TARGET_KEYSPACE = "target-keyspace";
 
     /* client encryption options */
     public static final String SSL_TRUSTSTORE = "truststore";
@@ -87,10 +80,8 @@ public class LoaderOptions
     public final EncryptionOptions clientEncOptions;
     public final int connectionsPerHost;
     public final EncryptionOptions.ServerEncryptionOptions serverEncOptions;
-    public final Set<InetSocketAddress> hosts;
-    public final Set<InetAddressAndPort> ignores;
-    public final boolean allowServerPortDiscovery;
-    public final String targetKeyspace;
+    public final Set<InetAddress> hosts;
+    public final Set<InetAddress> ignores;
 
     LoaderOptions(Builder builder)
     {
@@ -110,9 +101,7 @@ public class LoaderOptions
         connectionsPerHost = builder.connectionsPerHost;
         serverEncOptions = builder.serverEncOptions;
         hosts = builder.hosts;
-        allowServerPortDiscovery = builder.allowServerPortDiscovery;
         ignores = builder.ignores;
-        targetKeyspace = builder.targetKeyspace;
     }
 
     static class Builder
@@ -133,12 +122,8 @@ public class LoaderOptions
         EncryptionOptions clientEncOptions = new EncryptionOptions();
         int connectionsPerHost = 1;
         EncryptionOptions.ServerEncryptionOptions serverEncOptions = new EncryptionOptions.ServerEncryptionOptions();
-        Set<InetAddress> hostsArg = new HashSet<>();
-        Set<InetAddress> ignoresArg = new HashSet<>();
-        Set<InetSocketAddress> hosts = new HashSet<>();
-        Set<InetAddressAndPort> ignores = new HashSet<>();
-        boolean allowServerPortDiscovery;
-        String targetKeyspace;
+        Set<InetAddress> hosts = new HashSet<>();
+        Set<InetAddress> ignores = new HashSet<>();
 
         Builder()
         {
@@ -148,23 +133,6 @@ public class LoaderOptions
         public LoaderOptions build()
         {
             constructAuthProvider();
-
-            try
-            {
-                for (InetAddress host : hostsArg)
-                {
-                    hosts.add(new InetSocketAddress(host, nativePort));
-                }
-                for (InetAddress host : ignoresArg)
-                {
-                    ignores.add(InetAddressAndPort.getByNameOverrideDefaults(host.getHostAddress(), storagePort));
-                }
-            }
-            catch (UnknownHostException e)
-            {
-                Throwables.propagate(e);
-            }
-
             return new LoaderOptions(this);
         }
 
@@ -258,26 +226,13 @@ public class LoaderOptions
             return this;
         }
 
-        @Deprecated
         public Builder hosts(Set<InetAddress> hosts)
         {
-            this.hostsArg.addAll(hosts);
-            return this;
-        }
-
-        public Builder hostsAndNativePort(Set<InetSocketAddress> hosts)
-        {
-            this.hosts.addAll(hosts);
+            this.hosts = hosts;
             return this;
         }
 
         public Builder host(InetAddress host)
-        {
-            hostsArg.add(host);
-            return this;
-        }
-
-        public Builder hostAndNativePort(InetSocketAddress host)
         {
             hosts.add(host);
             return this;
@@ -285,31 +240,13 @@ public class LoaderOptions
 
         public Builder ignore(Set<InetAddress> ignores)
         {
-            this.ignoresArg.addAll(ignores);
-            return this;
-        }
-
-        public Builder ignoresAndInternalPorts(Set<InetAddressAndPort> ignores)
-        {
-            this.ignores.addAll(ignores);
+            this.ignores = ignores;
             return this;
         }
 
         public Builder ignore(InetAddress ignore)
         {
-            ignoresArg.add(ignore);
-            return this;
-        }
-
-        public Builder ignoreAndInternalPorts(InetAddressAndPort ignore)
-        {
             ignores.add(ignore);
-            return this;
-        }
-
-        public Builder allowServerPortDiscovery(boolean allowServerPortDiscovery)
-        {
-            this.allowServerPortDiscovery = allowServerPortDiscovery;
             return this;
         }
 
@@ -359,7 +296,6 @@ public class LoaderOptions
 
                 verbose = cmd.hasOption(VERBOSE_OPTION);
                 noProgress = cmd.hasOption(NOPROGRESS_OPTION);
-                allowServerPortDiscovery = cmd.hasOption(ALLOW_SERVER_PORT_DISCOVERY_OPTION);
 
                 if (cmd.hasOption(USER_OPTION))
                 {
@@ -383,8 +319,7 @@ public class LoaderOptions
                     {
                         for (String node : nodes)
                         {
-                            HostAndPort hap = HostAndPort.fromString(node);
-                            hosts.add(new InetSocketAddress(InetAddress.getByName(hap.getHost()), hap.getPortOrDefault(nativePort)));
+                            hosts.add(InetAddress.getByName(node.trim()));
                         }
                     } catch (UnknownHostException e)
                     {
@@ -405,7 +340,7 @@ public class LoaderOptions
                     {
                         for (String node : nodes)
                         {
-                            ignores.add(InetAddressAndPort.getByNameOverrideDefaults(node.trim(), storagePort));
+                            ignores.add(InetAddress.getByName(node.trim()));
                         }
                     } catch (UnknownHostException e)
                     {
@@ -468,59 +403,52 @@ public class LoaderOptions
                 if (cmd.hasOption(SSL_TRUSTSTORE) || cmd.hasOption(SSL_TRUSTSTORE_PW) ||
                             cmd.hasOption(SSL_KEYSTORE) || cmd.hasOption(SSL_KEYSTORE_PW))
                 {
-                    clientEncOptions = clientEncOptions.withEnabled(true);
+                    clientEncOptions.enabled = true;
                 }
 
                 if (cmd.hasOption(SSL_TRUSTSTORE))
                 {
-                    clientEncOptions = clientEncOptions.withTrustStore(cmd.getOptionValue(SSL_TRUSTSTORE));
+                    clientEncOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
                 }
 
                 if (cmd.hasOption(SSL_TRUSTSTORE_PW))
                 {
-                    clientEncOptions = clientEncOptions.withTrustStorePassword(cmd.getOptionValue(SSL_TRUSTSTORE_PW));
+                    clientEncOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE))
                 {
+                    clientEncOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
                     // if a keystore was provided, lets assume we'll need to use
-                    clientEncOptions = clientEncOptions.withKeyStore(cmd.getOptionValue(SSL_KEYSTORE))
-                                                       .withRequireClientAuth(true);
+                    // it
+                    clientEncOptions.require_client_auth = true;
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE_PW))
                 {
-                    clientEncOptions = clientEncOptions.withKeyStorePassword(cmd.getOptionValue(SSL_KEYSTORE_PW));
+                    clientEncOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_PROTOCOL))
                 {
-                    clientEncOptions = clientEncOptions.withProtocol(cmd.getOptionValue(SSL_PROTOCOL));
+                    clientEncOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
                 }
 
                 if (cmd.hasOption(SSL_ALGORITHM))
                 {
-                    clientEncOptions = clientEncOptions.withAlgorithm(cmd.getOptionValue(SSL_ALGORITHM));
+                    clientEncOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
                 }
 
                 if (cmd.hasOption(SSL_STORE_TYPE))
                 {
-                    clientEncOptions = clientEncOptions.withStoreType(cmd.getOptionValue(SSL_STORE_TYPE));
+                    clientEncOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
                 }
 
                 if (cmd.hasOption(SSL_CIPHER_SUITES))
                 {
-                    clientEncOptions = clientEncOptions.withCipherSuites(cmd.getOptionValue(SSL_CIPHER_SUITES).split(","));
+                    clientEncOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
-                if (cmd.hasOption(TARGET_KEYSPACE))
-                {
-                    targetKeyspace = cmd.getOptionValue(TARGET_KEYSPACE);
-                    if (StringUtils.isBlank(targetKeyspace))
-                    {
-                        errorMsg("Empty keyspace is not supported.", options);
-                    }
-                }
                 return this;
             }
             catch (ParseException | ConfigurationException | MalformedURLException e)
@@ -622,12 +550,10 @@ public class LoaderOptions
         options.addOption("ks", SSL_KEYSTORE, "KEYSTORE", "Client SSL: full path to keystore");
         options.addOption("kspw", SSL_KEYSTORE_PW, "KEYSTORE-PASSWORD", "Client SSL: password of the keystore");
         options.addOption("prtcl", SSL_PROTOCOL, "PROTOCOL", "Client SSL: connections protocol to use (default: TLS)");
-        options.addOption("alg", SSL_ALGORITHM, "ALGORITHM", "Client SSL: algorithm");
+        options.addOption("alg", SSL_ALGORITHM, "ALGORITHM", "Client SSL: algorithm (default: SunX509)");
         options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
         options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES", "Client SSL: comma-separated list of encryption suites to use");
         options.addOption("f", CONFIG_PATH, "path to config file", "cassandra.yaml file path for streaming throughput and client/server SSL.");
-        options.addOption("spd", ALLOW_SERVER_PORT_DISCOVERY_OPTION, "allow server port discovery", "Use ports published by server to decide how to connect. With SSL requires StartTLS to be used.");
-        options.addOption("k", TARGET_KEYSPACE, "target keyspace name", "target keyspace name");
         return options;
     }
 

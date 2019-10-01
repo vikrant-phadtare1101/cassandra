@@ -17,13 +17,13 @@
  */
 package org.apache.cassandra.service;
 
+import java.net.InetAddress;
 import java.util.*;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.locator.IEndpointSnitch;
-import org.apache.cassandra.locator.InetAddressAndPort;
 
 /**
  * Holds token range informations for the sake of {@link StorageService#describeRing}.
@@ -54,13 +54,13 @@ public class TokenRange
         return tokenFactory.toString(tk);
     }
 
-    public static TokenRange create(Token.TokenFactory tokenFactory, Range<Token> range, List<InetAddressAndPort> endpoints, boolean withPorts)
+    public static TokenRange create(Token.TokenFactory tokenFactory, Range<Token> range, List<InetAddress> endpoints)
     {
         List<EndpointDetails> details = new ArrayList<>(endpoints.size());
         IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-        for (InetAddressAndPort ep : endpoints)
+        for (InetAddress ep : endpoints)
             details.add(new EndpointDetails(ep,
-                                            StorageService.instance.getNativeaddress(ep, withPorts),
+                                            StorageService.instance.getRpcaddress(ep),
                                             snitch.getDatacenter(ep),
                                             snitch.getRack(ep)));
         return new TokenRange(tokenFactory, range, details);
@@ -69,11 +69,6 @@ public class TokenRange
     @Override
     public String toString()
     {
-        return toString(false);
-    }
-
-    public String toString(boolean withPorts)
-    {
         StringBuilder sb = new StringBuilder("TokenRange(");
 
         sb.append("start_token:").append(toStr(range.left));
@@ -81,43 +76,33 @@ public class TokenRange
 
         List<String> hosts = new ArrayList<>(endpoints.size());
         List<String> rpcs = new ArrayList<>(endpoints.size());
-        List<String> endpointDetails = new ArrayList<>(endpoints.size());
         for (EndpointDetails ep : endpoints)
         {
-            hosts.add(ep.host.getHostAddress(withPorts));
-            rpcs.add(ep.nativeAddress);
-            endpointDetails.add(ep.toString(withPorts));
+            hosts.add(ep.host.getHostAddress());
+            rpcs.add(ep.rpcAddress);
         }
 
-        if (withPorts)
-        {
-            sb.append(", endpoints:").append(hosts);
-            sb.append(", rpc_endpoints:").append(rpcs);
-            sb.append(", endpoint_details:").append(endpointDetails);
-        }
-        else
-        {
-            sb.append("endpoints:").append(hosts);
-            sb.append("rpc_endpoints:").append(rpcs);
-            sb.append("endpoint_details:").append(endpointDetails);
-        }
+        sb.append("endpoints:").append(hosts);
+        sb.append("rpc_endpoints:").append(rpcs);
+        sb.append("endpoint_details:").append(endpoints);
+
         sb.append(")");
         return sb.toString();
     }
 
     public static class EndpointDetails
     {
-        public final InetAddressAndPort host;
-        public final String nativeAddress;
+        public final InetAddress host;
+        public final String rpcAddress;
         public final String datacenter;
         public final String rack;
 
-        private EndpointDetails(InetAddressAndPort host, String nativeAddress, String datacenter, String rack)
+        private EndpointDetails(InetAddress host, String rpcAddress, String datacenter, String rack)
         {
             // dc and rack can be null, but host shouldn't
             assert host != null;
             this.host = host;
-            this.nativeAddress = nativeAddress;
+            this.rpcAddress = rpcAddress;
             this.datacenter = datacenter;
             this.rack = rack;
         }
@@ -125,15 +110,10 @@ public class TokenRange
         @Override
         public String toString()
         {
-            return toString(false);
-        }
-
-        public String toString(boolean withPorts)
-        {
             // Format matters for backward compatibility with describeRing()
             String dcStr = datacenter == null ? "" : String.format(", datacenter:%s", datacenter);
             String rackStr = rack == null ? "" : String.format(", rack:%s", rack);
-            return String.format("EndpointDetails(host:%s%s%s)", host.getHostAddress(withPorts), dcStr, rackStr);
+            return String.format("EndpointDetails(host:%s%s%s)", host.getHostAddress(), dcStr, rackStr);
         }
     }
 }

@@ -8,9 +8,7 @@
 
 %global username cassandra
 
-# input of ~alphaN, ~betaN, ~rcN package versions need to retain upstream '-alphaN, etc' version for sources
-%define upstream_version %(echo %{version} | sed -r 's/~/-/g')
-%define relname apache-cassandra-%{upstream_version}
+%define relname apache-cassandra-%{version}
 
 Name:          cassandra
 Version:       %{version}
@@ -24,7 +22,6 @@ Source0:       %{relname}-src.tar.gz
 BuildRoot:     %{_tmppath}/%{relname}root-%(%{__id_u} -n)
 
 BuildRequires: ant >= 1.9
-BuildRequires: ant-junit >= 1.9
 
 Requires:      jre >= 1.8.0
 Requires:      python(abi) >= 2.7
@@ -70,20 +67,20 @@ mkdir -p %{buildroot}/var/log/%{username}
 ( cd pylib && python2.7 setup.py install --no-compile --root %{buildroot}; )
 
 # patches for data and log paths
-patch -p1 < debian/patches/cassandra_yaml_dirs.diff
-patch -p1 < debian/patches/cassandra_logdir_fix.diff
+patch -p1 < debian/patches/001cassandra_yaml_dirs.dpatch
+patch -p1 < debian/patches/002cassandra_logdir_fix.dpatch
 # uncomment hints_directory path
 sed -i 's/^# hints_directory:/hints_directory:/' conf/cassandra.yaml
 
 # remove batch, powershell, and other files not being installed
-rm -f conf/*.ps1
-rm -f bin/*.bat
-rm -f bin/*.orig
-rm -f bin/*.ps1
-rm -f bin/cassandra.in.sh
-rm -f lib/sigar-bin/*winnt*  # strip segfaults on dll..
-rm -f tools/bin/*.bat
-rm -f tools/bin/cassandra.in.sh
+rm conf/*.ps1
+rm bin/*.bat
+rm bin/*.orig
+rm bin/*.ps1
+rm bin/cassandra.in.sh
+rm lib/sigar-bin/*winnt*  # strip segfaults on dll..
+rm tools/bin/*.bat
+rm tools/bin/cassandra.in.sh
 
 # copy default configs
 cp -pr conf/* %{buildroot}/%{_sysconfdir}/%{username}/default.conf/
@@ -119,13 +116,11 @@ exit 0
 
 %files
 %defattr(0644,root,root,0755)
-%doc CHANGES.txt LICENSE.txt README.asc NEWS.txt NOTICE.txt CASSANDRA-14092.txt
-%attr(755,root,root) %{_bindir}/auditlogviewer
+%doc CHANGES.txt LICENSE.txt README.asc NEWS.txt NOTICE.txt
 %attr(755,root,root) %{_bindir}/cassandra-stress
 %attr(755,root,root) %{_bindir}/cqlsh
 %attr(755,root,root) %{_bindir}/cqlsh.py
 %attr(755,root,root) %{_bindir}/debug-cql
-%attr(755,root,root) %{_bindir}/fqltool
 %attr(755,root,root) %{_bindir}/nodetool
 %attr(755,root,root) %{_bindir}/sstableloader
 %attr(755,root,root) %{_bindir}/sstablescrub
@@ -135,10 +130,10 @@ exit 0
 %attr(755,root,root) %{_bindir}/stop-server
 %attr(755,root,root) %{_sbindir}/cassandra
 %attr(755,root,root) /%{_sysconfdir}/rc.d/init.d/%{username}
-%{_sysconfdir}/default/%{username}
-%{_sysconfdir}/security/limits.d/%{username}.conf
-/usr/share/%{username}*
-%config(noreplace) /%{_sysconfdir}/%{username}
+%attr(755,root,root) /%{_sysconfdir}/default/%{username}
+%attr(755,root,root) /%{_sysconfdir}/security/limits.d/%{username}.conf
+%attr(755,root,root) /usr/share/%{username}*
+%attr(755,root,root) %config(noreplace) /%{_sysconfdir}/%{username}
 %attr(755,%{username},%{username}) %config(noreplace) /var/lib/%{username}/*
 %attr(755,%{username},%{username}) /var/log/%{username}*
 %attr(755,%{username},%{username}) /var/run/%{username}*
