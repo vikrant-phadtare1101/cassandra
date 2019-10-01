@@ -19,20 +19,27 @@ package org.apache.cassandra.db.partitions;
 
 import java.util.NoSuchElementException;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 
 public class SingletonUnfilteredPartitionIterator implements UnfilteredPartitionIterator
 {
     private final UnfilteredRowIterator iter;
+    private final boolean isForThrift;
     private boolean returned;
 
-    public SingletonUnfilteredPartitionIterator(UnfilteredRowIterator iter)
+    public SingletonUnfilteredPartitionIterator(UnfilteredRowIterator iter, boolean isForThrift)
     {
         this.iter = iter;
+        this.isForThrift = isForThrift;
     }
 
-    public TableMetadata metadata()
+    public boolean isForThrift()
+    {
+        return isForThrift;
+    }
+
+    public CFMetaData metadata()
     {
         return iter.metadata();
     }

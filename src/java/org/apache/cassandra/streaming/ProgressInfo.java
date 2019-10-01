@@ -18,13 +18,12 @@
 package org.apache.cassandra.streaming;
 
 import java.io.Serializable;
+import java.net.InetAddress;
 
 import com.google.common.base.Objects;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-
 /**
- * ProgressInfo contains stream transfer progress.
+ * ProgressInfo contains file transfer progress.
  */
 public class ProgressInfo implements Serializable
 {
@@ -49,14 +48,14 @@ public class ProgressInfo implements Serializable
         }
     }
 
-    public final InetAddressAndPort peer;
+    public final InetAddress peer;
     public final int sessionIndex;
     public final String fileName;
     public final Direction direction;
     public final long currentBytes;
     public final long totalBytes;
 
-    public ProgressInfo(InetAddressAndPort peer, int sessionIndex, String fileName, Direction direction, long currentBytes, long totalBytes)
+    public ProgressInfo(InetAddress peer, int sessionIndex, String fileName, Direction direction, long currentBytes, long totalBytes)
     {
         assert totalBytes > 0;
 
@@ -69,7 +68,7 @@ public class ProgressInfo implements Serializable
     }
 
     /**
-     * @return true if transfer is completed
+     * @return true if file transfer is completed
      */
     public boolean isCompleted()
     {
@@ -103,18 +102,13 @@ public class ProgressInfo implements Serializable
     @Override
     public String toString()
     {
-        return toString(false);
-    }
-
-    public String toString(boolean withPorts)
-    {
         StringBuilder sb = new StringBuilder(fileName);
         sb.append(" ").append(currentBytes);
         sb.append("/").append(totalBytes).append(" bytes");
         sb.append("(").append(currentBytes*100/totalBytes).append("%) ");
         sb.append(direction == Direction.OUT ? "sent to " : "received from ");
         sb.append("idx:").append(sessionIndex);
-        sb.append(peer.toString(withPorts));
+        sb.append(peer);
         return sb.toString();
     }
 }

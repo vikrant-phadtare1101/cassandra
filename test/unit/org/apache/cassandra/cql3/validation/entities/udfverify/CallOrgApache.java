@@ -24,25 +24,18 @@ import java.util.List;
 import com.datastax.driver.core.TypeCodec;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.functions.JavaUDF;
-import org.apache.cassandra.cql3.functions.UDFContext;
-import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * Used by {@link org.apache.cassandra.cql3.validation.entities.UFVerifierTest}.
  */
 public final class CallOrgApache extends JavaUDF
 {
-    public CallOrgApache(TypeCodec<Object> returnDataType, TypeCodec<Object>[] argDataTypes, UDFContext udfContext)
+    public CallOrgApache(TypeCodec<Object> returnDataType, TypeCodec<Object>[] argDataTypes)
     {
-        super(returnDataType, argDataTypes, udfContext);
+        super(returnDataType, argDataTypes);
     }
 
-    protected Object executeAggregateImpl(ProtocolVersion protocolVersion, Object firstParam, List<ByteBuffer> params)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    protected ByteBuffer executeImpl(ProtocolVersion protocolVersion, List<ByteBuffer> params)
+    protected ByteBuffer executeImpl(int protocolVersion, List<ByteBuffer> params)
     {
         DatabaseDescriptor.getClusterName();
         return null;

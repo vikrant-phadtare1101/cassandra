@@ -22,27 +22,25 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.Callable;
 
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.cache.KeyCacheKey;
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.index.Index;
 import org.apache.cassandra.metrics.CacheMetrics;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.schema.CachingParams;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.StorageService;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
+import org.apache.cassandra.utils.Pair;
 
 
 public class KeyCacheCqlTest extends CQLTester
@@ -119,9 +117,9 @@ public class KeyCacheCqlTest extends CQLTester
     }
 
     @Override
-    protected String createIndex(String query)
+    protected void createIndex(String query)
     {
-        return createFormattedIndex(formatQuery(KEYSPACE_PER_TEST, query));
+        createFormattedIndex(formatQuery(KEYSPACE_PER_TEST, query));
     }
 
     @Override
@@ -131,20 +129,7 @@ public class KeyCacheCqlTest extends CQLTester
     }
 
     @Test
-    public void testSliceQueriesShallowIndexEntry() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(0);
-        testSliceQueries();
-    }
-
-    @Test
-    public void testSliceQueriesIndexInfoOnHeap() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(8);
-        testSliceQueries();
-    }
-
-    private void testSliceQueries() throws Throwable
+    public void testSliceQueries() throws Throwable
     {
         createTable("CREATE TABLE %s (pk text, ck1 int, ck2 int, val text, vpk text, vck1 int, vck2 int, PRIMARY KEY (pk, ck1, ck2))");
 
@@ -228,26 +213,13 @@ public class KeyCacheCqlTest extends CQLTester
     }
 
     @Test
-    public void test2iKeyCachePathsShallowIndexEntry() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(0);
-        test2iKeyCachePaths();
-    }
-
-    @Test
-    public void test2iKeyCachePathsIndexInfoOnHeap() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(8);
-        test2iKeyCachePaths();
-    }
-
-    private void test2iKeyCachePaths() throws Throwable
+    public void test2iKeyCachePaths() throws Throwable
     {
         String table = createTable("CREATE TABLE %s ("
                                    + commonColumnsDef
                                    + "PRIMARY KEY ((part_key_a, part_key_b),clust_key_a,clust_key_b,clust_key_c))");
-        String indexName = createIndex("CREATE INDEX ON %s (col_int)");
-        insertData(table, indexName, true);
+        createIndex("CREATE INDEX some_index ON %s (col_int)");
+        insertData(table, "some_index", true);
         clearCache();
 
         CacheMetrics metrics = CacheService.instance.keyCache.getMetrics();
@@ -300,6 +272,11 @@ public class KeyCacheCqlTest extends CQLTester
             assertEquals(500, result.size());
         }
 
+        //Test Schema.getColumnFamilyStoreIncludingIndexes, several null check paths
+        //are defensive and unreachable
+        assertNull(Schema.instance.getColumnFamilyStoreIncludingIndexes(Pair.create("foo", "bar")));
+        assertNull(Schema.instance.getColumnFamilyStoreIncludingIndexes(Pair.create(KEYSPACE_PER_TEST, "bar")));
+
         dropTable("DROP TABLE %s");
         Schema.instance.updateVersion();
 
@@ -313,26 +290,13 @@ public class KeyCacheCqlTest extends CQLTester
     }
 
     @Test
-    public void test2iKeyCachePathsSaveKeysForDroppedTableShallowIndexEntry() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(0);
-        test2iKeyCachePathsSaveKeysForDroppedTable();
-    }
-
-    @Test
-    public void test2iKeyCachePathsSaveKeysForDroppedTableIndexInfoOnHeap() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(8);
-        test2iKeyCachePathsSaveKeysForDroppedTable();
-    }
-
-    private void test2iKeyCachePathsSaveKeysForDroppedTable() throws Throwable
+    public void test2iKeyCachePathsSaveKeysForDroppedTable() throws Throwable
     {
         String table = createTable("CREATE TABLE %s ("
                                    + commonColumnsDef
                                    + "PRIMARY KEY ((part_key_a, part_key_b),clust_key_a,clust_key_b,clust_key_c))");
-        String indexName = createIndex("CREATE INDEX ON %s (col_int)");
-        insertData(table, indexName, true);
+        createIndex("CREATE INDEX some_index ON %s (col_int)");
+        insertData(table, "some_index", true);
         clearCache();
 
         CacheMetrics metrics = CacheService.instance.keyCache.getMetrics();
@@ -380,27 +344,13 @@ public class KeyCacheCqlTest extends CQLTester
         while(iter.hasNext())
         {
             KeyCacheKey key = iter.next();
-            TableMetadataRef tableMetadataRef = Schema.instance.getTableMetadataRef(key.tableId);
-            Assert.assertFalse(tableMetadataRef.keyspace.equals("KEYSPACE_PER_TEST"));
-            Assert.assertFalse(tableMetadataRef.name.startsWith(table));
+            Assert.assertFalse(key.ksAndCFName.left.equals("KEYSPACE_PER_TEST"));
+            Assert.assertFalse(key.ksAndCFName.right.startsWith(table));
         }
     }
 
     @Test
-    public void testKeyCacheNonClusteredShallowIndexEntry() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(0);
-        testKeyCacheNonClustered();
-    }
-
-    @Test
-    public void testKeyCacheNonClusteredIndexInfoOnHeap() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(8);
-        testKeyCacheNonClustered();
-    }
-
-    private void testKeyCacheNonClustered() throws Throwable
+    public void testKeyCacheNonClustered() throws Throwable
     {
         String table = createTable("CREATE TABLE %s ("
                                    + commonColumnsDef
@@ -433,20 +383,7 @@ public class KeyCacheCqlTest extends CQLTester
     }
 
     @Test
-    public void testKeyCacheClusteredShallowIndexEntry() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(0);
-        testKeyCacheClustered();
-    }
-
-    @Test
-    public void testKeyCacheClusteredIndexInfoOnHeap() throws Throwable
-    {
-        DatabaseDescriptor.setColumnIndexCacheSize(8);
-        testKeyCacheClustered();
-    }
-
-    private void testKeyCacheClustered() throws Throwable
+    public void testKeyCacheClustered() throws Throwable
     {
         String table = createTable("CREATE TABLE %s ("
                                    + commonColumnsDef
@@ -520,7 +457,7 @@ public class KeyCacheCqlTest extends CQLTester
         if (index != null)
         {
             StorageService.instance.disableAutoCompaction(KEYSPACE_PER_TEST, table + '.' + index);
-            triggerBlockingFlush(Keyspace.open(KEYSPACE_PER_TEST).getColumnFamilyStore(table).indexManager.getIndexByName(index));
+            Keyspace.open(KEYSPACE_PER_TEST).getColumnFamilyStore(table).indexManager.getIndexByName(index).getBlockingFlushTask().call();
         }
 
         for (int i = 0; i < 100; i++)
@@ -545,7 +482,7 @@ public class KeyCacheCqlTest extends CQLTester
             {
                 Keyspace.open(KEYSPACE_PER_TEST).getColumnFamilyStore(table).forceFlush().get();
                 if (index != null)
-                    triggerBlockingFlush(Keyspace.open(KEYSPACE_PER_TEST).getColumnFamilyStore(table).indexManager.getIndexByName(index));
+                    Keyspace.open(KEYSPACE_PER_TEST).getColumnFamilyStore(table).indexManager.getIndexByName(index).getBlockingFlushTask().call();
             }
         }
     }
@@ -576,13 +513,5 @@ public class KeyCacheCqlTest extends CQLTester
         Assert.assertEquals(0L, metrics.hits.getCount());
         Assert.assertEquals(0L, metrics.requests.getCount());
         Assert.assertEquals(0L, metrics.size.getValue().longValue());
-    }
-
-    private static void triggerBlockingFlush(Index index) throws Exception
-    {
-        assert index != null;
-        Callable<?> flushTask = index.getBlockingFlushTask();
-        if (flushTask != null)
-            flushTask.call();
     }
 }

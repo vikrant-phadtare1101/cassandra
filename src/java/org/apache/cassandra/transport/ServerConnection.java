@@ -17,15 +17,10 @@
  */
 package org.apache.cassandra.transport;
 
-import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.security.cert.X509Certificate;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import io.netty.channel.Channel;
-import com.codahale.metrics.Counter;
-import io.netty.handler.ssl.SslHandler;
 import org.apache.cassandra.auth.IAuthenticator;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.service.ClientState;
@@ -33,43 +28,46 @@ import org.apache.cassandra.service.QueryState;
 
 public class ServerConnection extends Connection
 {
-    private static final Logger logger = LoggerFactory.getLogger(ServerConnection.class);
+    private enum State { UNINITIALIZED, AUTHENTICATION, READY }
 
     private volatile IAuthenticator.SaslNegotiator saslNegotiator;
     private final ClientState clientState;
-    private volatile ConnectionStage stage;
-    public final Counter requests = new Counter();
+    private volatile State state;
 
-    ServerConnection(Channel channel, ProtocolVersion version, Connection.Tracker tracker)
+    private final ConcurrentMap<Integer, QueryState> queryStates = new ConcurrentHashMap<>();
+
+    public ServerConnection(Channel channel, int version, Connection.Tracker tracker)
     {
         super(channel, version, tracker);
-
-        clientState = ClientState.forExternalCalls(channel.remoteAddress());
-        stage = ConnectionStage.ESTABLISHED;
+        this.clientState = ClientState.forExternalCalls(channel.remoteAddress());
+        this.state = State.UNINITIALIZED;
     }
 
-    public ClientState getClientState()
+    private QueryState getQueryState(int streamId)
     {
-        return clientState;
-    }
-
-    ConnectionStage stage()
-    {
-        return stage;
-    }
-
-    QueryState validateNewMessage(Message.Type type, ProtocolVersion version)
-    {
-        switch (stage)
+        QueryState qState = queryStates.get(streamId);
+        if (qState == null)
         {
-            case ESTABLISHED:
+            // In theory we shouldn't get any race here, but it never hurts to be careful
+            QueryState newState = new QueryState(clientState);
+            if ((qState = queryStates.putIfAbsent(streamId, newState)) == null)
+                qState = newState;
+        }
+        return qState;
+    }
+
+    public QueryState validateNewMessage(Message.Type type, int version, int streamId)
+    {
+        switch (state)
+        {
+            case UNINITIALIZED:
                 if (type != Message.Type.STARTUP && type != Message.Type.OPTIONS)
                     throw new ProtocolException(String.format("Unexpected message %s, expecting STARTUP or OPTIONS", type));
                 break;
-            case AUTHENTICATING:
+            case AUTHENTICATION:
                 // Support both SASL auth from protocol v2 and the older style Credentials auth from v1
                 if (type != Message.Type.AUTH_RESPONSE && type != Message.Type.CREDENTIALS)
-                    throw new ProtocolException(String.format("Unexpected message %s, expecting %s", type, version == ProtocolVersion.V1 ? "CREDENTIALS" : "SASL_RESPONSE"));
+                    throw new ProtocolException(String.format("Unexpected message %s, expecting %s", type, version == 1 ? "CREDENTIALS" : "SASL_RESPONSE"));
                 break;
             case READY:
                 if (type == Message.Type.STARTUP)
@@ -78,30 +76,29 @@ public class ServerConnection extends Connection
             default:
                 throw new AssertionError();
         }
-
-        return new QueryState(clientState);
+        return getQueryState(streamId);
     }
 
-    void applyStateTransition(Message.Type requestType, Message.Type responseType)
+    public void applyStateTransition(Message.Type requestType, Message.Type responseType)
     {
-        switch (stage)
+        switch (state)
         {
-            case ESTABLISHED:
+            case UNINITIALIZED:
                 if (requestType == Message.Type.STARTUP)
                 {
                     if (responseType == Message.Type.AUTHENTICATE)
-                        stage = ConnectionStage.AUTHENTICATING;
+                        state = State.AUTHENTICATION;
                     else if (responseType == Message.Type.READY)
-                        stage = ConnectionStage.READY;
+                        state = State.READY;
                 }
                 break;
-            case AUTHENTICATING:
+            case AUTHENTICATION:
                 // Support both SASL auth from protocol v2 and the older style Credentials auth from v1
                 assert requestType == Message.Type.AUTH_RESPONSE || requestType == Message.Type.CREDENTIALS;
 
                 if (responseType == Message.Type.READY || responseType == Message.Type.AUTH_SUCCESS)
                 {
-                    stage = ConnectionStage.READY;
+                    state = State.READY;
                     // we won't use the authenticator again, null it so that it can be GC'd
                     saslNegotiator = null;
                 }
@@ -116,30 +113,7 @@ public class ServerConnection extends Connection
     public IAuthenticator.SaslNegotiator getSaslNegotiator(QueryState queryState)
     {
         if (saslNegotiator == null)
-            saslNegotiator = DatabaseDescriptor.getAuthenticator()
-                                               .newSaslNegotiator(queryState.getClientAddress(), certificates());
+            saslNegotiator = DatabaseDescriptor.getAuthenticator().newSaslNegotiator(queryState.getClientAddress());
         return saslNegotiator;
-    }
-
-    private X509Certificate[] certificates()
-    {
-        SslHandler sslHandler = (SslHandler) channel().pipeline()
-                                                      .get("ssl");
-        X509Certificate[] certificates = null;
-
-        if (sslHandler != null)
-        {
-            try
-            {
-                certificates = sslHandler.engine()
-                                         .getSession()
-                                         .getPeerCertificateChain();
-            }
-            catch (SSLPeerUnverifiedException e)
-            {
-                logger.error("Failed to get peer certificates for peer {}", channel().remoteAddress(), e);
-            }
-        }
-        return certificates;
     }
 }

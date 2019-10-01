@@ -20,39 +20,19 @@ package org.apache.cassandra.utils.btree;
 
 import java.util.Comparator;
 
-import io.netty.util.Recycler;
-
+import static org.apache.cassandra.utils.btree.BTree.EMPTY_LEAF;
+import static org.apache.cassandra.utils.btree.BTree.FAN_SHIFT;
 import static org.apache.cassandra.utils.btree.BTree.POSITIVE_INFINITY;
 
 /**
  * A class for constructing a new BTree, either from an existing one and some set of modifications
  * or a new tree from a sorted collection of items.
  * <p/>
- * This is a fairly heavy-weight object, so a Recycled instance is created for making modifications to a tree
+ * This is a fairly heavy-weight object, so a ThreadLocal instance is created for making modifications to a tree
  */
 final class TreeBuilder
 {
-
-    private final static Recycler<TreeBuilder> builderRecycler = new Recycler<TreeBuilder>()
-    {
-        protected TreeBuilder newObject(Handle handle)
-        {
-            return new TreeBuilder(handle);
-        }
-    };
-
-    public static TreeBuilder newInstance()
-    {
-        return builderRecycler.get();
-    }
-
-    private final Recycler.Handle recycleHandle;
     private final NodeBuilder rootBuilder = new NodeBuilder();
-
-    private TreeBuilder(Recycler.Handle handle)
-    {
-        this.recycleHandle = handle;
-    }
 
     /**
      * At the highest level, we adhere to the classic b-tree insertion algorithm:
@@ -113,9 +93,27 @@ final class TreeBuilder
 
         Object[] r = current.toNode();
         current.clear();
+        return r;
+    }
 
-        recycleHandle.recycle(this);
+    public <C, K extends C, V extends C> Object[] build(Iterable<K> source, UpdateFunction<K, V> updateF, int size)
+    {
+        assert updateF != null;
 
+        NodeBuilder current = rootBuilder;
+        // we descend only to avoid wasting memory; in update() we will often descend into existing trees
+        // so here we want to descend also, so we don't have lg max(N) depth in both directions
+        while ((size >>= FAN_SHIFT) > 0)
+            current = current.ensureChild();
+
+        current.reset(EMPTY_LEAF, POSITIVE_INFINITY, updateF, null);
+        for (K key : source)
+            current.addNewKey(key);
+
+        current = current.ascendToRoot();
+
+        Object[] r = current.toNode();
+        current.clear();
         return r;
     }
 }

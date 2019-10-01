@@ -23,7 +23,7 @@ import com.google.common.base.Objects;
 import com.google.common.collect.Sets;
 import org.apache.commons.lang3.StringUtils;
 
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 
 /**
  * The primary type of resource in Cassandra.
@@ -54,22 +54,31 @@ public class DataResource implements IResource
                                                                                             Permission.MODIFY,
                                                                                             Permission.AUTHORIZE);
     private static final String ROOT_NAME = "data";
-    private static final DataResource ROOT_RESOURCE = new DataResource(Level.ROOT, null, null);
+    private static final DataResource ROOT_RESOURCE = new DataResource();
 
     private final Level level;
     private final String keyspace;
     private final String table;
 
-    // memoized hashcode since DataRessource is immutable and used in hashmaps often
-    private final transient int hash;
-
-    private DataResource(Level level, String keyspace, String table)
+    private DataResource()
     {
-        this.level = level;
+        level = Level.ROOT;
+        keyspace = null;
+        table = null;
+    }
+
+    private DataResource(String keyspace)
+    {
+        level = Level.KEYSPACE;
+        this.keyspace = keyspace;
+        table = null;
+    }
+
+    private DataResource(String keyspace, String table)
+    {
+        level = Level.TABLE;
         this.keyspace = keyspace;
         this.table = table;
-
-        this.hash = Objects.hashCode(level, keyspace, table);
     }
 
     /**
@@ -88,7 +97,7 @@ public class DataResource implements IResource
      */
     public static DataResource keyspace(String keyspace)
     {
-        return new DataResource(Level.KEYSPACE, keyspace, null);
+        return new DataResource(keyspace);
     }
 
     /**
@@ -100,7 +109,7 @@ public class DataResource implements IResource
      */
     public static DataResource table(String keyspace, String table)
     {
-        return new DataResource(Level.TABLE, keyspace, table);
+        return new DataResource(keyspace, table);
     }
 
     /**
@@ -211,7 +220,7 @@ public class DataResource implements IResource
             case KEYSPACE:
                 return Schema.instance.getKeyspaces().contains(keyspace);
             case TABLE:
-                return Schema.instance.getTableMetadata(keyspace, table) != null;
+                return Schema.instance.getCFMetaData(keyspace, table) != null;
         }
         throw new AssertionError();
     }
@@ -263,6 +272,6 @@ public class DataResource implements IResource
     @Override
     public int hashCode()
     {
-        return hash;
+        return Objects.hashCode(level, keyspace, table);
     }
 }

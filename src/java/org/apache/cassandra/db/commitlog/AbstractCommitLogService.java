@@ -17,22 +17,19 @@
  */
 package org.apache.cassandra.db.commitlog;
 
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
-
-import com.google.common.annotations.VisibleForTesting;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.codahale.metrics.Timer.Context;
-
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.db.commitlog.CommitLogSegment.Allocation;
-import org.apache.cassandra.utils.MonotonicClock;
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
+import org.slf4j.*;
+
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+import com.google.common.annotations.VisibleForTesting;
 
 public abstract class AbstractCommitLogService
 {
@@ -54,6 +51,7 @@ public abstract class AbstractCommitLogService
 
     // signal that writers can wait on to be notified of a completed sync
     protected final WaitQueue syncComplete = new WaitQueue();
+    protected final Semaphore haveWork = new Semaphore(1);
 
     final CommitLog commitLog;
     private final String name;
@@ -61,13 +59,13 @@ public abstract class AbstractCommitLogService
     /**
      * The duration between syncs to disk.
      */
-    final long syncIntervalNanos;
+    final long syncIntervalMillis;
 
     /**
      * The duration between updating the chained markers in the the commit log file. This value should be
-     * 0 < {@link #markerIntervalNanos} <= {@link #syncIntervalNanos}.
+     * 0 < {@link #markerIntervalMillis} <= {@link #syncIntervalMillis}.
      */
-    final long markerIntervalNanos;
+    final long markerIntervalMillis;
 
     /**
      * A flag that callers outside of the sync thread can use to signal they want the commitlog segments
@@ -102,7 +100,6 @@ public abstract class AbstractCommitLogService
         this.commitLog = commitLog;
         this.name = name;
 
-        final long markerIntervalMillis;
         if (markHeadersFaster && syncIntervalMillis > DEFAULT_MARKER_INTERVAL_MILLIS)
         {
             markerIntervalMillis = DEFAULT_MARKER_INTERVAL_MILLIS;
@@ -121,33 +118,33 @@ public abstract class AbstractCommitLogService
         {
             markerIntervalMillis = syncIntervalMillis;
         }
+
         assert syncIntervalMillis % markerIntervalMillis == 0;
-        this.markerIntervalNanos = TimeUnit.NANOSECONDS.convert(markerIntervalMillis, TimeUnit.MILLISECONDS);
-        this.syncIntervalNanos = TimeUnit.NANOSECONDS.convert(syncIntervalMillis, TimeUnit.MILLISECONDS);
+        this.syncIntervalMillis = syncIntervalMillis;
     }
 
     // Separated into individual method to ensure relevant objects are constructed before this is started.
     void start()
     {
-        if (syncIntervalNanos < 1)
-            throw new IllegalArgumentException(String.format("Commit log flush interval must be positive: %fms",
-                                                             syncIntervalNanos * 1e-6));
+        if (syncIntervalMillis < 1)
+            throw new IllegalArgumentException(String.format("Commit log flush interval must be positive: %dms",
+                                                             syncIntervalMillis));
         shutdown = false;
-        Runnable runnable = new SyncRunnable(MonotonicClock.preciseTime);
-        thread = NamedThreadFactory.createThread(runnable, name);
+        Runnable runnable = new SyncRunnable(new Clock());
+        thread = new Thread(NamedThreadFactory.threadLocalDeallocator(runnable), name);
         thread.start();
     }
 
     class SyncRunnable implements Runnable
     {
-        private final MonotonicClock clock;
-        private long firstLagAt = 0;
-        private long totalSyncDuration = 0; // total time spent syncing since firstLagAt
-        private long syncExceededIntervalBy = 0; // time that syncs exceeded pollInterval since firstLagAt
-        private int lagCount = 0;
-        private int syncCount = 0;
+        final Clock clock;
+        long firstLagAt = 0;
+        long totalSyncDuration = 0; // total time spent syncing since firstLagAt
+        long syncExceededIntervalBy = 0; // time that syncs exceeded pollInterval since firstLagAt
+        int lagCount = 0;
+        int syncCount = 0;
 
-        SyncRunnable(MonotonicClock clock)
+        SyncRunnable(Clock clock)
         {
             this.clock = clock;
         }
@@ -163,19 +160,19 @@ public abstract class AbstractCommitLogService
 
         boolean sync()
         {
-            // always run once after shutdown signalled
-            boolean shutdownRequested = shutdown;
-
             try
             {
+                // always run once after shutdown signalled
+                boolean run = !shutdown;
+
                 // sync and signal
-                long pollStarted = clock.now();
-                boolean flushToDisk = lastSyncedAt + syncIntervalNanos <= pollStarted || shutdownRequested || syncRequested;
+                long pollStarted = clock.currentTimeMillis();
+                boolean flushToDisk = lastSyncedAt + syncIntervalMillis <= pollStarted || shutdown || syncRequested;
                 if (flushToDisk)
                 {
                     // in this branch, we want to flush the commit log to disk
                     syncRequested = false;
-                    commitLog.sync(true);
+                    commitLog.sync(shutdown, true);
                     lastSyncedAt = pollStarted;
                     syncComplete.signalAll();
                     syncCount++;
@@ -183,19 +180,30 @@ public abstract class AbstractCommitLogService
                 else
                 {
                     // in this branch, just update the commit log sync headers
-                    commitLog.sync(false);
+                    commitLog.sync(false, false);
                 }
 
-                long now = clock.now();
+                long now = clock.currentTimeMillis();
                 if (flushToDisk)
                     maybeLogFlushLag(pollStarted, now);
 
-                if (shutdownRequested)
+                if (!run)
                     return false;
 
-                long wakeUpAt = pollStarted + markerIntervalNanos;
-                if (wakeUpAt > now)
-                    LockSupport.parkNanos(wakeUpAt - now);
+                // if we have lagged this round, we probably have work to do already so we don't sleep
+                long sleep = pollStarted + markerIntervalMillis - now;
+                if (sleep < 0)
+                    return true;
+
+                try
+                {
+                    haveWork.tryAcquire(sleep, TimeUnit.MILLISECONDS);
+                    haveWork.drainPermits();
+                }
+                catch (InterruptedException e)
+                {
+                    throw new AssertionError();
+                }
             }
             catch (Throwable t)
             {
@@ -203,14 +211,20 @@ public abstract class AbstractCommitLogService
                     return false;
 
                 // sleep for full poll-interval after an error, so we don't spam the log file
-                LockSupport.parkNanos(markerIntervalNanos);
+                try
+                {
+                    haveWork.tryAcquire(markerIntervalMillis, TimeUnit.MILLISECONDS);
+                }
+                catch (InterruptedException e)
+                {
+                    throw new AssertionError();
+                }
             }
-
             return true;
         }
 
         /**
-         * Add a log entry whenever the time to flush the commit log to disk exceeds {@link #syncIntervalNanos}.
+         * Add a log entry whenever the time to flush the commit log to disk exceeds {@link #syncIntervalMillis}.
          */
         @VisibleForTesting
         boolean maybeLogFlushLag(long pollStarted, long now)
@@ -219,7 +233,7 @@ public abstract class AbstractCommitLogService
             totalSyncDuration += flushDuration;
 
             // this is the timestamp by which we should have completed the flush
-            long maxFlushTimestamp = pollStarted + syncIntervalNanos;
+            long maxFlushTimestamp = pollStarted + syncIntervalMillis;
             if (maxFlushTimestamp > now)
                 return false;
 
@@ -237,16 +251,13 @@ public abstract class AbstractCommitLogService
             if (firstLagAt > 0)
             {
                 //Only reset the lag tracking if it actually logged this time
-                boolean logged = NoSpamLogger.log(logger,
-                                                  NoSpamLogger.Level.WARN,
-                                                  5,
-                                                  TimeUnit.MINUTES,
-                                                  "Out of {} commit log syncs over the past {}s with average duration of {}ms, {} have exceeded the configured commit interval by an average of {}ms",
-                                                  syncCount,
-                                                  String.format("%.2f", (now - firstLagAt) * 1e-9d),
-                                                  String.format("%.2f", totalSyncDuration * 1e-6d / syncCount),
-                                                  lagCount,
-                                                  String.format("%.2f", syncExceededIntervalBy * 1e-6d / lagCount));
+                boolean logged = NoSpamLogger.log(
+                logger,
+                NoSpamLogger.Level.WARN,
+                5,
+                TimeUnit.MINUTES,
+                "Out of {} commit log syncs over the past {}s with average duration of {}ms, {} have exceeded the configured commit interval by an average of {}ms",
+                syncCount, (now - firstLagAt) / 1000, String.format("%.2f", (double) totalSyncDuration / syncCount), lagCount, String.format("%.2f", (double) syncExceededIntervalBy / lagCount));
                 if (logged)
                     firstLagAt = 0;
             }
@@ -260,6 +271,7 @@ public abstract class AbstractCommitLogService
         }
     }
 
+
     /**
      * Block for @param alloc to be sync'd as necessary, and handle bookkeeping
      */
@@ -272,44 +284,48 @@ public abstract class AbstractCommitLogService
     protected abstract void maybeWaitForSync(Allocation alloc);
 
     /**
-     * Request an additional sync cycle without blocking.
+     * Sync immediately, but don't block for the sync to cmplete
      */
-    void requestExtraSync()
+    public WaitQueue.Signal requestExtraSync()
+    {
+        WaitQueue.Signal signal = syncComplete.register();
+        requestSync();
+        return signal;
+    }
+
+    protected void requestSync()
     {
         syncRequested = true;
-        LockSupport.unpark(thread);
+        haveWork.release(1);
     }
 
     public void shutdown()
     {
         shutdown = true;
-        requestExtraSync();
+        haveWork.release(1);
     }
 
     /**
-     * Request sync and wait until the current state is synced.
-     *
-     * Note: If a sync is in progress at the time of this request, the call will return after both it and a cycle
-     * initiated immediately afterwards complete.
+     * FOR TESTING ONLY
      */
-    public void syncBlocking()
+    public void restartUnsafe()
     {
-        long requestTime = System.nanoTime();
-        requestExtraSync();
-        awaitSyncAt(requestTime, null);
-    }
+        while (haveWork.availablePermits() < 1)
+            haveWork.release();
 
-    void awaitSyncAt(long syncTime, Context context)
-    {
-        do
+        while (haveWork.availablePermits() > 1)
         {
-            WaitQueue.Signal signal = context != null ? syncComplete.register(context) : syncComplete.register();
-            if (lastSyncedAt < syncTime)
-                signal.awaitUninterruptibly();
-            else
-                signal.cancel();
+            try
+            {
+                haveWork.acquire();
+            }
+            catch (InterruptedException e)
+            {
+                throw new RuntimeException(e);
+            }
         }
-        while (lastSyncedAt < syncTime);
+        shutdown = false;
+        start();
     }
 
     public void awaitTermination() throws InterruptedException

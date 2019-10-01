@@ -70,15 +70,10 @@ public class Hex
 
     public static String bytesToHex(byte... bytes)
     {
-        return bytesToHex(bytes, 0, bytes.length);
-    }
-
-    public static String bytesToHex(byte bytes[], int offset, int length)
-    {
-        char[] c = new char[length * 2];
-        for (int i = 0; i < length; i++)
+        char[] c = new char[bytes.length * 2];
+        for (int i = 0; i < bytes.length; i++)
         {
-            int bint = bytes[i + offset];
+            int bint = bytes[i];
             c[i * 2] = byteToChar[(bint & 0xf0) >> 4];
             c[1 + i * 2] = byteToChar[bint & 0x0f];
         }
@@ -101,9 +96,8 @@ public class Hex
             try
             {
                 s = stringConstructor.newInstance(0, c.length, c);
-            }
-            catch (InvocationTargetException ite)
-            {
+            } 
+            catch (InvocationTargetException ite) {
                 // The underlying constructor failed. Unwrapping the exception.
                 Throwable cause = ite.getCause();
                 logger.error("Underlying string constructor threw an error: {}",

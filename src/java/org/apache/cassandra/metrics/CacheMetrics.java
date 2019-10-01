@@ -17,10 +17,12 @@
  */
 package org.apache.cassandra.metrics;
 
-import java.util.function.DoubleSupplier;
+import java.util.concurrent.atomic.AtomicLong;
 
-import com.codahale.metrics.*;
-import org.apache.cassandra.cache.CacheSize;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.RatioGauge;
+import org.apache.cassandra.cache.ICache;
 
 import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
@@ -31,18 +33,10 @@ public class CacheMetrics
 {
     /** Cache capacity in bytes */
     public final Gauge<Long> capacity;
-    /** Total size of cache, in bytes */
-    public final Gauge<Long> size;
-    /** Total number of cache entries */
-    public final Gauge<Integer> entries;
-
     /** Total number of cache hits */
     public final Meter hits;
-    /** Total number of cache misses */
-    public final Meter misses;
     /** Total number of cache requests */
-    public final Metered requests;
-
+    public final Meter requests;
     /** all time cache hit rate */
     public final Gauge<Double> hitRate;
     /** 1m hit rate */
@@ -51,8 +45,10 @@ public class CacheMetrics
     public final Gauge<Double> fiveMinuteHitRate;
     /** 15m hit rate */
     public final Gauge<Double> fifteenMinuteHitRate;
-
-    protected final MetricNameFactory factory;
+    /** Total size of cache, in bytes */
+    public final Gauge<Long> size;
+    /** Total number of cache entries */
+    public final Gauge<Integer> entries;
 
     /**
      * Create metrics for given cache.
@@ -60,77 +56,61 @@ public class CacheMetrics
      * @param type Type of Cache to identify metrics.
      * @param cache Cache to measure metrics
      */
-    public CacheMetrics(String type, CacheSize cache)
+    public CacheMetrics(String type, final ICache cache)
     {
-        factory = new DefaultNameFactory("Cache", type);
+        MetricNameFactory factory = new DefaultNameFactory("Cache", type);
 
-        capacity = Metrics.register(factory.createMetricName("Capacity"), cache::capacity);
-        size = Metrics.register(factory.createMetricName("Size"), cache::weightedSize);
-        entries = Metrics.register(factory.createMetricName("Entries"), cache::size);
-
-        hits = Metrics.meter(factory.createMetricName("Hits"));
-        misses = Metrics.meter(factory.createMetricName("Misses"));
-        requests = Metrics.register(factory.createMetricName("Requests"), sumMeters(hits, misses));
-
-        hitRate =
-            Metrics.register(factory.createMetricName("HitRate"),
-                             ratioGauge(hits::getCount, requests::getCount));
-        oneMinuteHitRate =
-            Metrics.register(factory.createMetricName("OneMinuteHitRate"),
-                             ratioGauge(hits::getOneMinuteRate, requests::getOneMinuteRate));
-        fiveMinuteHitRate =
-            Metrics.register(factory.createMetricName("FiveMinuteHitRate"),
-                             ratioGauge(hits::getFiveMinuteRate, requests::getFiveMinuteRate));
-        fifteenMinuteHitRate =
-            Metrics.register(factory.createMetricName("FifteenMinuteHitRate"),
-                             ratioGauge(hits::getFifteenMinuteRate, requests::getFifteenMinuteRate));
-    }
-
-    private static Metered sumMeters(Metered first, Metered second)
-    {
-        return new Metered()
+        capacity = Metrics.register(factory.createMetricName("Capacity"), new Gauge<Long>()
         {
-            @Override
-            public long getCount()
+            public Long getValue()
             {
-                return first.getCount() + second.getCount();
+                return cache.capacity();
             }
-
-            @Override
-            public double getMeanRate()
-            {
-                return first.getMeanRate() + second.getMeanRate();
-            }
-
-            @Override
-            public double getOneMinuteRate()
-            {
-                return first.getOneMinuteRate() + second.getOneMinuteRate();
-            }
-
-            @Override
-            public double getFiveMinuteRate()
-            {
-                return first.getFiveMinuteRate() + second.getFiveMinuteRate();
-            }
-
-            @Override
-            public double getFifteenMinuteRate()
-            {
-                return first.getFifteenMinuteRate() + second.getFifteenMinuteRate();
-            }
-        };
-    }
-
-    private static RatioGauge ratioGauge(DoubleSupplier numeratorSupplier, DoubleSupplier denominatorSupplier)
-    {
-        return new RatioGauge()
+        });
+        hits = Metrics.meter(factory.createMetricName("Hits"));
+        requests = Metrics.meter(factory.createMetricName("Requests"));
+        hitRate = Metrics.register(factory.createMetricName("HitRate"), new RatioGauge()
         {
             @Override
             public Ratio getRatio()
             {
-                return Ratio.of(numeratorSupplier.getAsDouble(), denominatorSupplier.getAsDouble());
+                return Ratio.of(hits.getCount(), requests.getCount());
             }
-        };
+        });
+        oneMinuteHitRate = Metrics.register(factory.createMetricName("OneMinuteHitRate"), new RatioGauge()
+        {
+            protected Ratio getRatio()
+            {
+                return Ratio.of(hits.getOneMinuteRate(), requests.getOneMinuteRate());
+            }
+        });
+        fiveMinuteHitRate = Metrics.register(factory.createMetricName("FiveMinuteHitRate"), new RatioGauge()
+        {
+            protected Ratio getRatio()
+            {
+                return Ratio.of(hits.getFiveMinuteRate(), requests.getFiveMinuteRate());
+            }
+        });
+        fifteenMinuteHitRate = Metrics.register(factory.createMetricName("FifteenMinuteHitRate"), new RatioGauge()
+        {
+            protected Ratio getRatio()
+            {
+                return Ratio.of(hits.getFifteenMinuteRate(), requests.getFifteenMinuteRate());
+            }
+        });
+        size = Metrics.register(factory.createMetricName("Size"), new Gauge<Long>()
+        {
+            public Long getValue()
+            {
+                return cache.weightedSize();
+            }
+        });
+        entries = Metrics.register(factory.createMetricName("Entries"), new Gauge<Integer>()
+        {
+            public Integer getValue()
+            {
+                return cache.size();
+            }
+        });
     }
 }

@@ -29,7 +29,6 @@ import org.junit.Test;
 import org.junit.Assume;
 
 import org.apache.cassandra.Util;
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.RandomPartitioner;
@@ -47,18 +46,7 @@ import static org.junit.Assert.*;
 public class IndexSummaryTest
 {
     private final static Random random = new Random();
-
-    @BeforeClass
-    public static void initDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-
-        final long seed = System.nanoTime();
-        System.out.println("Using seed: " + seed);
-        random.setSeed(seed);
-    }
-
-    IPartitioner partitioner = Util.testPartitioner();
+    private final static IPartitioner partitioner = Util.testPartitioner();
 
     @BeforeClass
     public static void setup()
@@ -218,13 +206,13 @@ public class IndexSummaryTest
     {
         Pair<List<DecoratedKey>, IndexSummary> random = generateRandomIndex(100, 1);
         DataOutputBuffer dos = new DataOutputBuffer();
-        IndexSummary.serializer.serialize(random.right, dos);
+        IndexSummary.serializer.serialize(random.right, dos, false);
         // write junk
         dos.writeUTF("JUNK");
         dos.writeUTF("JUNK");
         FileUtils.closeQuietly(dos);
         DataInputStream dis = new DataInputStream(new ByteArrayInputStream(dos.toByteArray()));
-        IndexSummary is = IndexSummary.serializer.deserialize(dis, partitioner, 1, 1);
+        IndexSummary is = IndexSummary.serializer.deserialize(dis, partitioner, false, 1, 1);
         for (int i = 0; i < 100; i++)
             assertEquals(i, is.binarySearch(random.left.get(i)));
         // read the junk
@@ -248,9 +236,9 @@ public class IndexSummaryTest
             assertArrayEquals(new byte[0], summary.getKey(0));
 
             DataOutputBuffer dos = new DataOutputBuffer();
-            IndexSummary.serializer.serialize(summary, dos);
+            IndexSummary.serializer.serialize(summary, dos, false);
             DataInputStream dis = new DataInputStream(new ByteArrayInputStream(dos.toByteArray()));
-            IndexSummary loaded = IndexSummary.serializer.deserialize(dis, p, 1, 1);
+            IndexSummary loaded = IndexSummary.serializer.deserialize(dis, p, false, 1, 1);
 
             assertEquals(1, loaded.size());
             assertEquals(summary.getPosition(0), loaded.getPosition(0));

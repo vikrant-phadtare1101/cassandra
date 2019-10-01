@@ -219,7 +219,8 @@ class TreeCursor<K> extends NodeCursor<K>
             return;
         }
 
-        NodeCursor<K> cur = root();
+        NodeCursor<K> cur = this.cur;
+        cur = root();
         assert cur.nodeOffset == 0;
         while (true)
         {
