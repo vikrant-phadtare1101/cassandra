@@ -20,10 +20,8 @@ package org.apache.cassandra.db.compaction;
 import java.util.*;
 import java.util.function.LongPredicate;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
 
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
@@ -34,6 +32,7 @@ import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.index.transactions.CompactionTransaction;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.metrics.CompactionMetrics;
 import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
 
 /**
@@ -59,7 +58,6 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     private final OperationType type;
     private final CompactionController controller;
     private final List<ISSTableScanner> scanners;
-    private final ImmutableSet<SSTableReader> sstables;
     private final int nowInSec;
     private final UUID compactionId;
 
@@ -75,15 +73,20 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     private final long[] mergeCounters;
 
     private final UnfilteredPartitionIterator compacted;
-    private final ActiveCompactionsTracker activeCompactions;
+    private final CompactionMetrics metrics;
 
     public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId)
     {
-        this(type, scanners, controller, nowInSec, compactionId, ActiveCompactionsTracker.NOOP);
+        this(type, scanners, controller, nowInSec, compactionId, null, true);
+    }
+
+    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId, CompactionMetrics metrics)
+    {
+        this(type, scanners, controller, nowInSec, compactionId, metrics, true);
     }
 
     @SuppressWarnings("resource") // We make sure to close mergedIterator in close() and CompactionIterator is itself an AutoCloseable
-    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId, ActiveCompactionsTracker activeCompactions)
+    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId, CompactionMetrics metrics, boolean abortable)
     {
         this.controller = controller;
         this.type = type;
@@ -97,16 +100,20 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
             bytes += scanner.getLengthInBytes();
         this.totalBytes = bytes;
         this.mergeCounters = new long[scanners.size()];
-        this.activeCompactions = activeCompactions == null ? ActiveCompactionsTracker.NOOP : activeCompactions;
-        this.activeCompactions.beginCompaction(this); // note that CompactionTask also calls this, but CT only creates CompactionIterator with a NOOP ActiveCompactions
+        this.metrics = metrics;
+
+        if (metrics != null)
+            metrics.beginCompaction(this);
 
         UnfilteredPartitionIterator merged = scanners.isEmpty()
                                            ? EmptyIterators.unfilteredPartition(controller.cfs.metadata())
                                            : UnfilteredPartitionIterators.merge(scanners, listener());
         merged = Transformation.apply(merged, new GarbageSkipper(controller));
         merged = Transformation.apply(merged, new Purger(controller, nowInSec));
-        compacted = Transformation.apply(merged, new AbortableUnfilteredPartitionTransformation(this));
-        sstables = scanners.stream().map(ISSTableScanner::getBackingSSTables).flatMap(Collection::stream).collect(ImmutableSet.toImmutableSet());
+        if (abortable)
+            compacted = Transformation.apply(merged, new AbortableUnfilteredPartitionTransformation(this));
+        else
+            compacted = merged;
     }
 
     public TableMetadata metadata()
@@ -120,8 +127,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
                                   type,
                                   bytesRead,
                                   totalBytes,
-                                  compactionId,
-                                  sstables);
+                                  compactionId);
     }
 
     private void updateCounterFor(int rows)
@@ -248,7 +254,8 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         }
         finally
         {
-            activeCompactions.finishCompaction(this);
+            if (metrics != null)
+                metrics.finishCompaction(this);
         }
     }
 
