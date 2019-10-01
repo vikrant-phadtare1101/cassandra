@@ -18,13 +18,12 @@
 
 package org.apache.cassandra.service;
 
+import java.net.InetAddress;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.exceptions.WriteFailureException;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 
 public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
 {
@@ -34,9 +33,9 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
     private static final AtomicIntegerFieldUpdater<BatchlogResponseHandler> requiredBeforeFinishUpdater
             = AtomicIntegerFieldUpdater.newUpdater(BatchlogResponseHandler.class, "requiredBeforeFinish");
 
-    public BatchlogResponseHandler(AbstractWriteResponseHandler<T> wrapped, int requiredBeforeFinish, BatchlogCleanup cleanup, long queryStartNanoTime)
+    public BatchlogResponseHandler(AbstractWriteResponseHandler<T> wrapped, int requiredBeforeFinish, BatchlogCleanup cleanup)
     {
-        super(wrapped.replicaPlan, wrapped.callback, wrapped.writeType, queryStartNanoTime);
+        super(wrapped.keyspace, wrapped.naturalEndpoints, wrapped.pendingEndpoints, wrapped.consistencyLevel, wrapped.callback, wrapped.writeType);
         this.wrapped = wrapped;
         this.requiredBeforeFinish = requiredBeforeFinish;
         this.cleanup = cleanup;
@@ -47,21 +46,26 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         return wrapped.ackCount();
     }
 
-    public void onResponse(Message<T> msg)
+    public void response(MessageIn<T> msg)
     {
-        wrapped.onResponse(msg);
+        wrapped.response(msg);
         if (requiredBeforeFinishUpdater.decrementAndGet(this) == 0)
             cleanup.ackMutation();
     }
 
-    public void onFailure(InetAddressAndPort from, RequestFailureReason failureReason)
+    public boolean isLatencyForSnitch()
     {
-        wrapped.onFailure(from, failureReason);
+        return wrapped.isLatencyForSnitch();
     }
 
-    public boolean invokeOnFailure()
+    public void onFailure(InetAddress from)
     {
-        return wrapped.invokeOnFailure();
+        wrapped.onFailure(from);
+    }
+
+    public void assureSufficientLiveNodes()
+    {
+        wrapped.assureSufficientLiveNodes();
     }
 
     public void get() throws WriteTimeoutException, WriteFailureException
@@ -69,17 +73,17 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         wrapped.get();
     }
 
-    protected int blockFor()
+    protected int totalBlockFor()
     {
-        return wrapped.blockFor();
+        return wrapped.totalBlockFor();
     }
 
-    protected int candidateReplicaCount()
+    protected int totalEndpoints()
     {
-        return wrapped.candidateReplicaCount();
+        return wrapped.totalEndpoints();
     }
 
-    protected boolean waitingFor(InetAddressAndPort from)
+    protected boolean waitingFor(InetAddress from)
     {
         return wrapped.waitingFor(from);
     }

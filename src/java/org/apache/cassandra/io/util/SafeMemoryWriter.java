@@ -43,13 +43,9 @@ public class SafeMemoryWriter extends DataOutputBuffer
     }
 
     @Override
-    protected void expandToFit(long count)
+    protected void reallocate(long count)
     {
-        resizeTo(calculateNewSize(count));
-    }
-
-    private void resizeTo(long newCapacity)
-    {
+        long newCapacity = calculateNewSize(count);
         if (newCapacity != capacity())
         {
             long position = length();
@@ -67,9 +63,9 @@ public class SafeMemoryWriter extends DataOutputBuffer
         }
     }
 
-    public void trim()
+    public void setCapacity(long newCapacity)
     {
-        resizeTo(length());
+        reallocate(newCapacity);
     }
 
     public void close()
@@ -102,9 +98,7 @@ public class SafeMemoryWriter extends DataOutputBuffer
     @Override
     public long validateReallocation(long newSize)
     {
-        // Make sure size does not grow by more than the max buffer size, otherwise we'll hit an exception
-        // when setting up the buffer position.
-        return Math.min(newSize, length() + Integer.MAX_VALUE);
+        return newSize;
     }
 
     private static long tailOffset(Memory memory)

@@ -45,8 +45,7 @@ public final class CompactionParams
         CLASS,
         ENABLED,
         MIN_THRESHOLD,
-        MAX_THRESHOLD,
-        PROVIDE_OVERLAPPING_TOMBSTONES;
+        MAX_THRESHOLD;
 
         @Override
         public String toString()
@@ -55,38 +54,27 @@ public final class CompactionParams
         }
     }
 
-    public enum TombstoneOption
-    {
-        NONE,
-        ROW,
-        CELL;
-    }
-
     public static final int DEFAULT_MIN_THRESHOLD = 4;
     public static final int DEFAULT_MAX_THRESHOLD = 32;
 
     public static final boolean DEFAULT_ENABLED = true;
-    public static final TombstoneOption DEFAULT_PROVIDE_OVERLAPPING_TOMBSTONES =
-            TombstoneOption.valueOf(System.getProperty("default.provide.overlapping.tombstones", TombstoneOption.NONE.toString()).toUpperCase());
 
     public static final Map<String, String> DEFAULT_THRESHOLDS =
         ImmutableMap.of(Option.MIN_THRESHOLD.toString(), Integer.toString(DEFAULT_MIN_THRESHOLD),
                         Option.MAX_THRESHOLD.toString(), Integer.toString(DEFAULT_MAX_THRESHOLD));
 
     public static final CompactionParams DEFAULT =
-        new CompactionParams(SizeTieredCompactionStrategy.class, DEFAULT_THRESHOLDS, DEFAULT_ENABLED, DEFAULT_PROVIDE_OVERLAPPING_TOMBSTONES);
+        new CompactionParams(SizeTieredCompactionStrategy.class, DEFAULT_THRESHOLDS, DEFAULT_ENABLED);
 
     private final Class<? extends AbstractCompactionStrategy> klass;
     private final ImmutableMap<String, String> options;
     private final boolean isEnabled;
-    private final TombstoneOption tombstoneOption;
 
-    private CompactionParams(Class<? extends AbstractCompactionStrategy> klass, Map<String, String> options, boolean isEnabled, TombstoneOption tombstoneOption)
+    private CompactionParams(Class<? extends AbstractCompactionStrategy> klass, Map<String, String> options, boolean isEnabled)
     {
         this.klass = klass;
         this.options = ImmutableMap.copyOf(options);
         this.isEnabled = isEnabled;
-        this.tombstoneOption = tombstoneOption;
     }
 
     public static CompactionParams create(Class<? extends AbstractCompactionStrategy> klass, Map<String, String> options)
@@ -94,8 +82,6 @@ public final class CompactionParams
         boolean isEnabled = options.containsKey(Option.ENABLED.toString())
                           ? Boolean.parseBoolean(options.get(Option.ENABLED.toString()))
                           : DEFAULT_ENABLED;
-        TombstoneOption tombstoneOption = TombstoneOption.valueOf(options.getOrDefault(Option.PROVIDE_OVERLAPPING_TOMBSTONES.toString(),
-                                                                                       DEFAULT_PROVIDE_OVERLAPPING_TOMBSTONES.toString()).toUpperCase());
 
         Map<String, String> allOptions = new HashMap<>(options);
         if (supportsThresholdParams(klass))
@@ -104,10 +90,10 @@ public final class CompactionParams
             allOptions.putIfAbsent(Option.MAX_THRESHOLD.toString(), Integer.toString(DEFAULT_MAX_THRESHOLD));
         }
 
-        return new CompactionParams(klass, allOptions, isEnabled, tombstoneOption);
+        return new CompactionParams(klass, allOptions, isEnabled);
     }
 
-    public static CompactionParams stcs(Map<String, String> options)
+    public static CompactionParams scts(Map<String, String> options)
     {
         return create(SizeTieredCompactionStrategy.class, options);
     }
@@ -131,11 +117,6 @@ public final class CompactionParams
         return threshold == null
              ? DEFAULT_MAX_THRESHOLD
              : Integer.parseInt(threshold);
-    }
-
-    public TombstoneOption tombstoneOption()
-    {
-        return tombstoneOption;
     }
 
     public void validate()
@@ -249,7 +230,7 @@ public final class CompactionParams
         return create(classFromName(className), options);
     }
 
-    public static Class<? extends AbstractCompactionStrategy> classFromName(String name)
+    private static Class<? extends AbstractCompactionStrategy> classFromName(String name)
     {
         String className = name.contains(".")
                          ? name

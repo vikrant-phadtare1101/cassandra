@@ -17,50 +17,40 @@
  */
 package org.apache.cassandra.net;
 
+import java.util.concurrent.TimeUnit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.tracing.Tracing;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
-
-class ResponseVerbHandler implements IVerbHandler
+public class ResponseVerbHandler implements IVerbHandler
 {
-    public static final ResponseVerbHandler instance = new ResponseVerbHandler();
+    private static final Logger logger = LoggerFactory.getLogger( ResponseVerbHandler.class );
 
-    private static final Logger logger = LoggerFactory.getLogger(ResponseVerbHandler.class);
-
-    @Override
-    public void doVerb(Message message)
+    public void doVerb(MessageIn message, int id)
     {
-        RequestCallbacks.CallbackInfo callbackInfo = MessagingService.instance().callbacks.remove(message.id(), message.from());
+        long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - MessagingService.instance().getRegisteredCallbackAge(id));
+        CallbackInfo callbackInfo = MessagingService.instance().removeRegisteredCallback(id);
         if (callbackInfo == null)
         {
             String msg = "Callback already removed for {} (from {})";
-            logger.trace(msg, message.id(), message.from());
-            Tracing.trace(msg, message.id(), message.from());
+            logger.trace(msg, id, message.from);
+            Tracing.trace(msg, id, message.from);
             return;
         }
 
-        long latencyNanos = approxTime.now() - callbackInfo.createdAtNanos;
-        Tracing.trace("Processing response from {}", message.from());
-
-        RequestCallback cb = callbackInfo.callback;
+        Tracing.trace("Processing response from {}", message.from);
+        IAsyncCallback cb = callbackInfo.callback;
         if (message.isFailureResponse())
         {
-            cb.onFailure(message.from(), (RequestFailureReason) message.payload);
+            ((IAsyncCallbackWithFailure) cb).onFailure(message.from);
         }
         else
         {
-            MessagingService.instance().latencySubscribers.maybeAdd(cb, message.from(), latencyNanos, NANOSECONDS);
-            cb.onResponse(message);
-        }
-
-        if (callbackInfo.callback.supportsBackPressure())
-        {
-            MessagingService.instance().updateBackPressureOnReceive(message.from(), cb, false);
+            //TODO: Should we add latency only in success cases?
+            MessagingService.instance().maybeAddLatency(cb, message.from, latency);
+            cb.response(message);
         }
     }
 }

@@ -35,12 +35,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.ByteStreams;
-import com.google.common.reflect.TypeToken;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,10 +45,7 @@ import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.security.SecurityThreadGroup;
-import org.apache.cassandra.security.ThreadAwareSecurityManager;
 import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.internal.compiler.*;
 import org.eclipse.jdt.internal.compiler.Compiler;
@@ -64,13 +57,11 @@ import org.eclipse.jdt.internal.compiler.env.NameEnvironmentAnswer;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblemFactory;
 
-public final class JavaBasedUDFunction extends UDFunction
+final class JavaBasedUDFunction extends UDFunction
 {
     private static final String BASE_PACKAGE = "org.apache.cassandra.cql3.udf.gen";
 
-    private static final Pattern JAVA_LANG_PREFIX = Pattern.compile("\\bjava\\.lang\\.");
-
-    private static final Logger logger = LoggerFactory.getLogger(JavaBasedUDFunction.class);
+    static final Logger logger = LoggerFactory.getLogger(JavaBasedUDFunction.class);
 
     private static final AtomicInteger classSequence = new AtomicInteger();
 
@@ -193,10 +184,10 @@ public final class JavaBasedUDFunction extends UDFunction
         super(name, argNames, argTypes, UDHelper.driverTypes(argTypes),
               returnType, UDHelper.driverType(returnType), calledOnNullInput, "java", body);
 
-        // javaParamTypes is just the Java representation for argTypes resp. argDataTypes
-        TypeToken<?>[] javaParamTypes = UDHelper.typeTokens(argCodecs, calledOnNullInput);
-        // javaReturnType is just the Java representation for returnType resp. returnTypeCodec
-        TypeToken<?> javaReturnType = returnCodec.getJavaType();
+        // javaParamTypes is just the Java representation for argTypes resp. argCodecs
+        Class<?>[] javaParamTypes = UDHelper.javaTypes(argCodecs, calledOnNullInput);
+        // javaReturnType is just the Java representation for returnType resp. returnCodec
+        Class<?> javaReturnType = UDHelper.asJavaClass(returnCodec);
 
         // put each UDF in a separate package to prevent cross-UDF code access
         String pkgName = BASE_PACKAGE + '.' + generateClassName(name, 'p');
@@ -226,10 +217,7 @@ public final class JavaBasedUDFunction extends UDFunction
                         s = body;
                         break;
                     case "arguments":
-                        s = generateArguments(javaParamTypes, argNames, false);
-                        break;
-                    case "arguments_aggregate":
-                        s = generateArguments(javaParamTypes, argNames, true);
+                        s = generateArguments(javaParamTypes, argNames);
                         break;
                     case "argument_list":
                         s = generateArgumentList(javaParamTypes, argNames);
@@ -256,11 +244,11 @@ public final class JavaBasedUDFunction extends UDFunction
         {
             EcjCompilationUnit compilationUnit = new EcjCompilationUnit(javaSource, targetClassName);
 
-            Compiler compiler = new Compiler(compilationUnit,
-                                             errorHandlingPolicy,
-                                             compilerOptions,
-                                             compilationUnit,
-                                             problemFactory);
+            org.eclipse.jdt.internal.compiler.Compiler compiler = new Compiler(compilationUnit,
+                                                                               errorHandlingPolicy,
+                                                                               compilerOptions,
+                                                                               compilationUnit,
+                                                                               problemFactory);
             compiler.compile(new ICompilationUnit[]{ compilationUnit });
 
             if (compilationUnit.problemList != null && !compilationUnit.problemList.isEmpty())
@@ -301,14 +289,17 @@ public final class JavaBasedUDFunction extends UDFunction
             }
 
             // Verify the UDF bytecode against use of probably dangerous code
-            Set<String> errors = udfByteCodeVerifier.verify(targetClassName, targetClassLoader.classData(targetClassName));
+            Set<String> errors = udfByteCodeVerifier.verify(targetClassLoader.classData(targetClassName));
             String validDeclare = "not allowed method declared: " + executeInternalName + '(';
+            String validCall = "call to " + targetClassName.replace('.', '/') + '.' + executeInternalName + "()";
             for (Iterator<String> i = errors.iterator(); i.hasNext();)
             {
                 String error = i.next();
                 // we generate a random name of the private, internal execute method, which is detected by the byte-code verifier
-                if (error.startsWith(validDeclare))
+                if (error.startsWith(validDeclare) || error.equals(validCall))
+                {
                     i.remove();
+                }
             }
             if (!errors.isEmpty())
                 throw new InvalidRequestException("Java UDF validation failed: " + errors);
@@ -333,12 +324,12 @@ public final class JavaBasedUDFunction extends UDFunction
                     }
                 }
 
-                if (nonSyntheticMethodCount != 3 || cls.getDeclaredConstructors().length != 1)
+                if (nonSyntheticMethodCount != 2 || cls.getDeclaredConstructors().length != 1)
                     throw new InvalidRequestException("Check your source to not define additional Java methods or constructors");
                 MethodType methodType = MethodType.methodType(void.class)
-                                                  .appendParameterTypes(TypeCodec.class, TypeCodec[].class, UDFContext.class);
+                                                  .appendParameterTypes(TypeCodec.class, TypeCodec[].class);
                 MethodHandle ctor = MethodHandles.lookup().findConstructor(cls, methodType);
-                this.javaUDF = (JavaUDF) ctor.invokeWithArguments(returnCodec, argCodecs, udfContext);
+                this.javaUDF = (JavaUDF) ctor.invokeWithArguments(returnCodec, argCodecs);
             }
             finally
             {
@@ -350,13 +341,12 @@ public final class JavaBasedUDFunction extends UDFunction
             // in case of an ITE, use the cause
             throw new InvalidRequestException(String.format("Could not compile function '%s' from Java source: %s", name, e.getCause()));
         }
-        catch (InvalidRequestException | VirtualMachineError e)
+        catch (VirtualMachineError e)
         {
             throw e;
         }
         catch (Throwable e)
         {
-            logger.error(String.format("Could not compile function '%s' from Java source:%n%s", name, javaSource), e);
             throw new InvalidRequestException(String.format("Could not compile function '%s' from Java source: %s", name, e));
         }
     }
@@ -366,15 +356,11 @@ public final class JavaBasedUDFunction extends UDFunction
         return executor;
     }
 
-    protected ByteBuffer executeUserDefined(ProtocolVersion protocolVersion, List<ByteBuffer> params)
+    protected ByteBuffer executeUserDefined(int protocolVersion, List<ByteBuffer> params)
     {
         return javaUDF.executeImpl(protocolVersion, params);
     }
 
-    protected Object executeAggregateUserDefined(ProtocolVersion protocolVersion, Object firstParam, List<ByteBuffer> params)
-    {
-        return javaUDF.executeAggregateImpl(protocolVersion, firstParam, params);
-    }
 
     private static int countNewlines(StringBuilder javaSource)
     {
@@ -406,14 +392,13 @@ public final class JavaBasedUDFunction extends UDFunction
         return sb.toString();
     }
 
-    @VisibleForTesting
-    public static String javaSourceName(TypeToken<?> type)
+    private static String javaSourceName(Class<?> type)
     {
-        String n = type.toString();
-        return JAVA_LANG_PREFIX.matcher(n).replaceAll("");
+        String n = type.getName();
+        return n.startsWith("java.lang.") ? type.getSimpleName() : n;
     }
 
-    private static String generateArgumentList(TypeToken<?>[] paramTypes, List<ColumnIdentifier> argNames)
+    private static String generateArgumentList(Class<?>[] paramTypes, List<ColumnIdentifier> argNames)
     {
         // initial builder size can just be a guess (prevent temp object allocations)
         StringBuilder code = new StringBuilder(32 * paramTypes.length);
@@ -428,55 +413,29 @@ public final class JavaBasedUDFunction extends UDFunction
         return code.toString();
     }
 
-    /**
-     * Generate Java source code snippet for the arguments part to call the UDF implementation function -
-     * i.e. the {@code private #return_type# #execute_internal_name#(#argument_list#)} function
-     * (see {@code JavaSourceUDF.txt} template file for details).
-     * <p>
-     * This method generates the arguments code snippet for both {@code executeImpl} and
-     * {@code executeAggregateImpl}. General signature for both is the {@code protocolVersion} and
-     * then all UDF arguments. For aggregation UDF calls the first argument is always unserialized as
-     * that is the state variable.
-     * </p>
-     * <p>
-     * An example output for {@code executeImpl}:
-     * {@code (double) super.compose_double(protocolVersion, 0, params.get(0)), (double) super.compose_double(protocolVersion, 1, params.get(1))}
-     * </p>
-     * <p>
-     * Similar output for {@code executeAggregateImpl}:
-     * {@code firstParam, (double) super.compose_double(protocolVersion, 1, params.get(1))}
-     * </p>
-     */
-    private static String generateArguments(TypeToken<?>[] paramTypes, List<ColumnIdentifier> argNames, boolean forAggregate)
+    private static String generateArguments(Class<?>[] paramTypes, List<ColumnIdentifier> argNames)
     {
         StringBuilder code = new StringBuilder(64 * paramTypes.length);
         for (int i = 0; i < paramTypes.length; i++)
         {
             if (i > 0)
-                // add separator, if not the first argument
                 code.append(",\n");
 
-            // add comment only if trace is enabled
             if (logger.isTraceEnabled())
                 code.append("            /* parameter '").append(argNames.get(i)).append("' */\n");
 
-            // cast to Java type
-            code.append("            (").append(javaSourceName(paramTypes[i])).append(") ");
-
-            if (forAggregate && i == 0)
-                // special case for aggregations where the state variable (1st arg to state + final function and
-                // return value from state function) is not re-serialized
-                code.append("firstParam");
-            else
+            code
+                // cast to Java type
+                .append("            (").append(javaSourceName(paramTypes[i])).append(") ")
                 // generate object representation of input parameter (call UDFunction.compose)
-                code.append(composeMethod(paramTypes[i])).append("(protocolVersion, ").append(i).append(", params.get(").append(forAggregate ? i - 1 : i).append("))");
+                .append(composeMethod(paramTypes[i])).append("(protocolVersion, ").append(i).append(", params.get(").append(i).append("))");
         }
         return code.toString();
     }
 
-    private static String composeMethod(TypeToken<?> type)
+    private static String composeMethod(Class<?> type)
     {
-        return (type.isPrimitive()) ? ("super.compose_" + type.getRawType().getName()) : "super.compose";
+        return (type.isPrimitive()) ? ("super.compose_" + type.getName()) : "super.compose";
     }
 
     // Java source UDFs are a very simple compilation task, which allows us to let one class implement
@@ -582,7 +541,6 @@ public final class JavaBasedUDFunction extends UDFunction
             return findType(result.toString());
         }
 
-        @SuppressWarnings("resource")
         private NameEnvironmentAnswer findType(String className)
         {
             if (className.equals(this.className))

@@ -17,8 +17,7 @@
  */
 package org.apache.cassandra.io.compress;
 
-import io.netty.util.concurrent.FastThreadLocal;
-import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.utils.FBUtilities;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -33,22 +32,8 @@ public class DeflateCompressor implements ICompressor
 {
     public static final DeflateCompressor instance = new DeflateCompressor();
 
-    private static final FastThreadLocal<byte[]> threadLocalScratchBuffer = new FastThreadLocal<byte[]>()
-    {
-        @Override
-        protected byte[] initialValue()
-        {
-            return new byte[CompressionParams.DEFAULT_CHUNK_LENGTH];
-        }
-    };
-
-    public static byte[] getThreadLocalScratchBuffer()
-    {
-        return threadLocalScratchBuffer.get();
-    }
-
-    private final FastThreadLocal<Deflater> deflater;
-    private final FastThreadLocal<Inflater> inflater;
+    private final ThreadLocal<Deflater> deflater;
+    private final ThreadLocal<Inflater> inflater;
 
     public static DeflateCompressor create(Map<String, String> compressionOptions)
     {
@@ -58,7 +43,7 @@ public class DeflateCompressor implements ICompressor
 
     private DeflateCompressor()
     {
-        deflater = new FastThreadLocal<Deflater>()
+        deflater = new ThreadLocal<Deflater>()
         {
             @Override
             protected Deflater initialValue()
@@ -66,7 +51,7 @@ public class DeflateCompressor implements ICompressor
                 return new Deflater();
             }
         };
-        inflater = new FastThreadLocal<Inflater>()
+        inflater = new ThreadLocal<Inflater>()
         {
             @Override
             protected Inflater initialValue()
@@ -119,7 +104,7 @@ public class DeflateCompressor implements ICompressor
         Deflater def = deflater.get();
         def.reset();
 
-        byte[] buffer = getThreadLocalScratchBuffer();
+        byte[] buffer = FBUtilities.getThreadLocalScratchBuffer();
         // Use half the buffer for input, half for output.
         int chunkLen = buffer.length / 2;
         while (input.remaining() > chunkLen)
@@ -164,7 +149,7 @@ public class DeflateCompressor implements ICompressor
             Inflater inf = inflater.get();
             inf.reset();
 
-            byte[] buffer = getThreadLocalScratchBuffer();
+            byte[] buffer = FBUtilities.getThreadLocalScratchBuffer();
             // Use half the buffer for input, half for output.
             int chunkLen = buffer.length / 2;
             while (input.remaining() > chunkLen)

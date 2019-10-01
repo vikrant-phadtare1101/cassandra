@@ -17,17 +17,17 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
+import io.airlift.command.Command;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.management.openmbean.TabularData;
 
-import io.airlift.airline.Command;
+import javax.management.openmbean.TabularData;
 
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
-import org.apache.cassandra.tools.nodetool.formatter.TableBuilder;
 
 @Command(name = "listsnapshots", description = "Lists all the snapshots along with the size on disk and true size.")
 public class ListSnapshots extends NodeToolCmd
@@ -47,10 +47,10 @@ public class ListSnapshots extends NodeToolCmd
             }
 
             final long trueSnapshotsSize = probe.trueSnapshotsSize();
-            TableBuilder table = new TableBuilder();
+            final String format = "%-20s%-29s%-29s%-19s%-19s%n";
             // display column names only once
             final List<String> indexNames = snapshotDetails.entrySet().iterator().next().getValue().getTabularType().getIndexNames();
-            table.add(indexNames.toArray(new String[indexNames.size()]));
+            System.out.printf(format, (Object[]) indexNames.toArray(new String[indexNames.size()]));
 
             for (final Map.Entry<String, TabularData> snapshotDetail : snapshotDetails.entrySet())
             {
@@ -58,10 +58,9 @@ public class ListSnapshots extends NodeToolCmd
                 for (Object eachValue : values)
                 {
                     final List<?> value = (List<?>) eachValue;
-                    table.add(value.toArray(new String[value.size()]));
+                    System.out.printf(format, value.toArray(new Object[value.size()]));
                 }
             }
-            table.printTo(System.out);
 
             System.out.println("\nTotal TrueDiskSpaceUsed: " + FileUtils.stringifyFileSize(trueSnapshotsSize) + "\n");
         }

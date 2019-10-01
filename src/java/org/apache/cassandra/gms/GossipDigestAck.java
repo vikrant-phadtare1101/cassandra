@@ -18,6 +18,7 @@
 package org.apache.cassandra.gms;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,9 +27,7 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.locator.InetAddressAndPort;
-
-import static org.apache.cassandra.locator.InetAddressAndPort.Serializer.inetAddressAndPortSerializer;
+import org.apache.cassandra.net.CompactEndpointSerializationHelper;
 
 /**
  * This ack gets sent out as a result of the receipt of a GossipDigestSynMessage by an
@@ -39,9 +38,9 @@ public class GossipDigestAck
     public static final IVersionedSerializer<GossipDigestAck> serializer = new GossipDigestAckSerializer();
 
     final List<GossipDigest> gDigestList;
-    final Map<InetAddressAndPort, EndpointState> epStateMap;
+    final Map<InetAddress, EndpointState> epStateMap;
 
-    GossipDigestAck(List<GossipDigest> gDigestList, Map<InetAddressAndPort, EndpointState> epStateMap)
+    GossipDigestAck(List<GossipDigest> gDigestList, Map<InetAddress, EndpointState> epStateMap)
     {
         this.gDigestList = gDigestList;
         this.epStateMap = epStateMap;
@@ -52,7 +51,7 @@ public class GossipDigestAck
         return gDigestList;
     }
 
-    Map<InetAddressAndPort, EndpointState> getEndpointStateMap()
+    Map<InetAddress, EndpointState> getEndpointStateMap()
     {
         return epStateMap;
     }
@@ -64,10 +63,10 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
     {
         GossipDigestSerializationHelper.serialize(gDigestAckMessage.gDigestList, out, version);
         out.writeInt(gDigestAckMessage.epStateMap.size());
-        for (Map.Entry<InetAddressAndPort, EndpointState> entry : gDigestAckMessage.epStateMap.entrySet())
+        for (Map.Entry<InetAddress, EndpointState> entry : gDigestAckMessage.epStateMap.entrySet())
         {
-            InetAddressAndPort ep = entry.getKey();
-            inetAddressAndPortSerializer.serialize(ep, out, version);
+            InetAddress ep = entry.getKey();
+            CompactEndpointSerializationHelper.serialize(ep, out);
             EndpointState.serializer.serialize(entry.getValue(), out, version);
         }
     }
@@ -76,11 +75,11 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
     {
         List<GossipDigest> gDigestList = GossipDigestSerializationHelper.deserialize(in, version);
         int size = in.readInt();
-        Map<InetAddressAndPort, EndpointState> epStateMap = new HashMap<InetAddressAndPort, EndpointState>(size);
+        Map<InetAddress, EndpointState> epStateMap = new HashMap<InetAddress, EndpointState>(size);
 
         for (int i = 0; i < size; ++i)
         {
-            InetAddressAndPort ep = inetAddressAndPortSerializer.deserialize(in, version);
+            InetAddress ep = CompactEndpointSerializationHelper.deserialize(in);
             EndpointState epState = EndpointState.serializer.deserialize(in, version);
             epStateMap.put(ep, epState);
         }
@@ -91,8 +90,8 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
     {
         int size = GossipDigestSerializationHelper.serializedSize(ack.gDigestList, version);
         size += TypeSizes.sizeof(ack.epStateMap.size());
-        for (Map.Entry<InetAddressAndPort, EndpointState> entry : ack.epStateMap.entrySet())
-            size += inetAddressAndPortSerializer.serializedSize(entry.getKey(), version)
+        for (Map.Entry<InetAddress, EndpointState> entry : ack.epStateMap.entrySet())
+            size += CompactEndpointSerializationHelper.serializedSize(entry.getKey())
                     + EndpointState.serializer.serializedSize(entry.getValue(), version);
         return size;
     }

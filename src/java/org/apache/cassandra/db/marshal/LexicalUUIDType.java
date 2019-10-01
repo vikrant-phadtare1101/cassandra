@@ -86,7 +86,7 @@ public class LexicalUUIDType extends AbstractType<UUID>
     }
 
     @Override
-    public int valueLengthIfFixed()
+    protected int valueLengthIfFixed()
     {
         return 16;
     }

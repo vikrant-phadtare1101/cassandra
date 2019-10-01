@@ -58,11 +58,6 @@ public class TypeCast extends Term.Raw
             return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
     }
 
-    public AbstractType<?> getExactTypeIfKnown(String keyspace)
-    {
-        return type.prepare(keyspace).getType();
-    }
-
     public String getText()
     {
         return "(" + type + ")" + term;

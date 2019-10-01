@@ -20,11 +20,10 @@ package org.apache.cassandra.locator;
 
 
 import java.io.IOException;
-import java.util.Collections;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.EnumMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -38,28 +37,20 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.gms.ApplicationState;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.gms.VersionedValue;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.net.OutboundTcpConnectionPool;
 import org.apache.cassandra.service.StorageService;
 
-import static org.apache.cassandra.locator.Ec2Snitch.EC2_NAMING_LEGACY;
 import static org.junit.Assert.assertEquals;
 
 public class EC2SnitchTest
 {
     private static String az;
 
-    private final SnitchProperties legacySnitchProps = new SnitchProperties()
-    {
-        public String get(String propertyName, String defaultValue)
-        {
-            return propertyName.equals("ec2_naming_scheme") ? EC2_NAMING_LEGACY : super.get(propertyName, defaultValue);
-        }
-    };
-
     @BeforeClass
     public static void setup() throws Exception
     {
-        System.setProperty(Gossiper.Props.DISABLE_THREAD_VALIDATION, "true");
-        DatabaseDescriptor.daemonInitialization();
+        DatabaseDescriptor.setDaemonInitialized();
         SchemaLoader.mkdirs();
         SchemaLoader.cleanup();
         Keyspace.setInitialized();
@@ -73,11 +64,6 @@ public class EC2SnitchTest
             super();
         }
 
-        public TestEC2Snitch(SnitchProperties props) throws IOException, ConfigurationException
-        {
-            super(props);
-        }
-
         @Override
         String awsApiCall(String url) throws IOException, ConfigurationException
         {
@@ -86,12 +72,12 @@ public class EC2SnitchTest
     }
 
     @Test
-    public void testLegacyRac() throws IOException, ConfigurationException
+    public void testRac() throws IOException, ConfigurationException
     {
         az = "us-east-1d";
-        Ec2Snitch snitch = new TestEC2Snitch(legacySnitchProps);
-        InetAddressAndPort local = InetAddressAndPort.getByName("127.0.0.1");
-        InetAddressAndPort nonlocal = InetAddressAndPort.getByName("127.0.0.7");
+        Ec2Snitch snitch = new TestEC2Snitch();
+        InetAddress local = InetAddress.getByName("127.0.0.1");
+        InetAddress nonlocal = InetAddress.getByName("127.0.0.7");
 
         Gossiper.instance.addSavedEndpoint(nonlocal);
         Map<ApplicationState, VersionedValue> stateMap = new EnumMap<>(ApplicationState.class);
@@ -105,104 +91,31 @@ public class EC2SnitchTest
         assertEquals("us-east", snitch.getDatacenter(local));
         assertEquals("1d", snitch.getRack(local));
     }
-
+    
     @Test
-    public void testLegacyNewRegions() throws IOException, ConfigurationException
+    public void testNewRegions() throws IOException, ConfigurationException
     {
         az = "us-east-2d";
-        Ec2Snitch snitch = new TestEC2Snitch(legacySnitchProps);
-        InetAddressAndPort local = InetAddressAndPort.getByName("127.0.0.1");
+        Ec2Snitch snitch = new TestEC2Snitch();
+        InetAddress local = InetAddress.getByName("127.0.0.1");
         assertEquals("us-east-2", snitch.getDatacenter(local));
         assertEquals("2d", snitch.getRack(local));
     }
 
     @Test
-    public void testFullNamingScheme() throws IOException, ConfigurationException
+    public void testEc2MRSnitch() throws UnknownHostException
     {
-        InetAddressAndPort local = InetAddressAndPort.getByName("127.0.0.1");
-        az = "us-east-2d";
-        Ec2Snitch snitch = new TestEC2Snitch();
+        InetAddress me = InetAddress.getByName("127.0.0.2");
+        InetAddress com_ip = InetAddress.getByName("127.0.0.3");
 
-        assertEquals("us-east-2", snitch.getDatacenter(local));
-        assertEquals("us-east-2d", snitch.getRack(local));
+        OutboundTcpConnectionPool pool = MessagingService.instance().getConnectionPool(me);
+        Assert.assertEquals(me, pool.endPoint());
+        pool.reset(com_ip);
+        Assert.assertEquals(com_ip, pool.endPoint());
 
-        az = "us-west-1a";
-        snitch = new TestEC2Snitch();
-
-        assertEquals("us-west-1", snitch.getDatacenter(local));
-        assertEquals("us-west-1a", snitch.getRack(local));
-    }
-
-    @Test
-    public void validateDatacenter_RequiresLegacy_CorrectAmazonName()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east-1");
-        Assert.assertFalse(Ec2Snitch.validate(datacenters, Collections.emptySet(), true));
-    }
-
-    @Test
-    public void validateDatacenter_RequiresLegacy_LegacyName()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east");
-        Assert.assertTrue(Ec2Snitch.validate(datacenters, Collections.emptySet(), true));
-    }
-
-    @Test
-    public void validate_RequiresLegacy_HappyPath()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east");
-        Set<String> racks = new HashSet<>();
-        racks.add("1a");
-        Assert.assertTrue(Ec2Snitch.validate(datacenters, racks, true));
-    }
-
-    @Test
-    public void validate_RequiresLegacy_HappyPathWithDCSuffix()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east_CUSTOM_SUFFIX");
-        Set<String> racks = new HashSet<>();
-        racks.add("1a");
-        Assert.assertTrue(Ec2Snitch.validate(datacenters, racks, true));
-    }
-
-    @Test
-    public void validateRack_RequiresAmazonName_CorrectAmazonName()
-    {
-        Set<String> racks = new HashSet<>();
-        racks.add("us-east-1a");
-        Assert.assertTrue(Ec2Snitch.validate(Collections.emptySet(), racks, false));
-    }
-
-    @Test
-    public void validateRack_RequiresAmazonName_LegacyName()
-    {
-        Set<String> racks = new HashSet<>();
-        racks.add("1a");
-        Assert.assertFalse(Ec2Snitch.validate(Collections.emptySet(), racks, false));
-    }
-
-    @Test
-    public void validate_RequiresAmazonName_HappyPath()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east-1");
-        Set<String> racks = new HashSet<>();
-        racks.add("us-east-1a");
-        Assert.assertTrue(Ec2Snitch.validate(datacenters, racks, false));
-    }
-
-    @Test
-    public void validate_RequiresAmazonName_HappyPathWithDCSuffix()
-    {
-        Set<String> datacenters = new HashSet<>();
-        datacenters.add("us-east-1_CUSTOM_SUFFIX");
-        Set<String> racks = new HashSet<>();
-        racks.add("us-east-1a");
-        Assert.assertTrue(Ec2Snitch.validate(datacenters, racks, false));
+        MessagingService.instance().destroyConnectionPool(me);
+        pool = MessagingService.instance().getConnectionPool(me);
+        Assert.assertEquals(com_ip, pool.endPoint());
     }
 
     @AfterClass

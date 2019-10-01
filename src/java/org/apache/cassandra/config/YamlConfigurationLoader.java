@@ -20,11 +20,10 @@ package org.apache.cassandra.config;
 import java.beans.IntrospectionException;
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
+import java.io.IOException;
 import java.net.URL;
 import java.util.HashSet;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,9 +32,6 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
-
-import org.apache.commons.lang3.SystemUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,13 +87,11 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         return url;
     }
 
-    private static URL storageConfigURL;
+    private static final URL storageConfigURL = getStorageConfigURL();
 
     @Override
     public Config loadConfig() throws ConfigurationException
     {
-        if (storageConfigURL == null)
-            storageConfigURL = getStorageConfigURL();
         return loadConfig(storageConfigURL);
     }
 
@@ -118,17 +112,16 @@ public class YamlConfigurationLoader implements ConfigurationLoader
             }
 
             Constructor constructor = new CustomConstructor(Config.class);
-            PropertiesChecker propertiesChecker = new PropertiesChecker();
+            MissingPropertiesChecker propertiesChecker = new MissingPropertiesChecker();
             constructor.setPropertyUtils(propertiesChecker);
             Yaml yaml = new Yaml(constructor);
-            Config result = loadConfig(yaml, configBytes);
+            Config result = yaml.loadAs(new ByteArrayInputStream(configBytes), Config.class);
             propertiesChecker.check();
             return result;
         }
         catch (YAMLException e)
         {
-            throw new ConfigurationException("Invalid yaml: " + url + SystemUtils.LINE_SEPARATOR
-                                             +  " Error: " + e.getMessage(), false);
+            throw new ConfigurationException("Invalid yaml: " + url, e);
         }
     }
 
@@ -168,25 +161,11 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         }
     }
 
-    private Config loadConfig(Yaml yaml, byte[] configBytes)
-    {
-        Config config = yaml.loadAs(new ByteArrayInputStream(configBytes), Config.class);
-        // If the configuration file is empty yaml will return null. In this case we should use the default
-        // configuration to avoid hitting a NPE at a later stage.
-        return config == null ? new Config() : config;
-    }
-
-    /**
-     * Utility class to check that there are no extra properties and that properties that are not null by default
-     * are not set to null.
-     */
-    private static class PropertiesChecker extends PropertyUtils
+    private static class MissingPropertiesChecker extends PropertyUtils
     {
         private final Set<String> missingProperties = new HashSet<>();
 
-        private final Set<String> nullProperties = new HashSet<>();
-
-        public PropertiesChecker()
+        public MissingPropertiesChecker()
         {
             setSkipMissingProperties(true);
         }
@@ -194,49 +173,19 @@ public class YamlConfigurationLoader implements ConfigurationLoader
         @Override
         public Property getProperty(Class<? extends Object> type, String name) throws IntrospectionException
         {
-            final Property result = super.getProperty(type, name);
-
+            Property result = super.getProperty(type, name);
             if (result instanceof MissingProperty)
             {
                 missingProperties.add(result.getName());
             }
-
-            return new Property(result.getName(), result.getType())
-            {
-                @Override
-                public void set(Object object, Object value) throws Exception
-                {
-                    if (value == null && get(object) != null)
-                    {
-                        nullProperties.add(getName());
-                    }
-                    result.set(object, value);
-                }
-
-                @Override
-                public Class<?>[] getActualTypeArguments()
-                {
-                    return result.getActualTypeArguments();
-                }
-
-                @Override
-                public Object get(Object object)
-                {
-                    return result.get(object);
-                }
-            };
+            return result;
         }
 
         public void check() throws ConfigurationException
         {
-            if (!nullProperties.isEmpty())
-            {
-                throw new ConfigurationException("Invalid yaml. Those properties " + nullProperties + " are not valid", false);
-            }
-
             if (!missingProperties.isEmpty())
             {
-                throw new ConfigurationException("Invalid yaml. Please remove properties " + missingProperties + " from your cassandra.yaml", false);
+                throw new ConfigurationException("Invalid yaml. Please remove properties " + missingProperties + " from your cassandra.yaml");
             }
         }
     }

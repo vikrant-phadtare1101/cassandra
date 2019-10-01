@@ -25,7 +25,6 @@ import java.net.URL;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Set;
 
 import org.junit.Test;
 
@@ -39,10 +38,7 @@ import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithField;
 import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithInitializer;
 import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithInitializer2;
 import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithInitializer3;
-import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithInnerClass;
-import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithInnerClass2;
 import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithStaticInitializer;
-import org.apache.cassandra.cql3.validation.entities.udfverify.ClassWithStaticInnerClass;
 import org.apache.cassandra.cql3.validation.entities.udfverify.GoodClass;
 import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronized;
 import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronizedWithNotify;
@@ -50,7 +46,6 @@ import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronized
 import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronizedWithWait;
 import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronizedWithWaitL;
 import org.apache.cassandra.cql3.validation.entities.udfverify.UseOfSynchronizedWithWaitLI;
-import org.apache.cassandra.cql3.validation.entities.udfverify.UsingMapEntry;
 
 import static org.junit.Assert.assertEquals;
 
@@ -62,14 +57,14 @@ public class UFVerifierTest extends CQLTester
     @Test
     public void testByteCodeVerifier()
     {
-        verify(GoodClass.class);
+        new UDFByteCodeVerifier().verify(readClass(GoodClass.class));
     }
 
     @Test
     public void testClassWithField()
     {
         assertEquals(new HashSet<>(Collections.singletonList("field declared: field")),
-                     verify(ClassWithField.class));
+                     new UDFByteCodeVerifier().verify(readClass(ClassWithField.class)));
     }
 
     @Test
@@ -77,7 +72,7 @@ public class UFVerifierTest extends CQLTester
     {
         assertEquals(new HashSet<>(Arrays.asList("field declared: field",
                                                  "initializer declared")),
-                     verify(ClassWithInitializer.class));
+                     new UDFByteCodeVerifier().verify(readClass(ClassWithInitializer.class)));
     }
 
     @Test
@@ -85,129 +80,91 @@ public class UFVerifierTest extends CQLTester
     {
         assertEquals(new HashSet<>(Arrays.asList("field declared: field",
                                                  "initializer declared")),
-                     verify(ClassWithInitializer2.class));
+                     new UDFByteCodeVerifier().verify(readClass(ClassWithInitializer2.class)));
     }
 
     @Test
     public void testClassWithInitializer3()
     {
         assertEquals(new HashSet<>(Collections.singletonList("initializer declared")),
-                     verify(ClassWithInitializer3.class));
+                     new UDFByteCodeVerifier().verify(readClass(ClassWithInitializer3.class)));
     }
 
     @Test
     public void testClassWithStaticInitializer()
     {
         assertEquals(new HashSet<>(Collections.singletonList("static initializer declared")),
-                     verify(ClassWithStaticInitializer.class));
+                     new UDFByteCodeVerifier().verify(readClass(ClassWithStaticInitializer.class)));
     }
 
     @Test
     public void testUseOfSynchronized()
     {
         assertEquals(new HashSet<>(Collections.singletonList("use of synchronized")),
-                     verify(UseOfSynchronized.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronized.class)));
     }
 
     @Test
     public void testUseOfSynchronizedWithNotify()
     {
         assertEquals(new HashSet<>(Arrays.asList("use of synchronized", "call to java.lang.Object.notify()")),
-                     verify(UseOfSynchronizedWithNotify.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronizedWithNotify.class)));
     }
 
     @Test
     public void testUseOfSynchronizedWithNotifyAll()
     {
         assertEquals(new HashSet<>(Arrays.asList("use of synchronized", "call to java.lang.Object.notifyAll()")),
-                     verify(UseOfSynchronizedWithNotifyAll.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronizedWithNotifyAll.class)));
     }
 
     @Test
     public void testUseOfSynchronizedWithWait()
     {
         assertEquals(new HashSet<>(Arrays.asList("use of synchronized", "call to java.lang.Object.wait()")),
-                     verify(UseOfSynchronizedWithWait.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronizedWithWait.class)));
     }
 
     @Test
     public void testUseOfSynchronizedWithWaitL()
     {
         assertEquals(new HashSet<>(Arrays.asList("use of synchronized", "call to java.lang.Object.wait()")),
-                     verify(UseOfSynchronizedWithWaitL.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronizedWithWaitL.class)));
     }
 
     @Test
     public void testUseOfSynchronizedWithWaitI()
     {
         assertEquals(new HashSet<>(Arrays.asList("use of synchronized", "call to java.lang.Object.wait()")),
-                     verify(UseOfSynchronizedWithWaitLI.class));
+                     new UDFByteCodeVerifier().verify(readClass(UseOfSynchronizedWithWaitLI.class)));
     }
 
     @Test
     public void testCallClone()
     {
         assertEquals(new HashSet<>(Collections.singletonList("call to java.lang.Object.clone()")),
-                     verify(CallClone.class));
+                     new UDFByteCodeVerifier().verify(readClass(CallClone.class)));
     }
 
     @Test
     public void testCallFinalize()
     {
         assertEquals(new HashSet<>(Collections.singletonList("call to java.lang.Object.finalize()")),
-                     verify(CallFinalize.class));
+                     new UDFByteCodeVerifier().verify(readClass(CallFinalize.class)));
     }
 
     @Test
     public void testCallComDatastax()
     {
         assertEquals(new HashSet<>(Collections.singletonList("call to com.datastax.driver.core.DataType.cint()")),
-                     verify("com/", CallComDatastax.class));
+                     new UDFByteCodeVerifier().addDisallowedPackage("com/").verify(readClass(CallComDatastax.class)));
     }
 
     @Test
     public void testCallOrgApache()
     {
         assertEquals(new HashSet<>(Collections.singletonList("call to org.apache.cassandra.config.DatabaseDescriptor.getClusterName()")),
-                     verify("org/", CallOrgApache.class));
-    }
-
-    @Test
-    public void testClassStaticInnerClass()
-    {
-        assertEquals(new HashSet<>(Collections.singletonList("class declared as inner class")),
-                     verify(ClassWithStaticInnerClass.class));
-    }
-
-    @Test
-    public void testUsingMapEntry()
-    {
-        assertEquals(Collections.emptySet(),
-                     verify(UsingMapEntry.class));
-    }
-
-    @Test
-    public void testClassInnerClass()
-    {
-        assertEquals(new HashSet<>(Collections.singletonList("class declared as inner class")),
-                     verify(ClassWithInnerClass.class));
-    }
-
-    @Test
-    public void testClassInnerClass2()
-    {
-        assertEquals(Collections.emptySet(),
-                     verify(ClassWithInnerClass2.class));
-    }
-
-    private Set<String> verify(Class cls)
-    {
-        return new UDFByteCodeVerifier().verify(cls.getName(), readClass(cls));
-    }
-
-    private Set<String> verify(String disallowedPkg, Class cls)
-    {
-        return new UDFByteCodeVerifier().addDisallowedPackage(disallowedPkg).verify(cls.getName(), readClass(cls));
+                     new UDFByteCodeVerifier().addDisallowedPackage("org/").verify(readClass(CallOrgApache.class)));
     }
 
     @SuppressWarnings("resource")

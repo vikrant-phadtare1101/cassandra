@@ -23,14 +23,10 @@ import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.cli.*;
 
-import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.stress.settings.StressSettings;
-import org.apache.cassandra.stress.util.MultiResultLogger;
-import org.apache.cassandra.stress.util.ResultLogger;
 
 public class StressServer
 {
@@ -40,8 +36,6 @@ public class StressServer
     {
         availableOptions.addOption("h", "host", true, "Host to listen for connections.");
     }
-
-    private static final AtomicInteger threadCounter = new AtomicInteger(1);
 
     public static void main(String[] args) throws Exception
     {
@@ -94,10 +88,9 @@ public class StressServer
             {
                 ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
                 PrintStream out = new PrintStream(socket.getOutputStream());
-                ResultLogger log = new MultiResultLogger(out);
 
-                StressAction action = new StressAction((StressSettings) in.readObject(), log);
-                Thread actionThread = NamedThreadFactory.createThread(action, "stress-" + threadCounter.incrementAndGet());
+                StressAction action = new StressAction((StressSettings) in.readObject(), out);
+                Thread actionThread = new Thread(action);
                 actionThread.start();
 
                 while (actionThread.isAlive())

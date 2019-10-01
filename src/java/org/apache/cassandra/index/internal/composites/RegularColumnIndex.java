@@ -68,34 +68,22 @@ public class RegularColumnIndex extends CassandraIndex
         for (int i = 0; i < prefix.size(); i++)
             builder.add(prefix.get(i));
 
-        // Note: if indexing a static column, prefix will be Clustering.STATIC_CLUSTERING
-        // so the Clustering obtained from builder::build will contain a value for only
-        // the partition key. At query time though, this is all that's needed as the entire
-        // base table partition should be returned for any mathching index entry.
         return builder;
     }
 
     public IndexEntry decodeEntry(DecoratedKey indexedValue, Row indexEntry)
     {
         Clustering clustering = indexEntry.clustering();
-
-        Clustering indexedEntryClustering = null;
-        if (getIndexedColumn().isStatic())
-            indexedEntryClustering = Clustering.STATIC_CLUSTERING;
-        else
-        {
-            ClusteringComparator baseComparator = baseCfs.getComparator();
-            CBuilder builder = CBuilder.create(baseComparator);
-            for (int i = 0; i < baseComparator.size(); i++)
-                builder.add(clustering.get(i + 1));
-            indexedEntryClustering = builder.build();
-        }
+        ClusteringComparator baseComparator = baseCfs.getComparator();
+        CBuilder builder = CBuilder.create(baseComparator);
+        for (int i = 0; i < baseComparator.size(); i++)
+            builder.add(clustering.get(i + 1));
 
         return new IndexEntry(indexedValue,
                                 clustering,
                                 indexEntry.primaryKeyLivenessInfo().timestamp(),
                                 clustering.get(0),
-                                indexedEntryClustering);
+                                builder.build());
     }
 
     public boolean isStale(Row data, ByteBuffer indexValue, int nowInSec)

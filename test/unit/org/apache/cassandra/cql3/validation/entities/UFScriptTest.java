@@ -37,7 +37,6 @@ import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.UUIDGen;
 
 public class UFScriptTest extends CQLTester
@@ -86,7 +85,7 @@ public class UFScriptTest extends CQLTester
         assertRows(execute("SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                    row(list, set, map));
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
             assertRowsNet(version,
                           executeNet(version, "SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                           row(list, set, map));
@@ -205,7 +204,7 @@ public class UFScriptTest extends CQLTester
                    row("three", "one", "two"));
 
         // same test - but via native protocol
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
             assertRowsNet(version,
                           executeNet(version, cqlSelect),
                           row("three", "one", "two"));

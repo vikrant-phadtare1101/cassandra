@@ -19,6 +19,7 @@ package org.apache.cassandra.db.partitions;
 
 import java.io.IOException;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.DataLimits;
 import org.apache.cassandra.db.rows.*;
@@ -26,9 +27,6 @@ import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.btree.BTree;
 
 public class CachedBTreePartition extends ImmutableBTreePartition implements CachedPartition
@@ -38,17 +36,24 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
     private final int cachedLiveRows;
     private final int rowsWithNonExpiringCells;
 
-    private CachedBTreePartition(TableMetadata metadata,
+    private final int nonTombstoneCellCount;
+    private final int nonExpiringLiveCells;
+
+    private CachedBTreePartition(CFMetaData metadata,
                                  DecoratedKey partitionKey,
                                  Holder holder,
                                  int createdAtInSec,
                                  int cachedLiveRows,
-                                 int rowsWithNonExpiringCells)
+                                 int rowsWithNonExpiringCells,
+                                 int nonTombstoneCellCount,
+                                 int nonExpiringLiveCells)
     {
         super(metadata, partitionKey, holder);
         this.createdAtInSec = createdAtInSec;
         this.cachedLiveRows = cachedLiveRows;
         this.rowsWithNonExpiringCells = rowsWithNonExpiringCells;
+        this.nonTombstoneCellCount = nonTombstoneCellCount;
+        this.nonExpiringLiveCells = nonExpiringLiveCells;
     }
 
     /**
@@ -84,6 +89,8 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
 
         int cachedLiveRows = 0;
         int rowsWithNonExpiringCells = 0;
+        int nonTombstoneCellCount = 0;
+        int nonExpiringLiveCells = 0;
         boolean enforceStrictLiveness = iterator.metadata().enforceStrictLiveness();
 
         for (Row row : BTree.<Row>iterable(holder.tree))
@@ -91,18 +98,22 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
             if (row.hasLiveData(nowInSec, enforceStrictLiveness))
                 ++cachedLiveRows;
 
-            boolean hasNonExpiringLiveCell = false;
+            int nonExpiringLiveCellsThisRow = 0;
             for (Cell cell : row.cells())
             {
-                if (!cell.isTombstone() && !cell.isExpiring())
+                if (!cell.isTombstone())
                 {
-                    hasNonExpiringLiveCell = true;
-                    break;
+                    ++nonTombstoneCellCount;
+                    if (!cell.isExpiring())
+                        ++nonExpiringLiveCellsThisRow;
                 }
             }
 
-            if (hasNonExpiringLiveCell)
+            if (nonExpiringLiveCellsThisRow > 0)
+            {
                 ++rowsWithNonExpiringCells;
+                nonExpiringLiveCells += nonExpiringLiveCellsThisRow;
+            }
         }
 
         return new CachedBTreePartition(iterator.metadata(),
@@ -110,7 +121,9 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
                                         holder,
                                         nowInSec,
                                         cachedLiveRows,
-                                        rowsWithNonExpiringCells);
+                                        rowsWithNonExpiringCells,
+                                        nonTombstoneCellCount,
+                                        nonExpiringLiveCells);
     }
 
     /**
@@ -141,6 +154,16 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
         return rowsWithNonExpiringCells;
     }
 
+    public int nonTombstoneCellCount()
+    {
+        return nonTombstoneCellCount;
+    }
+
+    public int nonExpiringLiveCells()
+    {
+        return nonExpiringLiveCells;
+    }
+
     static class Serializer implements ISerializer<CachedPartition>
     {
         public void serialize(CachedPartition partition, DataOutputPlus out) throws IOException
@@ -153,7 +176,9 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
             out.writeInt(p.createdAtInSec);
             out.writeInt(p.cachedLiveRows);
             out.writeInt(p.rowsWithNonExpiringCells);
-            partition.metadata().id.serialize(out);
+            out.writeInt(p.nonTombstoneCellCount);
+            out.writeInt(p.nonExpiringLiveCells);
+            CFMetaData.serializer.serialize(partition.metadata(), out, version);
             try (UnfilteredRowIterator iter = p.unfilteredIterator())
             {
                 UnfilteredRowIteratorSerializer.serializer.serialize(iter, null, out, version, p.rowCount());
@@ -174,9 +199,11 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
             int createdAtInSec = in.readInt();
             int cachedLiveRows = in.readInt();
             int rowsWithNonExpiringCells = in.readInt();
+            int nonTombstoneCellCount = in.readInt();
+            int nonExpiringLiveCells = in.readInt();
 
 
-            TableMetadata metadata = Schema.instance.getExistingTableMetadata(TableId.deserialize(in));
+            CFMetaData metadata = CFMetaData.serializer.deserialize(in, version);
             UnfilteredRowIteratorSerializer.Header header = UnfilteredRowIteratorSerializer.serializer.deserializeHeader(metadata, null, in, version, SerializationHelper.Flag.LOCAL);
             assert !header.isReversed && header.rowEstimate >= 0;
 
@@ -187,11 +214,13 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
             }
 
             return new CachedBTreePartition(metadata,
-                                            header.key,
-                                            holder,
-                                            createdAtInSec,
-                                            cachedLiveRows,
-                                            rowsWithNonExpiringCells);
+                                                  header.key,
+                                                  holder,
+                                                  createdAtInSec,
+                                                  cachedLiveRows,
+                                                  rowsWithNonExpiringCells,
+                                                  nonTombstoneCellCount,
+                                                  nonExpiringLiveCells);
 
         }
 
@@ -207,7 +236,9 @@ public class CachedBTreePartition extends ImmutableBTreePartition implements Cac
                 return TypeSizes.sizeof(p.createdAtInSec)
                      + TypeSizes.sizeof(p.cachedLiveRows)
                      + TypeSizes.sizeof(p.rowsWithNonExpiringCells)
-                     + partition.metadata().id.serializedSize()
+                     + TypeSizes.sizeof(p.nonTombstoneCellCount)
+                     + TypeSizes.sizeof(p.nonExpiringLiveCells)
+                     + CFMetaData.serializer.serializedSize(partition.metadata(), version)
                      + UnfilteredRowIteratorSerializer.serializer.serializedSize(iter, null, MessagingService.current_version, p.rowCount());
             }
         }

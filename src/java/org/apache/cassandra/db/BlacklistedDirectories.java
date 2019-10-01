@@ -21,15 +21,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.lang.management.ManagementFactory;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
-import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 
 import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.MBeanWrapper;
 
 public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
 {
@@ -40,12 +42,20 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
     private final Set<File> unreadableDirectories = new CopyOnWriteArraySet<File>();
     private final Set<File> unwritableDirectories = new CopyOnWriteArraySet<File>();
 
-    private static final AtomicInteger directoriesVersion = new AtomicInteger();
-
     private BlacklistedDirectories()
     {
         // Register this instance with JMX
-        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME, MBeanWrapper.OnException.LOG);
+        try
+        {
+            MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
+        }
+        catch (Exception e)
+        {
+            JVMStabilityInspector.inspectThrowable(e);
+            logger.error("error registering MBean {}", MBEAN_NAME, e);
+            //Allow the server to start even if the bean can't be registered
+        }
     }
 
     public Set<File> getUnreadableDirectories()
@@ -56,16 +66,6 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
     public Set<File> getUnwritableDirectories()
     {
         return Collections.unmodifiableSet(unwritableDirectories);
-    }
-
-    public void markUnreadable(String path)
-    {
-        maybeMarkUnreadable(new File(path));
-    }
-
-    public void markUnwritable(String path)
-    {
-        maybeMarkUnwritable(new File(path));
     }
 
     /**
@@ -79,7 +79,6 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
         File directory = getDirectory(path);
         if (instance.unreadableDirectories.add(directory))
         {
-            directoriesVersion.incrementAndGet();
             logger.warn("Blacklisting {} for reads", directory);
             return directory;
         }
@@ -97,16 +96,10 @@ public class BlacklistedDirectories implements BlacklistedDirectoriesMBean
         File directory = getDirectory(path);
         if (instance.unwritableDirectories.add(directory))
         {
-            directoriesVersion.incrementAndGet();
             logger.warn("Blacklisting {} for writes", directory);
             return directory;
         }
         return null;
-    }
-
-    public static int getDirectoriesVersion()
-    {
-        return directoriesVersion.get();
     }
 
     /**

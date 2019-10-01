@@ -24,13 +24,16 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Objects;
-import com.google.common.base.Splitter;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.Version;
+import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.io.sstable.metadata.IMetadataSerializer;
+import org.apache.cassandra.io.sstable.metadata.LegacyMetadataSerializer;
 import org.apache.cassandra.io.sstable.metadata.MetadataSerializer;
 import org.apache.cassandra.utils.Pair;
 
@@ -45,12 +48,7 @@ import static org.apache.cassandra.io.sstable.Component.separator;
  */
 public class Descriptor
 {
-    private final static String LEGACY_TMP_REGEX_STR = "^((.*)\\-(.*)\\-)?tmp(link)?\\-((?:l|k).)\\-(\\d)*\\-(.*)$";
-    private final static Pattern LEGACY_TMP_REGEX = Pattern.compile(LEGACY_TMP_REGEX_STR);
-
     public static String TMP_EXT = ".tmp";
-
-    private static final Splitter filenameSplitter = Splitter.on('-');
 
     /** canonicalized path to the directory where SSTable resides */
     public final File directory;
@@ -60,6 +58,8 @@ public class Descriptor
     public final String cfname;
     public final int generation;
     public final SSTableFormat.Type formatType;
+    /** digest component - might be {@code null} for old, legacy sstables */
+    public final Component digestComponent;
     private final int hashCode;
 
     /**
@@ -68,7 +68,7 @@ public class Descriptor
     @VisibleForTesting
     public Descriptor(File directory, String ksname, String cfname, int generation)
     {
-        this(SSTableFormat.Type.current().info.getLatestVersion(), directory, ksname, cfname, generation, SSTableFormat.Type.current());
+        this(DatabaseDescriptor.getSSTableFormat().info.getLatestVersion(), directory, ksname, cfname, generation, DatabaseDescriptor.getSSTableFormat(), null);
     }
 
     /**
@@ -76,10 +76,16 @@ public class Descriptor
      */
     public Descriptor(File directory, String ksname, String cfname, int generation, SSTableFormat.Type formatType)
     {
-        this(formatType.info.getLatestVersion(), directory, ksname, cfname, generation, formatType);
+        this(formatType.info.getLatestVersion(), directory, ksname, cfname, generation, formatType, Component.digestFor(BigFormat.latestVersion.uncompressedChecksumType()));
     }
 
-    public Descriptor(Version version, File directory, String ksname, String cfname, int generation, SSTableFormat.Type formatType)
+    @VisibleForTesting
+    public Descriptor(String version, File directory, String ksname, String cfname, int generation, SSTableFormat.Type formatType)
+    {
+        this(formatType.info.getVersion(version), directory, ksname, cfname, generation, formatType, Component.digestFor(BigFormat.latestVersion.uncompressedChecksumType()));
+    }
+
+    public Descriptor(Version version, File directory, String ksname, String cfname, int generation, SSTableFormat.Type formatType, Component digestComponent)
     {
         assert version != null && directory != null && ksname != null && cfname != null && formatType.info.getLatestVersion().getClass().equals(version.getClass());
         this.version = version;
@@ -95,18 +101,24 @@ public class Descriptor
         this.cfname = cfname;
         this.generation = generation;
         this.formatType = formatType;
+        this.digestComponent = digestComponent;
 
         hashCode = Objects.hashCode(version, this.directory, generation, ksname, cfname, formatType);
     }
 
     public Descriptor withGeneration(int newGeneration)
     {
-        return new Descriptor(version, directory, ksname, cfname, newGeneration, formatType);
+        return new Descriptor(version, directory, ksname, cfname, newGeneration, formatType, digestComponent);
     }
 
     public Descriptor withFormatType(SSTableFormat.Type newType)
     {
-        return new Descriptor(newType.info.getLatestVersion(), directory, ksname, cfname, generation, newType);
+        return new Descriptor(newType.info.getLatestVersion(), directory, ksname, cfname, generation, newType, digestComponent);
+    }
+
+    public Descriptor withDigestComponent(Component newDigestComponent)
+    {
+        return new Descriptor(version, directory, ksname, cfname, generation, formatType, newDigestComponent);
     }
 
     public String tmpFilenameFor(Component component)
@@ -129,9 +141,15 @@ public class Descriptor
 
     private void appendFileName(StringBuilder buff)
     {
+        if (!version.hasNewFileName())
+        {
+            buff.append(ksname).append(separator);
+            buff.append(cfname).append(separator);
+        }
         buff.append(version).append(separator);
         buff.append(generation);
-        buff.append(separator).append(formatType.name);
+        if (formatType != SSTableFormat.Type.LEGACY)
+            buff.append(separator).append(formatType.name);
     }
 
     public String relativeFilenameFor(Component component)
@@ -150,166 +168,164 @@ public class Descriptor
     /** Return any temporary files found in the directory */
     public List<File> getTemporaryFiles()
     {
+        List<File> ret = new ArrayList<>();
         File[] tmpFiles = directory.listFiles((dir, name) ->
                                               name.endsWith(Descriptor.TMP_EXT));
 
-        List<File> ret = new ArrayList<>(tmpFiles.length);
         for (File tmpFile : tmpFiles)
             ret.add(tmpFile);
 
         return ret;
     }
 
-    public static boolean isValidFile(File file)
+    /**
+     *  Files obsoleted by CASSANDRA-7066 : temporary files and compactions_in_progress. We support
+     *  versions 2.1 (ka) and 2.2 (la).
+     *  Temporary files have tmp- or tmplink- at the beginning for 2.2 sstables or after ks-cf- for 2.1 sstables
+     */
+
+    private final static String LEGACY_COMP_IN_PROG_REGEX_STR = "^compactions_in_progress(\\-[\\d,a-f]{32})?$";
+    private final static Pattern LEGACY_COMP_IN_PROG_REGEX = Pattern.compile(LEGACY_COMP_IN_PROG_REGEX_STR);
+    private final static String LEGACY_TMP_REGEX_STR = "^((.*)\\-(.*)\\-)?tmp(link)?\\-((?:l|k).)\\-(\\d)*\\-(.*)$";
+    private final static Pattern LEGACY_TMP_REGEX = Pattern.compile(LEGACY_TMP_REGEX_STR);
+
+    public static boolean isLegacyFile(File file)
     {
-        String filename = file.getName();
-        return filename.endsWith(".db") && !LEGACY_TMP_REGEX.matcher(filename).matches();
+        if (file.isDirectory())
+            return file.getParentFile() != null &&
+                   file.getParentFile().getName().equalsIgnoreCase("system") &&
+                   LEGACY_COMP_IN_PROG_REGEX.matcher(file.getName()).matches();
+        else
+            return LEGACY_TMP_REGEX.matcher(file.getName()).matches();
+    }
+
+    public static boolean isValidFile(String fileName)
+    {
+        return fileName.endsWith(".db") && !LEGACY_TMP_REGEX.matcher(fileName).matches();
     }
 
     /**
-     * Parse a sstable filename into a Descriptor.
-     * <p>
-     * This is a shortcut for {@code fromFilename(new File(filename))}.
-     *
-     * @param filename the filename to a sstable component.
-     * @return the descriptor for the parsed file.
-     *
-     * @throws IllegalArgumentException if the provided {@code file} does point to a valid sstable filename. This could
-     * mean either that the filename doesn't look like a sstable file, or that it is for an old and unsupported
-     * versions.
+     * @see #fromFilename(File directory, String name)
+     * @param filename The SSTable filename
+     * @return Descriptor of the SSTable initialized from filename
      */
     public static Descriptor fromFilename(String filename)
     {
-        return fromFilename(new File(filename));
+        return fromFilename(filename, false);
+    }
+
+    public static Descriptor fromFilename(String filename, SSTableFormat.Type formatType)
+    {
+        return fromFilename(filename).withFormatType(formatType);
+    }
+
+    public static Descriptor fromFilename(String filename, boolean skipComponent)
+    {
+        File file = new File(filename).getAbsoluteFile();
+        return fromFilename(file.getParentFile(), file.getName(), skipComponent).left;
+    }
+
+    public static Pair<Descriptor, String> fromFilename(File directory, String name)
+    {
+        return fromFilename(directory, name, false);
     }
 
     /**
-     * Parse a sstable filename into a Descriptor.
-     * <p>
-     * SSTables files are all located within subdirectories of the form {@code <keyspace>/<table>/}. Normal sstables are
-     * are directly within that subdirectory structure while 2ndary index, backups and snapshot are each inside an
-     * additional subdirectory. The file themselves have the form:
-     *   {@code <version>-<gen>-<format>-<component>}.
-     * <p>
-     * Note that this method will only sucessfully parse sstable files of supported versions.
+     * Filename of the form is vary by version:
      *
-     * @param file the {@code File} object for the filename to parse.
-     * @return the descriptor for the parsed file.
+     * <ul>
+     *     <li>&lt;ksname&gt;-&lt;cfname&gt;-(tmp-)?&lt;version&gt;-&lt;gen&gt;-&lt;component&gt; for cassandra 2.0 and before</li>
+     *     <li>(&lt;tmp marker&gt;-)?&lt;version&gt;-&lt;gen&gt;-&lt;component&gt; for cassandra 3.0 and later</li>
+     * </ul>
      *
-     * @throws IllegalArgumentException if the provided {@code file} does point to a valid sstable filename. This could
-     * mean either that the filename doesn't look like a sstable file, or that it is for an old and unsupported
-     * versions.
+     * If this is for SSTable of secondary index, directory should ends with index name for 2.1+.
+     *
+     * @param directory The directory of the SSTable files
+     * @param name The name of the SSTable file
+     * @param skipComponent true if the name param should not be parsed for a component tag
+     *
+     * @return A Descriptor for the SSTable, and the Component remainder.
      */
-    public static Descriptor fromFilename(File file)
+    public static Pair<Descriptor, String> fromFilename(File directory, String name, boolean skipComponent)
     {
-        return fromFilenameWithComponent(file).left;
-    }
+        File parentDirectory = directory != null ? directory : new File(".");
 
-    /**
-     * Parse a sstable filename, extracting both the {@code Descriptor} and {@code Component} part.
-     *
-     * @param file the {@code File} object for the filename to parse.
-     * @return a pair of the descriptor and component corresponding to the provided {@code file}.
-     *
-     * @throws IllegalArgumentException if the provided {@code file} does point to a valid sstable filename. This could
-     * mean either that the filename doesn't look like a sstable file, or that it is for an old and unsupported
-     * versions.
-     */
-    public static Pair<Descriptor, Component> fromFilenameWithComponent(File file)
-    {
-        // We need to extract the keyspace and table names from the parent directories, so make sure we deal with the
-        // absolute path.
-        if (!file.isAbsolute())
-            file = file.getAbsoluteFile();
+        // tokenize the filename
+        StringTokenizer st = new StringTokenizer(name, String.valueOf(separator));
+        String nexttok;
 
-        String name = file.getName();
-        List<String> tokens = filenameSplitter.splitToList(name);
-        int size = tokens.size();
-
-        if (size != 4)
+        // read tokens backwards to determine version
+        Deque<String> tokenStack = new ArrayDeque<>();
+        while (st.hasMoreTokens())
         {
-            // This is an invalid sstable file for this version. But to provide a more helpful error message, we detect
-            // old format sstable, which had the format:
-            //   <keyspace>-<table>-(tmp-)?<version>-<gen>-<component>
-            // Note that we assume it's an old format sstable if it has the right number of tokens: this is not perfect
-            // but we're just trying to be helpful, not perfect.
-            if (size == 5 || size == 6)
-                throw new IllegalArgumentException(String.format("%s is of version %s which is now unsupported and cannot be read.",
-                                                                 name,
-                                                                 tokens.get(size - 3)));
-            throw new IllegalArgumentException(String.format("Invalid sstable file %s: the name doesn't look like a supported sstable file name", name));
+            tokenStack.push(st.nextToken());
         }
 
-        String versionString = tokens.get(0);
-        if (!Version.validate(versionString))
-            throw invalidSSTable(name, "invalid version %s", versionString);
+        // component suffix
+        String component = skipComponent ? null : tokenStack.pop();
 
-        int generation;
-        try
+        nexttok = tokenStack.pop();
+        // generation OR format type
+        SSTableFormat.Type fmt = SSTableFormat.Type.LEGACY;
+        if (!CharMatcher.DIGIT.matchesAllOf(nexttok))
         {
-            generation = Integer.parseInt(tokens.get(1));
-        }
-        catch (NumberFormatException e)
-        {
-            throw invalidSSTable(name, "the 'generation' part of the name doesn't parse as a number");
+            fmt = SSTableFormat.Type.validate(nexttok);
+            nexttok = tokenStack.pop();
         }
 
-        String formatString = tokens.get(2);
-        SSTableFormat.Type format;
-        try
+        // generation
+        int generation = Integer.parseInt(nexttok);
+
+        // version
+        nexttok = tokenStack.pop();
+        Version version = fmt.info.getVersion(nexttok);
+
+        if (!version.validate(nexttok))
+            throw new UnsupportedOperationException("SSTable " + name + " is too old to open.  Upgrade to 2.0 first, and run upgradesstables");
+
+        // ks/cf names
+        String ksname, cfname;
+        if (version.hasNewFileName())
         {
-            format = SSTableFormat.Type.validate(formatString);
+            // for 2.1+ read ks and cf names from directory
+            File cfDirectory = parentDirectory;
+            // check if this is secondary index
+            String indexName = "";
+            if (cfDirectory.getName().startsWith(Directories.SECONDARY_INDEX_NAME_SEPARATOR))
+            {
+                indexName = cfDirectory.getName();
+                cfDirectory = cfDirectory.getParentFile();
+            }
+            if (cfDirectory.getName().equals(Directories.BACKUPS_SUBDIR))
+            {
+                cfDirectory = cfDirectory.getParentFile();
+            }
+            else if (cfDirectory.getParentFile().getName().equals(Directories.SNAPSHOT_SUBDIR))
+            {
+                cfDirectory = cfDirectory.getParentFile().getParentFile();
+            }
+            cfname = cfDirectory.getName().split("-")[0] + indexName;
+            ksname = cfDirectory.getParentFile().getName();
         }
-        catch (IllegalArgumentException e)
+        else
         {
-            throw invalidSSTable(name, "unknown 'format' part (%s)", formatString);
+            cfname = tokenStack.pop();
+            ksname = tokenStack.pop();
         }
+        assert tokenStack.isEmpty() : "Invalid file name " + name + " in " + directory;
 
-        Component component = Component.parse(tokens.get(3));
-
-        Version version = format.info.getVersion(versionString);
-        if (!version.isCompatible())
-            throw invalidSSTable(name, "incompatible sstable version (%s); you should have run upgradesstables before upgrading", versionString);
-
-        File directory = parentOf(name, file);
-        File tableDir = directory;
-
-        // Check if it's a 2ndary index directory (not that it doesn't exclude it to be also a backup or snapshot)
-        String indexName = "";
-        if (tableDir.getName().startsWith(Directories.SECONDARY_INDEX_NAME_SEPARATOR))
-        {
-            indexName = tableDir.getName();
-            tableDir = parentOf(name, tableDir);
-        }
-
-        // Then it can be a backup or a snapshot
-        if (tableDir.getName().equals(Directories.BACKUPS_SUBDIR))
-            tableDir = tableDir.getParentFile();
-        else if (parentOf(name, tableDir).getName().equals(Directories.SNAPSHOT_SUBDIR))
-            tableDir = parentOf(name, parentOf(name, tableDir));
-
-        String table = tableDir.getName().split("-")[0] + indexName;
-        String keyspace = parentOf(name, tableDir).getName();
-
-        return Pair.create(new Descriptor(version, directory, keyspace, table, generation, format), component);
-    }
-
-    private static File parentOf(String name, File file)
-    {
-        File parent = file.getParentFile();
-        if (parent == null)
-            throw invalidSSTable(name, "cannot extract keyspace and table name; make sure the sstable is in the proper sub-directories");
-        return parent;
-    }
-
-    private static IllegalArgumentException invalidSSTable(String name, String msgFormat, Object... parameters)
-    {
-        throw new IllegalArgumentException(String.format("Invalid sstable file " + name + ": " + msgFormat, parameters));
+        return Pair.create(new Descriptor(version, parentDirectory, ksname, cfname, generation, fmt,
+                                          // _assume_ version from version
+                                          Component.digestFor(version.uncompressedChecksumType())),
+                           component);
     }
 
     public IMetadataSerializer getMetadataSerializer()
     {
-        return new MetadataSerializer();
+        if (version.hasNewStatsFile())
+            return new MetadataSerializer();
+        else
+            return new LegacyMetadataSerializer();
     }
 
     /**

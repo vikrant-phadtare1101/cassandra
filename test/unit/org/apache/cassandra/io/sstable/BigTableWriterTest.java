@@ -23,7 +23,7 @@ import java.io.IOException;
 
 import org.junit.BeforeClass;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.UpdateBuilder;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -64,27 +64,24 @@ public class BigTableWriterTest extends AbstractTransactionalTest
 
         private TestableBTW()
         {
-            this(cfs.newSSTableDescriptor(cfs.getDirectories().getDirectoryForNewSSTables()));
+            this(cfs.getSSTablePath(cfs.getDirectories().getDirectoryForNewSSTables()));
         }
 
-        private TestableBTW(Descriptor desc)
+        private TestableBTW(String file)
         {
-            this(desc, SSTableTxnWriter.create(cfs, desc, 0, 0, null, false,
-                                               new SerializationHeader(true, cfs.metadata(),
-                                                                       cfs.metadata().regularAndStaticColumns(),
-                                                                       EncodingStats.NO_STATS)));
+            this(file, SSTableTxnWriter.create(cfs, file, 0, 0, new SerializationHeader(true, cfs.metadata, cfs.metadata.partitionColumns(), EncodingStats.NO_STATS)));
         }
 
-        private TestableBTW(Descriptor desc, SSTableTxnWriter sw)
+        private TestableBTW(String file, SSTableTxnWriter sw)
         {
             super(sw);
-            this.file = new File(desc.filenameFor(Component.DATA));
-            this.descriptor = desc;
+            this.file = new File(file);
+            this.descriptor = Descriptor.fromFilename(file);
             this.writer = sw;
 
             for (int i = 0; i < 100; i++)
             {
-                UpdateBuilder update = UpdateBuilder.create(cfs.metadata(), i);
+                UpdateBuilder update = UpdateBuilder.create(cfs.metadata, i);
                 for (int j = 0; j < 10; j++)
                     update.newRow(j).add("val", SSTableRewriterTest.random(0, 1000));
                 writer.append(update.build().unfilteredIterator());
