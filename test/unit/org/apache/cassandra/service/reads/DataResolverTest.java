@@ -24,7 +24,6 @@ import java.util.Iterator;
 
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -57,6 +56,7 @@ import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.locator.EndpointsForRange;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaLayout;
 import org.apache.cassandra.locator.ReplicaUtils;
 import org.apache.cassandra.net.*;
 import org.apache.cassandra.service.reads.repair.ReadRepair;
@@ -87,7 +87,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     {
         command = Util.cmd(cfs, dk).withNowInSeconds(nowInSec).build();
         command.trackRepairedStatus();
-        readRepair = new TestableReadRepair(command);
+        readRepair = new TestableReadRepair(command, ConsistencyLevel.QUORUM);
     }
 
     private static EndpointsForRange makeReplicas(int num)
@@ -338,7 +338,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     public void testResolveWithBothEmpty()
     {
         EndpointsForRange replicas = makeReplicas(2);
-        TestableReadRepair readRepair = new TestableReadRepair(command);
+        TestableReadRepair readRepair = new TestableReadRepair(command, ConsistencyLevel.QUORUM);
         DataResolver resolver = new DataResolver(command, plan(replicas, ConsistencyLevel.ALL), readRepair, System.nanoTime());
         resolver.preprocess(response(command, replicas.get(0).endpoint(), EmptyIterators.unfilteredPartition(cfm)));
         resolver.preprocess(response(command, replicas.get(1).endpoint(), EmptyIterators.unfilteredPartition(cfm)));
@@ -715,7 +715,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     {
         EndpointsForRange replicas = makeReplicas(2);
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        TestableReadRepair readRepair = new TestableReadRepair(cmd);
+        TestableReadRepair readRepair = new TestableReadRepair(cmd, ConsistencyLevel.QUORUM);
         DataResolver resolver = new DataResolver(cmd, plan(replicas, ConsistencyLevel.ALL), readRepair, System.nanoTime());
 
         long[] ts = {100, 200};
@@ -767,7 +767,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     {
         EndpointsForRange replicas = makeReplicas(2);
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        TestableReadRepair readRepair = new TestableReadRepair(cmd);
+        TestableReadRepair readRepair = new TestableReadRepair(cmd, ConsistencyLevel.QUORUM);
         DataResolver resolver = new DataResolver(cmd, plan(replicas, ConsistencyLevel.ALL), readRepair, System.nanoTime());
 
         long[] ts = {100, 200};
@@ -811,7 +811,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     {
         EndpointsForRange replicas = makeReplicas(2);
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        TestableReadRepair readRepair = new TestableReadRepair(cmd);
+        TestableReadRepair readRepair = new TestableReadRepair(cmd, ConsistencyLevel.QUORUM);
         DataResolver resolver = new DataResolver(cmd, plan(replicas, ConsistencyLevel.ALL), readRepair, System.nanoTime());
 
         long[] ts = {100, 200};
@@ -861,7 +861,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     {
         EndpointsForRange replicas = makeReplicas(2);
         ReadCommand cmd = Util.cmd(cfs2, dk).withNowInSeconds(nowInSec).build();
-        TestableReadRepair readRepair = new TestableReadRepair(cmd);
+        TestableReadRepair readRepair = new TestableReadRepair(cmd, ConsistencyLevel.QUORUM);
         DataResolver resolver = new DataResolver(cmd, plan(replicas, ConsistencyLevel.ALL), readRepair, System.nanoTime());
 
         long[] ts = {100, 200};
@@ -1185,10 +1185,10 @@ public class DataResolverTest extends AbstractReadResponseTest
     public void responsesFromTransientReplicasAreNotTracked()
     {
         EndpointsForRange replicas = makeReplicas(2);
-        EndpointsForRange.Builder mutable = replicas.newBuilder(2);
+        EndpointsForRange.Mutable mutable = replicas.newMutable(2);
         mutable.add(replicas.get(0));
         mutable.add(Replica.transientReplica(replicas.get(1).endpoint(), replicas.range()));
-        replicas = mutable.build();
+        replicas = mutable.asSnapshot();
 
         TestRepairedDataVerifier verifier = new TestRepairedDataVerifier();
         ByteBuffer digest1 = ByteBufferUtil.bytes("digest1");
@@ -1224,7 +1224,7 @@ public class DataResolverTest extends AbstractReadResponseTest
     }
 
     private DataResolver resolverWithVerifier(final ReadCommand command,
-                                              final ReplicaPlan.SharedForRangeRead plan,
+                                              final ReplicaLayout.ForRange plan,
                                               final ReadRepair readRepair,
                                               final long queryStartNanoTime,
                                               final RepairedDataVerifier verifier)
@@ -1232,7 +1232,7 @@ public class DataResolverTest extends AbstractReadResponseTest
         class TestableDataResolver extends DataResolver
         {
 
-            public TestableDataResolver(ReadCommand command, ReplicaPlan.SharedForRangeRead plan, ReadRepair readRepair, long queryStartNanoTime)
+            public TestableDataResolver(ReadCommand command, ReplicaLayout.ForRange plan, ReadRepair readRepair, long queryStartNanoTime)
             {
                 super(command, plan, readRepair, queryStartNanoTime);
             }
@@ -1298,9 +1298,9 @@ public class DataResolverTest extends AbstractReadResponseTest
         assertEquals(update.metadata().name, cfm.name);
     }
 
-    private ReplicaPlan.SharedForRangeRead plan(EndpointsForRange replicas, ConsistencyLevel consistencyLevel)
+    private ReplicaLayout.ForRange plan(EndpointsForRange replicas, ConsistencyLevel consistencyLevel)
     {
-        return ReplicaPlan.shared(new ReplicaPlan.ForRangeRead(ks, consistencyLevel, ReplicaUtils.FULL_BOUNDS, replicas, replicas));
+        return new ReplicaLayout.ForRange(ks, consistencyLevel, ReplicaUtils.FULL_BOUNDS, replicas, replicas);
     }
 
     private static void resolveAndConsume(DataResolver resolver)

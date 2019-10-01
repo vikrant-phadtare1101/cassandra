@@ -1,5 +1,6 @@
 package org.apache.cassandra.service.reads.repair;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -9,7 +10,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Ignore;
@@ -41,8 +41,10 @@ import org.apache.cassandra.db.rows.RowIterator;
 import org.apache.cassandra.locator.EndpointsForRange;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaLayout;
 import org.apache.cassandra.locator.ReplicaUtils;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.MigrationManager;
@@ -52,7 +54,6 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static org.apache.cassandra.locator.Replica.fullReplica;
 import static org.apache.cassandra.locator.ReplicaUtils.FULL_RANGE;
-import static org.apache.cassandra.net.Verb.INTERNAL_RSP;
 
 @Ignore
 public abstract  class AbstractReadRepairTest
@@ -69,7 +70,7 @@ public abstract  class AbstractReadRepairTest
     static Replica replica2;
     static Replica replica3;
     static EndpointsForRange replicas;
-    static ReplicaPlan.ForRead<?> replicaPlan;
+    static ReplicaLayout<?, ?> replicaLayout;
 
     static long now = TimeUnit.NANOSECONDS.toMicros(System.nanoTime());
     static DecoratedKey key;
@@ -161,12 +162,14 @@ public abstract  class AbstractReadRepairTest
     }
 
     @SuppressWarnings("resource")
-    static Message<ReadResponse> msg(InetAddressAndPort from, Cell... cells)
+    static MessageIn<ReadResponse> msg(InetAddressAndPort from, Cell... cells)
     {
         UnfilteredPartitionIterator iter = new SingletonUnfilteredPartitionIterator(update(cells).unfilteredIterator());
-        return Message.builder(INTERNAL_RSP, ReadResponse.createDataResponse(iter, command))
-                      .from(from)
-                      .build();
+        return MessageIn.create(from,
+                                ReadResponse.createDataResponse(iter, command),
+                                Collections.emptyMap(),
+                                MessagingService.Verb.INTERNAL_RESPONSE,
+                                MessagingService.current_version);
     }
 
     static class ResultConsumer implements Consumer<PartitionIterator>
@@ -201,7 +204,7 @@ public abstract  class AbstractReadRepairTest
         cfs = ks.getColumnFamilyStore("tbl");
 
         cfs.sampleReadLatencyNanos = 0;
-        cfs.additionalWriteLatencyNanos = 0;
+        cfs.transientWriteLatencyNanos = 0;
 
         target1 = InetAddressAndPort.getByName("127.0.0.255");
         target2 = InetAddressAndPort.getByName("127.0.0.254");
@@ -214,7 +217,7 @@ public abstract  class AbstractReadRepairTest
         replica3 = fullReplica(target3, FULL_RANGE);
         replicas = EndpointsForRange.of(replica1, replica2, replica3);
 
-        replicaPlan = replicaPlan(ConsistencyLevel.QUORUM, replicas);
+        replicaLayout = replicaLayout(ConsistencyLevel.QUORUM, replicas);
 
         // default test values
         key  = dk(5);
@@ -239,33 +242,24 @@ public abstract  class AbstractReadRepairTest
         assert configured : "configureClass must be called in a @BeforeClass method";
 
         cfs.sampleReadLatencyNanos = 0;
-        cfs.additionalWriteLatencyNanos = 0;
+        cfs.transientWriteLatencyNanos = 0;
     }
 
-    static ReplicaPlan.ForRangeRead replicaPlan(ConsistencyLevel consistencyLevel, EndpointsForRange replicas)
+    static ReplicaLayout.ForRange replicaLayout(EndpointsForRange replicas, EndpointsForRange targets)
     {
-        return replicaPlan(ks, consistencyLevel, replicas, replicas);
+        return new ReplicaLayout.ForRange(ks, ConsistencyLevel.QUORUM, ReplicaUtils.FULL_BOUNDS, replicas, targets);
     }
 
-    static ReplicaPlan.ForRangeRead replicaPlan(EndpointsForRange replicas, EndpointsForRange targets)
+    static ReplicaLayout.ForRange replicaLayout(ConsistencyLevel consistencyLevel, EndpointsForRange replicas)
     {
-        return replicaPlan(ks, ConsistencyLevel.QUORUM, replicas, targets);
-    }
-    static ReplicaPlan.ForRangeRead replicaPlan(Keyspace keyspace, ConsistencyLevel consistencyLevel, EndpointsForRange replicas)
-    {
-        return replicaPlan(keyspace, consistencyLevel, replicas, replicas);
-    }
-    static ReplicaPlan.ForRangeRead replicaPlan(Keyspace keyspace, ConsistencyLevel consistencyLevel, EndpointsForRange replicas, EndpointsForRange targets)
-    {
-        return new ReplicaPlan.ForRangeRead(keyspace, consistencyLevel,
-                ReplicaUtils.FULL_BOUNDS, replicas, targets);
+        return new ReplicaLayout.ForRange(ks, consistencyLevel, ReplicaUtils.FULL_BOUNDS, replicas, replicas);
     }
 
-    public abstract InstrumentedReadRepair createInstrumentedReadRepair(ReadCommand command, ReplicaPlan.Shared<?, ?> replicaPlan, long queryStartNanoTime);
+    public abstract InstrumentedReadRepair createInstrumentedReadRepair(ReadCommand command, ReplicaLayout<?, ?> replicaLayout, long queryStartNanoTime);
 
-    public InstrumentedReadRepair createInstrumentedReadRepair(ReplicaPlan.Shared<?, ?> replicaPlan)
+    public InstrumentedReadRepair createInstrumentedReadRepair(ReplicaLayout<?, ?> replicaLayout)
     {
-        return createInstrumentedReadRepair(command, replicaPlan, System.nanoTime());
+        return createInstrumentedReadRepair(command, replicaLayout, System.nanoTime());
 
     }
 
@@ -276,7 +270,7 @@ public abstract  class AbstractReadRepairTest
     @Test
     public void readSpeculationCycle()
     {
-        InstrumentedReadRepair repair = createInstrumentedReadRepair(ReplicaPlan.shared(replicaPlan(replicas, EndpointsForRange.of(replica1, replica2))));
+        InstrumentedReadRepair repair = createInstrumentedReadRepair(replicaLayout(replicas, EndpointsForRange.of(replica1, replica2)));
         ResultConsumer consumer = new ResultConsumer();
 
         Assert.assertEquals(epSet(), repair.getReadRecipients());
@@ -295,15 +289,15 @@ public abstract  class AbstractReadRepairTest
     @Test
     public void noSpeculationRequired()
     {
-        InstrumentedReadRepair repair = createInstrumentedReadRepair(ReplicaPlan.shared(replicaPlan(replicas, EndpointsForRange.of(replica1, replica2))));
+        InstrumentedReadRepair repair = createInstrumentedReadRepair(replicaLayout(replicas, EndpointsForRange.of(replica1, replica2)));
         ResultConsumer consumer = new ResultConsumer();
 
         Assert.assertEquals(epSet(), repair.getReadRecipients());
         repair.startRepair(null, consumer);
 
         Assert.assertEquals(epSet(target1, target2), repair.getReadRecipients());
-        repair.getReadCallback().onResponse(msg(target1, cell1));
-        repair.getReadCallback().onResponse(msg(target2, cell1));
+        repair.getReadCallback().response(msg(target1, cell1));
+        repair.getReadCallback().response(msg(target2, cell1));
 
         repair.maybeSendAdditionalReads();
         Assert.assertEquals(epSet(target1, target2), repair.getReadRecipients());

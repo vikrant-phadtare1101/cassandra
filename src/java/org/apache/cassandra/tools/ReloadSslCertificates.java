@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.tools;
 
-import java.io.IOException;
-
 import io.airlift.airline.Command;
 
 @Command(name = "reloadssl", description = "Signals Cassandra to reload SSL certificates")
@@ -27,13 +25,6 @@ public class ReloadSslCertificates extends NodeTool.NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        try
-        {
-            probe.reloadSslCerts();
-        }
-        catch (IOException e)
-        {
-            throw new RuntimeException("Failed to reload SSL certificates. Please check the SSL certificates", e);
-        }
+        probe.reloadSslCerts();
     }
 }

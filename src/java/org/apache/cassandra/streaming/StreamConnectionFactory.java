@@ -21,9 +21,9 @@ package org.apache.cassandra.streaming;
 import java.io.IOException;
 
 import io.netty.channel.Channel;
-import org.apache.cassandra.net.OutboundConnectionSettings;
+import org.apache.cassandra.net.async.OutboundConnectionIdentifier;
 
 public interface StreamConnectionFactory
 {
-    Channel createConnection(OutboundConnectionSettings template, int messagingVersion) throws IOException;
+    Channel createConnection(OutboundConnectionIdentifier connectionId, int protocolVersion) throws IOException;
 }

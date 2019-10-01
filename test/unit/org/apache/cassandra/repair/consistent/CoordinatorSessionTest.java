@@ -35,7 +35,6 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
 import org.apache.cassandra.repair.AbstractRepairTest;
 import org.apache.cassandra.repair.RepairSessionResult;
 import org.apache.cassandra.repair.messages.FailSession;
@@ -94,13 +93,13 @@ public class CoordinatorSessionTest extends AbstractRepairTest
 
         Map<InetAddressAndPort, List<RepairMessage>> sentMessages = new HashMap<>();
 
-        protected void sendMessage(InetAddressAndPort destination, Message<RepairMessage> message)
+        protected void sendMessage(InetAddressAndPort destination, RepairMessage message)
         {
             if (!sentMessages.containsKey(destination))
             {
                 sentMessages.put(destination, new ArrayList<>());
             }
-            sentMessages.get(destination).add(message.payload);
+            sentMessages.get(destination).add(message);
         }
 
         Runnable onSetRepairing = null;
@@ -375,42 +374,31 @@ public class CoordinatorSessionTest extends AbstractRepairTest
 
         coordinator.sentMessages.clear();
 
-        // participants respond to coordinator, and repair begins once all participants have responded
+        // participants respond to coordinator, and repair begins once all participants have responded with success
         Assert.assertEquals(ConsistentSession.State.PREPARING, coordinator.getState());
 
         coordinator.handlePrepareResponse(PARTICIPANT1, true);
         Assert.assertEquals(ConsistentSession.State.PREPARING, coordinator.getState());
-        Assert.assertEquals(PREPARED, coordinator.getParticipantState(PARTICIPANT1));
-        Assert.assertFalse(sessionResult.isDone());
 
         // participant 2 fails to prepare for consistent repair
         Assert.assertFalse(coordinator.failCalled);
         coordinator.handlePrepareResponse(PARTICIPANT2, false);
-        Assert.assertEquals(ConsistentSession.State.PREPARING, coordinator.getState());
-        // we should have sent failure messages to the other participants, but not yet marked them failed internally
-        assertMessageSent(coordinator, PARTICIPANT1, new FailSession(coordinator.sessionID));
-        assertMessageSent(coordinator, PARTICIPANT2, new FailSession(coordinator.sessionID));
-        assertMessageSent(coordinator, PARTICIPANT3, new FailSession(coordinator.sessionID));
-        Assert.assertEquals(FAILED, coordinator.getParticipantState(PARTICIPANT2));
-        Assert.assertEquals(PREPARED, coordinator.getParticipantState(PARTICIPANT1));
-        Assert.assertEquals(PREPARING, coordinator.getParticipantState(PARTICIPANT3));
-        Assert.assertFalse(sessionResult.isDone());
-        Assert.assertFalse(coordinator.failCalled);
-        coordinator.sentMessages.clear();
+        Assert.assertEquals(ConsistentSession.State.FAILED, coordinator.getState());
+        Assert.assertTrue(coordinator.failCalled);
 
-        // last outstanding response should cause repair to complete in failed state
+        // additional success messages should be ignored
         Assert.assertFalse(coordinator.setRepairingCalled);
         coordinator.onSetRepairing = Assert::fail;
         coordinator.handlePrepareResponse(PARTICIPANT3, true);
-        Assert.assertTrue(coordinator.failCalled);
         Assert.assertFalse(coordinator.setRepairingCalled);
         Assert.assertFalse(repairSubmitted.get());
 
-        // all participants that did not fail should have been notified of session failure
-        RepairMessage expected = new FailSession(coordinator.sessionID);
-        assertMessageSent(coordinator, PARTICIPANT1, expected);
-        assertMessageSent(coordinator, PARTICIPANT3, expected);
-        Assert.assertFalse(coordinator.sentMessages.containsKey(PARTICIPANT2));
+        // all participants should have been notified of session failure
+        for (InetAddressAndPort participant : PARTICIPANTS)
+        {
+            RepairMessage expected = new FailSession(coordinator.sessionID);
+            assertMessageSent(coordinator, participant, expected);
+        }
 
         Assert.assertTrue(sessionResult.isDone());
         Assert.assertTrue(hasFailures.get());

@@ -18,35 +18,26 @@
 
 package org.apache.cassandra.locator;
 
-import org.apache.cassandra.locator.ReplicaCollection.Builder.Conflict;
+import org.apache.cassandra.locator.ReplicaCollection.Mutable.Conflict;
 import org.apache.cassandra.utils.FBUtilities;
 
-import java.util.AbstractList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-import com.google.common.collect.Lists;
-
-/**
- * A collection of Endpoints for a given ring position.  This will typically reside in a ReplicaLayout,
- * representing some subset of the endpoints for the Token or Range
- * @param <E> The concrete type of Endpoints, that will be returned by the modifying methods
- */
 public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaCollection<E>
 {
-    static ReplicaMap<InetAddressAndPort> endpointMap(ReplicaList list) { return new ReplicaMap<>(list, Replica::endpoint); }
-    static final ReplicaMap<InetAddressAndPort> EMPTY_MAP = endpointMap(EMPTY_LIST);
+    static final Map<InetAddressAndPort, Replica> EMPTY_MAP = Collections.unmodifiableMap(new LinkedHashMap<>());
 
-    // volatile not needed, as has only final members,
-    // besides (transitively) those that cache objects that themselves have only final members
-    ReplicaMap<InetAddressAndPort> byEndpoint;
+    volatile Map<InetAddressAndPort, Replica> byEndpoint;
 
-    Endpoints(ReplicaList list, ReplicaMap<InetAddressAndPort> byEndpoint)
+    Endpoints(List<Replica> list, boolean isSnapshot, Map<InetAddressAndPort, Replica> byEndpoint)
     {
-        super(list);
+        super(list, isSnapshot);
         this.byEndpoint = byEndpoint;
     }
 
@@ -56,28 +47,18 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
         return byEndpoint().keySet();
     }
 
-    public List<InetAddressAndPort> endpointList()
-    {
-        return new AbstractList<InetAddressAndPort>()
-        {
-            public InetAddressAndPort get(int index)
-            {
-                return list.get(index).endpoint();
-            }
-
-            public int size()
-            {
-                return list.size;
-            }
-        };
-    }
-
     public Map<InetAddressAndPort, Replica> byEndpoint()
     {
-        ReplicaMap<InetAddressAndPort> map = byEndpoint;
+        Map<InetAddressAndPort, Replica> map = byEndpoint;
         if (map == null)
-            byEndpoint = map = endpointMap(list);
+            byEndpoint = map = buildByEndpoint(list);
         return map;
+    }
+
+    public boolean contains(InetAddressAndPort endpoint, boolean isFull)
+    {
+        Replica replica = byEndpoint().get(endpoint);
+        return replica != null && replica.isFull() == isFull;
     }
 
     @Override
@@ -89,40 +70,38 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
                         replica);
     }
 
+    private static Map<InetAddressAndPort, Replica> buildByEndpoint(List<Replica> list)
+    {
+        // TODO: implement a delegating map that uses our superclass' list, and is immutable
+        Map<InetAddressAndPort, Replica> byEndpoint = new LinkedHashMap<>(list.size());
+        for (Replica replica : list)
+        {
+            Replica prev = byEndpoint.put(replica.endpoint(), replica);
+            assert prev == null : "duplicate endpoint in EndpointsForRange: " + prev + " and " + replica;
+        }
+
+        return Collections.unmodifiableMap(byEndpoint);
+    }
+
     public E withoutSelf()
     {
         InetAddressAndPort self = FBUtilities.getBroadcastAddressAndPort();
         return filter(r -> !self.equals(r.endpoint()));
     }
 
-    public Replica selfIfPresent()
-    {
-        InetAddressAndPort self = FBUtilities.getBroadcastAddressAndPort();
-        return byEndpoint().get(self);
-    }
-
-    /**
-     * @return a collection without the provided endpoints, otherwise in the same order as this collection
-     */
     public E without(Set<InetAddressAndPort> remove)
     {
         return filter(r -> !remove.contains(r.endpoint()));
     }
 
-    /**
-     * @return a collection with only the provided endpoints (ignoring any not present), otherwise in the same order as this collection
-     */
     public E keep(Set<InetAddressAndPort> keep)
     {
         return filter(r -> keep.contains(r.endpoint()));
     }
 
-    /**
-     * @return a collection containing the Replica from this collection for the provided endpoints, in the order of the provided endpoints
-     */
-    public E select(Iterable<InetAddressAndPort> endpoints, boolean ignoreMissing)
+    public E keep(Iterable<InetAddressAndPort> endpoints)
     {
-        Builder<E> copy = newBuilder(
+        ReplicaCollection.Mutable<E> copy = newMutable(
                 endpoints instanceof Collection<?>
                         ? ((Collection<InetAddressAndPort>) endpoints).size()
                         : size()
@@ -130,16 +109,12 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
         Map<InetAddressAndPort, Replica> byEndpoint = byEndpoint();
         for (InetAddressAndPort endpoint : endpoints)
         {
-            Replica select = byEndpoint.get(endpoint);
-            if (select == null)
-            {
-                if (!ignoreMissing)
-                    throw new IllegalArgumentException(endpoint + " is not present in " + this);
+            Replica keep = byEndpoint.get(endpoint);
+            if (keep == null)
                 continue;
-            }
-            copy.add(select, Builder.Conflict.DUPLICATE);
+            copy.add(keep, ReplicaCollection.Mutable.Conflict.DUPLICATE);
         }
-        return copy.build();
+        return copy.asSnapshot();
     }
 
     /**
@@ -149,19 +124,34 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
      *   2) because a movement that changes the type of replication from transient to full must be handled
      *      differently for reads and writes (with the reader treating it as transient, and writer as full)
      *
-     * The method {@link ReplicaLayout#haveWriteConflicts} can be used to detect and resolve any issues
+     * The method haveConflicts() below, and resolveConflictsInX, are used to detect and resolve any issues
      */
     public static <E extends Endpoints<E>> E concat(E natural, E pending)
     {
         return AbstractReplicaCollection.concat(natural, pending, Conflict.NONE);
     }
 
-    public static <E extends Endpoints<E>> E append(E replicas, Replica extraReplica)
+    public static <E extends Endpoints<E>> boolean haveConflicts(E natural, E pending)
     {
-        Builder<E> builder = replicas.newBuilder(replicas.size() + 1);
-        builder.addAll(replicas);
-        builder.add(extraReplica, Conflict.NONE);
-        return builder.build();
+        Set<InetAddressAndPort> naturalEndpoints = natural.endpoints();
+        for (InetAddressAndPort pendingEndpoint : pending.endpoints())
+        {
+            if (naturalEndpoints.contains(pendingEndpoint))
+                return true;
+        }
+        return false;
+    }
+
+    // must apply first
+    public static <E extends Endpoints<E>> E resolveConflictsInNatural(E natural, E pending)
+    {
+        return natural.filter(r -> !r.isTransient() || !pending.contains(r.endpoint(), true));
+    }
+
+    // must apply second
+    public static <E extends Endpoints<E>> E resolveConflictsInPending(E natural, E pending)
+    {
+        return pending.without(natural.endpoints());
     }
 
 }

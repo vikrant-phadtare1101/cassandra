@@ -22,7 +22,6 @@ import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Objects;
 import java.util.stream.Collectors;
 
 import com.google.common.collect.AbstractIterator;
@@ -138,11 +137,6 @@ public class DriverResultSet implements ResultHandler.ComparableResultSet
             return true;
         }
 
-        public int hashCode()
-        {
-            return Objects.hash(row);
-        }
-
         public String toString()
         {
             StringBuilder sb = new StringBuilder();
@@ -216,11 +210,6 @@ public class DriverResultSet implements ResultHandler.ComparableResultSet
 
             return asList().equals(o.asList());
         }
-
-        public int hashCode()
-        {
-            return Objects.hash(columnDefinitions, failed, failureException);
-        }
     }
 
     public static class DriverDefinition implements ResultHandler.ComparableDefinition
@@ -248,11 +237,6 @@ public class DriverResultSet implements ResultHandler.ComparableResultSet
                 return false;
 
             return def.equals(((DriverDefinition)oo).def);
-        }
-
-        public int hashCode()
-        {
-            return Objects.hash(def);
         }
 
         public String toString()

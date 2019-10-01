@@ -100,7 +100,7 @@ public final class Replica implements Comparable<Replica>
         return endpoint;
     }
 
-    public boolean isSelf()
+    public boolean isLocal()
     {
         return endpoint.equals(FBUtilities.getBroadcastAddressAndPort());
     }
@@ -110,7 +110,7 @@ public final class Replica implements Comparable<Replica>
         return range;
     }
 
-    public final boolean isFull()
+    public boolean isFull()
     {
         return full;
     }
