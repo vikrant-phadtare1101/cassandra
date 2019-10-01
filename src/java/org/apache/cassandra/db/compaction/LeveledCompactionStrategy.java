@@ -493,9 +493,9 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
             return currentScanner == null ? totalBytesScanned : totalBytesScanned + currentScanner.getBytesScanned();
         }
 
-        public Set<SSTableReader> getBackingSSTables()
+        public String getBackingFiles()
         {
-            return ImmutableSet.copyOf(sstables);
+            return Joiner.on(", ").join(sstables);
         }
     }
 

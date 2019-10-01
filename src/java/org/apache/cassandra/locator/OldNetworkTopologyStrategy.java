@@ -54,7 +54,7 @@ public class OldNetworkTopologyStrategy extends AbstractReplicationStrategy
         Token previousToken = metadata.getPredecessor(primaryToken);
         Range<Token> tokenRange = new Range<>(previousToken, primaryToken);
 
-        EndpointsForRange.Builder replicas = new EndpointsForRange.Builder(tokenRange, rf.allReplicas);
+        EndpointsForRange.Builder replicas = EndpointsForRange.builder(tokenRange, rf.allReplicas);
 
         assert !rf.hasTransientReplicas() : "support transient replicas";
         replicas.add(new Replica(metadata.getEndpoint(primaryToken), previousToken, primaryToken, true));
@@ -98,7 +98,7 @@ public class OldNetworkTopologyStrategy extends AbstractReplicationStrategy
             {
                 Token t = iter.next();
                 Replica replica = new Replica(metadata.getEndpoint(t), previousToken, primaryToken, true);
-                if (!replicas.endpoints().contains(replica.endpoint()))
+                if (!replicas.containsEndpoint(replica.endpoint()))
                     replicas.add(replica);
             }
         }

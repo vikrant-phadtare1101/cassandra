@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -69,7 +68,6 @@ import org.apache.cassandra.utils.concurrent.Transactional;
 
 import static org.apache.cassandra.service.ActiveRepairService.NO_PENDING_REPAIR;
 import static org.apache.cassandra.service.ActiveRepairService.UNREPAIRED_SSTABLE;
-import static org.apache.cassandra.Util.assertOnDiskState;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -151,14 +149,14 @@ public class AntiCompactionTest
             if (txn == null)
                 throw new IllegalStateException();
             registerParentRepairSession(sessionID, ranges.ranges(), FBUtilities.nowInSeconds(), sessionID);
-            CompactionManager.instance.performAnticompaction(store, ranges, refs, txn, sessionID, () -> false);
+            CompactionManager.instance.performAnticompaction(store, ranges, refs, txn, sessionID);
         }
 
         SSTableStats stats = new SSTableStats();
         stats.numLiveSSTables = store.getLiveSSTables().size();
 
-        Predicate<Token> fullContains = t -> Iterables.any(ranges.onlyFull().ranges(), r -> r.contains(t));
-        Predicate<Token> transContains = t -> Iterables.any(ranges.onlyTransient().ranges(), r -> r.contains(t));
+        Predicate<Token> fullContains = t -> Iterables.any(ranges.fullRanges(), r -> r.contains(t));
+        Predicate<Token> transContains = t -> Iterables.any(ranges.transientRanges(), r -> r.contains(t));
         for (SSTableReader sstable : store.getLiveSSTables())
         {
             assertFalse(sstable.isRepaired());
@@ -209,7 +207,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 4);
         assertEquals(stats.transKeys, 0);
         assertEquals(stats.unrepairedKeys, 6);
-        assertOnDiskState(store, 2);
     }
 
     @Test
@@ -221,7 +218,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 4);
         assertEquals(stats.transKeys, 4);
         assertEquals(stats.unrepairedKeys, 2);
-        assertOnDiskState(store, 3);
     }
 
     @Test
@@ -233,7 +229,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 0);
         assertEquals(stats.transKeys, 4);
         assertEquals(stats.unrepairedKeys, 6);
-        assertOnDiskState(store, 2);
     }
 
     @Test
@@ -252,7 +247,7 @@ public class AntiCompactionTest
         try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
              Refs<SSTableReader> refs = Refs.ref(sstables))
         {
-            CompactionManager.instance.performAnticompaction(cfs, atEndpoint(ranges, NO_RANGES), refs, txn, parentRepairSession, () -> false);
+            CompactionManager.instance.performAnticompaction(cfs, atEndpoint(ranges, NO_RANGES), refs, txn, parentRepairSession);
         }
         long sum = 0;
         long rows = 0;
@@ -263,7 +258,6 @@ public class AntiCompactionTest
         }
         assertEquals(sum, cfs.metric.liveDiskSpaceUsed.getCount());
         assertEquals(rows, 1000 * (1000 * 5));//See writeFile for how this number is derived
-        assertOnDiskState(cfs, 2);
     }
 
     private SSTableReader writeFile(ColumnFamilyStore cfs, int count)
@@ -322,7 +316,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 40);
         assertEquals(stats.transKeys, 0);
         assertEquals(stats.unrepairedKeys, 60);
-        assertOnDiskState(store, 10);
     }
 
     @Test
@@ -345,7 +338,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 0);
         assertEquals(stats.transKeys, 40);
         assertEquals(stats.unrepairedKeys, 60);
-        assertOnDiskState(store, 10);
     }
 
     @Test
@@ -364,7 +356,6 @@ public class AntiCompactionTest
         assertEquals(stats.pendingKeys, 40);
         assertEquals(stats.transKeys, 40);
         assertEquals(stats.unrepairedKeys, 20);
-        assertOnDiskState(store, 15);
     }
 
     @Test
@@ -382,7 +373,7 @@ public class AntiCompactionTest
         try (LifecycleTransaction txn = store.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
              Refs<SSTableReader> refs = Refs.ref(sstables))
         {
-            CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, pendingRepair, () -> false);
+            CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, pendingRepair);
         }
 
         assertThat(store.getLiveSSTables().size(), is(1));
@@ -390,7 +381,6 @@ public class AntiCompactionTest
         assertThat(Iterables.get(store.getLiveSSTables(), 0).isPendingRepair(), is(true));
         assertThat(Iterables.get(store.getLiveSSTables(), 0).selfRef().globalCount(), is(1));
         assertThat(store.getTracker().getCompacting().size(), is(0));
-        assertOnDiskState(store, 1);
     }
 
     @Test
@@ -416,7 +406,7 @@ public class AntiCompactionTest
         try (LifecycleTransaction txn = store.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
              Refs<SSTableReader> refs = Refs.ref(sstables))
         {
-            CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, parentRepairSession, () -> false);
+            CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, parentRepairSession);
         }
         catch (IllegalStateException e)
         {
@@ -424,9 +414,9 @@ public class AntiCompactionTest
         }
 
         assertTrue(gotException);
+        assertThat(store.getLiveSSTables().size(), is(10));
         assertThat(Iterables.get(store.getLiveSSTables(), 0).isRepaired(), is(false));
         assertEquals(refCountBefore, Iterables.get(store.getLiveSSTables(), 0).selfRef().globalCount());
-        assertOnDiskState(cfs, 10);
     }
 
     private ColumnFamilyStore prepareColumnFamilyStore()
@@ -486,7 +476,7 @@ public class AntiCompactionTest
             Assert.assertFalse(refs.isEmpty());
             try
             {
-                CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, missingRepairSession, () -> false);
+                CompactionManager.instance.performAnticompaction(store, atEndpoint(ranges, NO_RANGES), refs, txn, missingRepairSession);
                 Assert.fail("expected RuntimeException");
             }
             catch (RuntimeException e)
