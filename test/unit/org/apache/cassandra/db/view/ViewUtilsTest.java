@@ -25,7 +25,7 @@ import java.util.Optional;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
@@ -82,7 +82,7 @@ public class ViewUtilsTest
                                                                              new StringToken("BB"));
 
         Assert.assertTrue(naturalEndpoint.isPresent());
-        Assert.assertEquals(InetAddressAndPort.getByName("127.0.0.2"), naturalEndpoint.get().endpoint());
+        Assert.assertEquals(InetAddressAndPort.getByName("127.0.0.2"), naturalEndpoint.get().getEndpoint());
     }
 
 
@@ -115,7 +115,7 @@ public class ViewUtilsTest
                                                                              new StringToken("BB"));
 
         Assert.assertTrue(naturalEndpoint.isPresent());
-        Assert.assertEquals(InetAddressAndPort.getByName("127.0.0.1"), naturalEndpoint.get().endpoint());
+        Assert.assertEquals(InetAddressAndPort.getByName("127.0.0.1"), naturalEndpoint.get().getEndpoint());
     }
 
     @Test

@@ -22,7 +22,6 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.google.common.collect.Collections2;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
@@ -30,8 +29,8 @@ import org.apache.cassandra.dht.Token;
 public class SystemReplicas
 {
     private static final Map<InetAddressAndPort, Replica> systemReplicas = new ConcurrentHashMap<>();
-    public static final Range<Token> FULL_RANGE = new Range<>(DatabaseDescriptor.getPartitioner().getMinimumToken(),
-                                                              DatabaseDescriptor.getPartitioner().getMinimumToken());
+    private static final Range<Token> FULL_RANGE = new Range<>(DatabaseDescriptor.getPartitioner().getMinimumToken(),
+                                                               DatabaseDescriptor.getPartitioner().getMinimumToken());
 
     private static Replica createSystemReplica(InetAddressAndPort endpoint)
     {
@@ -41,17 +40,21 @@ public class SystemReplicas
     /**
      * There are a few places where a system function borrows write path functionality, but doesn't otherwise
      * fit into normal replication strategies (ie: hints and batchlog). So here we provide a replica instance
+     * @param endpoint
+     * @return
      */
     public static Replica getSystemReplica(InetAddressAndPort endpoint)
     {
         return systemReplicas.computeIfAbsent(endpoint, SystemReplicas::createSystemReplica);
     }
 
-    public static EndpointsForRange getSystemReplicas(Collection<InetAddressAndPort> endpoints)
+    public static ReplicaList getSystemReplicas(Collection<InetAddressAndPort> endpoints)
     {
-        if (endpoints.isEmpty())
-            return EndpointsForRange.empty(FULL_RANGE);
-
-        return EndpointsForRange.copyOf(Collections2.transform(endpoints, SystemReplicas::getSystemReplica));
+        ReplicaList rlist = new ReplicaList(endpoints.size());
+        for (InetAddressAndPort endpoint: endpoints)
+        {
+            rlist.add(getSystemReplica(endpoint));
+        }
+        return rlist;
     }
 }

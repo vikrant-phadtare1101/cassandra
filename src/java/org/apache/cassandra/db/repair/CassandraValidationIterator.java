@@ -39,8 +39,6 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
-import org.apache.cassandra.db.compaction.ActiveCompactions;
-import org.apache.cassandra.db.compaction.ActiveCompactionsTracker;
 import org.apache.cassandra.db.compaction.CompactionController;
 import org.apache.cassandra.db.compaction.CompactionInterruptedException;
 import org.apache.cassandra.db.compaction.CompactionIterator;
@@ -109,9 +107,9 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
 
     private static class ValidationCompactionIterator extends CompactionIterator
     {
-        public ValidationCompactionIterator(List<ISSTableScanner> scanners, ValidationCompactionController controller, int nowInSec, ActiveCompactionsTracker activeCompactions)
+        public ValidationCompactionIterator(List<ISSTableScanner> scanners, ValidationCompactionController controller, int nowInSec, CompactionMetrics metrics)
         {
-            super(OperationType.VALIDATION, scanners, controller, nowInSec, UUIDGen.getTimeUUID(), activeCompactions);
+            super(OperationType.VALIDATION, scanners, controller, nowInSec, UUIDGen.getTimeUUID(), metrics);
         }
     }
 
@@ -228,7 +226,7 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
         Preconditions.checkArgument(sstables != null);
         controller = new ValidationCompactionController(cfs, getDefaultGcBefore(cfs, nowInSec));
         scanners = cfs.getCompactionStrategyManager().getScanners(sstables, ranges);
-        ci = new ValidationCompactionIterator(scanners.scanners, controller, nowInSec, CompactionManager.instance.active);
+        ci = new ValidationCompactionIterator(scanners.scanners, controller, nowInSec, CompactionManager.instance.getMetrics());
 
         long allPartitions = 0;
         rangePartitionCounts = Maps.newHashMapWithExpectedSize(ranges.size());
@@ -283,15 +281,23 @@ public class CassandraValidationIterator extends ValidationPartitionIterator
         return cfs.metadata.get();
     }
 
+    private void throwIfStopRequested()
+    {
+        if (ci.isStopRequested())
+            throw new CompactionInterruptedException(ci.getCompactionInfo());
+    }
+
     @Override
     public boolean hasNext()
     {
+        throwIfStopRequested();
         return ci.hasNext();
     }
 
     @Override
     public UnfilteredRowIterator next()
     {
+        throwIfStopRequested();
         return ci.next();
     }
 

@@ -55,8 +55,6 @@ public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterat
         try
         {
             DeletionTime partitionLevelDeletion = DeletionTime.serializer.deserialize(file);
-            if (!partitionLevelDeletion.validate())
-                UnfilteredValidation.handleInvalid(sstable.metadata(), key, sstable, "partitionLevelDeletion="+partitionLevelDeletion.toString());
             SerializationHelper helper = new SerializationHelper(sstable.metadata(), sstable.descriptor.version.correspondingMessagingVersion(), SerializationHelper.Flag.LOCAL);
             SSTableSimpleIterator iterator = SSTableSimpleIterator.create(sstable.metadata(), file, sstable.header, helper, partitionLevelDeletion);
             return new SSTableIdentityIterator(sstable, key, partitionLevelDeletion, file.getPath(), iterator);
@@ -171,9 +169,7 @@ public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterat
 
     protected Unfiltered doCompute()
     {
-        Unfiltered unfiltered = iterator.next();
-        UnfilteredValidation.maybeValidateUnfiltered(unfiltered, metadata(), key, sstable);
-        return unfiltered;
+        return iterator.next();
     }
 
     public void close()
@@ -190,7 +186,7 @@ public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterat
     {
         // We could return sstable.header.stats(), but this may not be as accurate than the actual sstable stats (see
         // SerializationHeader.make() for details) so we use the latter instead.
-        return sstable.stats();
+        return new EncodingStats(sstable.getMinTimestamp(), sstable.getMinLocalDeletionTime(), sstable.getMinTTL());
     }
 
     public int compareTo(SSTableIdentityIterator o)

@@ -116,11 +116,6 @@ public class RangeTombstoneBoundaryMarker extends AbstractRangeTombstoneMarker<C
         return true;
     }
 
-    public boolean hasInvalidDeletions()
-    {
-        return !startDeletion.validate() || !endDeletion.validate();
-    }
-
     public RangeTombstoneBoundaryMarker copy(AbstractAllocator allocator)
     {
         return new RangeTombstoneBoundaryMarker(clustering().copy(allocator), endDeletion, startDeletion);
@@ -142,12 +137,12 @@ public class RangeTombstoneBoundaryMarker extends AbstractRangeTombstoneMarker<C
 
     public RangeTombstoneBoundMarker createCorrespondingCloseMarker(boolean reversed)
     {
-        return new RangeTombstoneBoundMarker(closeBound(reversed), closeDeletionTime(reversed));
+        return new RangeTombstoneBoundMarker(closeBound(reversed), endDeletion);
     }
 
     public RangeTombstoneBoundMarker createCorrespondingOpenMarker(boolean reversed)
     {
-        return new RangeTombstoneBoundMarker(openBound(reversed), openDeletionTime(reversed));
+        return new RangeTombstoneBoundMarker(openBound(reversed), startDeletion);
     }
 
     public void digest(Hasher hasher)

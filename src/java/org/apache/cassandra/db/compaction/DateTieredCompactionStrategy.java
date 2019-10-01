@@ -26,9 +26,6 @@ import com.google.common.collect.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
@@ -36,6 +33,9 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.CompactionParams;
 import org.apache.cassandra.utils.Pair;
+import org.codehaus.jackson.JsonNode;
+import org.codehaus.jackson.node.JsonNodeFactory;
+import org.codehaus.jackson.node.ObjectNode;
 
 import static com.google.common.collect.Iterables.filter;
 
@@ -105,14 +105,10 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
      */
     private synchronized List<SSTableReader> getNextBackgroundSSTables(final int gcBefore)
     {
-        Set<SSTableReader> uncompacting;
-        synchronized (sstables)
-        {
-            if (sstables.isEmpty())
-                return Collections.emptyList();
+        if (sstables.isEmpty())
+            return Collections.emptyList();
 
-            uncompacting = ImmutableSet.copyOf(filter(cfs.getUncompactingSSTables(), sstables::contains));
-        }
+        Set<SSTableReader> uncompacting = ImmutableSet.copyOf(filter(cfs.getUncompactingSSTables(), sstables::contains));
 
         Set<SSTableReader> expired = Collections.emptySet();
         // we only check for expired sstables every 10 minutes (by default) due to it being an expensive operation
@@ -215,6 +211,11 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
         });
     }
 
+    /**
+     *
+     * @param sstables
+     * @return
+     */
     public static List<Pair<SSTableReader, Long>> createSSTableAndMinTimestampPairs(Iterable<SSTableReader> sstables)
     {
         List<Pair<SSTableReader, Long>> sstableMinTimestampPairs = Lists.newArrayListWithCapacity(Iterables.size(sstables));
@@ -222,15 +223,14 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
             sstableMinTimestampPairs.add(Pair.create(sstable, sstable.getMinTimestamp()));
         return sstableMinTimestampPairs;
     }
-
     @Override
-    public synchronized void addSSTable(SSTableReader sstable)
+    public void addSSTable(SSTableReader sstable)
     {
         sstables.add(sstable);
     }
 
     @Override
-    public synchronized void removeSSTable(SSTableReader sstable)
+    public void removeSSTable(SSTableReader sstable)
     {
         sstables.remove(sstable);
     }

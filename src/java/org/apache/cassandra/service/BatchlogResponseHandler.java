@@ -24,7 +24,7 @@ import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.exceptions.WriteFailureException;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 
 public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
 {
@@ -36,7 +36,7 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
 
     public BatchlogResponseHandler(AbstractWriteResponseHandler<T> wrapped, int requiredBeforeFinish, BatchlogCleanup cleanup, long queryStartNanoTime)
     {
-        super(wrapped.replicaPlan, wrapped.callback, wrapped.writeType, queryStartNanoTime);
+        super(wrapped.keyspace, wrapped.naturalReplicas, wrapped.pendingReplicas, wrapped.consistencyLevel, wrapped.callback, wrapped.writeType, queryStartNanoTime);
         this.wrapped = wrapped;
         this.requiredBeforeFinish = requiredBeforeFinish;
         this.cleanup = cleanup;
@@ -47,11 +47,16 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         return wrapped.ackCount();
     }
 
-    public void onResponse(Message<T> msg)
+    public void response(MessageIn<T> msg)
     {
-        wrapped.onResponse(msg);
+        wrapped.response(msg);
         if (requiredBeforeFinishUpdater.decrementAndGet(this) == 0)
             cleanup.ackMutation();
+    }
+
+    public boolean isLatencyForSnitch()
+    {
+        return wrapped.isLatencyForSnitch();
     }
 
     public void onFailure(InetAddressAndPort from, RequestFailureReason failureReason)
@@ -59,9 +64,9 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         wrapped.onFailure(from, failureReason);
     }
 
-    public boolean invokeOnFailure()
+    public void assureSufficientLiveNodes()
     {
-        return wrapped.invokeOnFailure();
+        wrapped.assureSufficientLiveNodes();
     }
 
     public void get() throws WriteTimeoutException, WriteFailureException
@@ -69,14 +74,14 @@ public class BatchlogResponseHandler<T> extends AbstractWriteResponseHandler<T>
         wrapped.get();
     }
 
-    protected int blockFor()
+    protected int totalBlockFor()
     {
-        return wrapped.blockFor();
+        return wrapped.totalBlockFor();
     }
 
-    protected int candidateReplicaCount()
+    protected int totalEndpoints()
     {
-        return wrapped.candidateReplicaCount();
+        return wrapped.totalEndpoints();
     }
 
     protected boolean waitingFor(InetAddressAndPort from)

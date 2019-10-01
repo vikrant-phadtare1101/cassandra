@@ -20,7 +20,6 @@ package org.apache.cassandra.service.reads;
 
 import java.net.InetAddress;
 
-
 import org.apache.cassandra.db.ReadCommand;
 import org.apache.cassandra.db.filter.DataLimits;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
@@ -41,7 +40,6 @@ import org.apache.cassandra.locator.Replica;
  */
 public class ShortReadProtection
 {
-    @SuppressWarnings("resource")
     public static UnfilteredPartitionIterator extend(Replica source, UnfilteredPartitionIterator partitions,
                                                      ReadCommand command, DataLimits.Counter mergedResultCounter,
                                                      long queryStartNanoTime, boolean enforceStrictLiveness)

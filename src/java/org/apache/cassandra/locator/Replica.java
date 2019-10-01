@@ -18,41 +18,30 @@
 
 package org.apache.cassandra.locator;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.utils.FBUtilities;
 
 /**
- * A Replica represents an owning node for a copy of a portion of the token ring.
- *
- * It consists of:
- *  - the logical token range that is being replicated (i.e. for the first logical replica only, this will be equal
- *      to one of its owned portions of the token ring; all other replicas will have this token range also)
- *  - an endpoint (IP and port)
- *  - whether the range is replicated in full, or transiently (CASSANDRA-14404)
- *
- * In general, it is preferred to use a Replica to a Range&lt;Token&gt;, particularly when users of the concept depend on
- * knowledge of the full/transient status of the copy.
- *
- * That means you should avoid unwrapping and rewrapping these things and think hard about subtraction
- * and such and what the result is WRT to transientness. Definitely avoid creating fake Replicas with misinformation
- * about endpoints, ranges, or transientness.
+ * Decorated Endpoint
  */
-public final class Replica implements Comparable<Replica>
+public class Replica
 {
-    private final Range<Token> range;
     private final InetAddressAndPort endpoint;
+    private final Range<Token> range;
     private final boolean full;
 
     public Replica(InetAddressAndPort endpoint, Range<Token> range, boolean full)
     {
         Preconditions.checkNotNull(endpoint);
-        Preconditions.checkNotNull(range);
         this.endpoint = endpoint;
         this.range = range;
         this.full = full;
@@ -73,17 +62,6 @@ public final class Replica implements Comparable<Replica>
                Objects.equals(range, replica.range);
     }
 
-    @Override
-    public int compareTo(Replica o)
-    {
-        int c = range.compareTo(o.range);
-        if (c == 0)
-            c = endpoint.compareTo(o.endpoint);
-        if (c == 0)
-            c =  Boolean.compare(full, o.full);
-        return c;
-    }
-
     public int hashCode()
     {
         return Objects.hash(endpoint, range, full);
@@ -92,25 +70,28 @@ public final class Replica implements Comparable<Replica>
     @Override
     public String toString()
     {
-        return (full ? "Full" : "Transient") + '(' + endpoint() + ',' + range + ')';
+        StringBuilder sb = new StringBuilder();
+        sb.append(full ? "Full" : "Transient");
+        sb.append('(').append(getEndpoint()).append(',').append(range).append(')');
+        return sb.toString();
     }
 
-    public final InetAddressAndPort endpoint()
+    public final InetAddressAndPort getEndpoint()
     {
         return endpoint;
     }
 
-    public boolean isSelf()
+    public boolean isLocal()
     {
         return endpoint.equals(FBUtilities.getBroadcastAddressAndPort());
     }
 
-    public Range<Token> range()
+    public Range<Token> getRange()
     {
         return range;
     }
 
-    public final boolean isFull()
+    public boolean isFull()
     {
         return full;
     }
@@ -120,77 +101,65 @@ public final class Replica implements Comparable<Replica>
         return !isFull();
     }
 
-    /**
-     * This is used exclusively in TokenMetadata to check if a portion of a range is already replicated
-     * by an endpoint so that we only mark as pending the portion that is either not replicated sufficiently (transient
-     * when we need full) or at all.
-     *
-     * If it's not replicated at all it needs to be pending because there is no data.
-     * If it's replicated but only transiently and we need to replicate it fully it must be marked as pending until it
-     * is available fully otherwise a read might treat this replica as full and not read from a full replica that has
-     * the data.
-     */
-    public RangesAtEndpoint subtractSameReplication(RangesAtEndpoint toSubtract)
+    public ReplicaSet subtract(Replica that)
     {
-        Set<Range<Token>> subtractedRanges = range().subtractAll(toSubtract.filter(r -> r.isFull() == isFull()).ranges());
-        RangesAtEndpoint.Builder result = RangesAtEndpoint.builder(endpoint, subtractedRanges.size());
-        for (Range<Token> range : subtractedRanges)
+        assert isFull() && that.isFull();  // FIXME: this
+        Set<Range<Token>> ranges = range.subtract(that.range);
+        ReplicaSet replicatedRanges = new ReplicaSet(ranges.size());
+        for (Range<Token> range : ranges)
         {
-            result.add(decorateSubrange(range));
+            replicatedRanges.add(new Replica(getEndpoint(), range, isFull()));
         }
-        return result.build();
+        return replicatedRanges;
     }
 
     /**
-     * Don't use this method and ignore transient status unless you are explicitly handling it outside this method.
-     *
-     * This helper method is used by StorageService.calculateStreamAndFetchRanges to perform subtraction.
-     * It ignores transient status because it's already being handled in calculateStreamAndFetchRanges.
+     * Subtract the ranges of the given replicas from the range of this replica,
+     * returning a set of replicas with the endpoint and transient information of
+     * this replica, and the ranges resulting from the subtraction.
      */
-    public RangesAtEndpoint subtractIgnoreTransientStatus(Range<Token> subtract)
+    public ReplicaSet subtractByRange(ReplicaCollection toSubtract)
     {
-        Set<Range<Token>> ranges = this.range.subtract(subtract);
-        RangesAtEndpoint.Builder result = RangesAtEndpoint.builder(endpoint, ranges.size());
-        for (Range<Token> subrange : ranges)
-            result.add(decorateSubrange(subrange));
-        return result.build();
+        if (isFull() && Iterables.all(toSubtract, Replica::isFull))
+        {
+            Set<Range<Token>> subtractedRanges = getRange().subtractAll(toSubtract.asRangeSet());
+            ReplicaSet replicaSet = new ReplicaSet(subtractedRanges.size());
+            for (Range<Token> range : subtractedRanges)
+            {
+                replicaSet.add(new Replica(getEndpoint(), range, isFull()));
+            }
+            return replicaSet;
+        }
+        else
+        {
+            // FIXME: add support for transient replicas
+            throw new UnsupportedOperationException("transient replicas are currently unsupported");
+        }
+    }
+
+    public void addNormalizeByRange(ReplicaList dst)
+    {
+        List<Range<Token>> normalized = Range.normalize(Collections.singleton(getRange()));
+        for (Range<Token> normalizedRange : normalized)
+        {
+            dst.add(new Replica(getEndpoint(), normalizedRange, isFull()));
+        }
     }
 
     public boolean contains(Range<Token> that)
     {
-        return range().contains(that);
+        return getRange().contains(that);
     }
 
     public boolean intersectsOnRange(Replica replica)
     {
-        return range().intersects(replica.range());
+        return getRange().intersects(replica.getRange());
     }
 
     public Replica decorateSubrange(Range<Token> subrange)
     {
         Preconditions.checkArgument(range.contains(subrange));
-        return new Replica(endpoint(), subrange, isFull());
+        return new Replica(getEndpoint(), subrange, isFull());
     }
-
-    public static Replica fullReplica(InetAddressAndPort endpoint, Range<Token> range)
-    {
-        return new Replica(endpoint, range, true);
-    }
-
-    public static Replica fullReplica(InetAddressAndPort endpoint, Token start, Token end)
-    {
-        return fullReplica(endpoint, new Range<>(start, end));
-    }
-
-    public static Replica transientReplica(InetAddressAndPort endpoint, Range<Token> range)
-    {
-        return new Replica(endpoint, range, false);
-    }
-
-    public static Replica transientReplica(InetAddressAndPort endpoint, Token start, Token end)
-    {
-        return transientReplica(endpoint, new Range<>(start, end));
-    }
-
 }
 

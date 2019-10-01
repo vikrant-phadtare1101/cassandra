@@ -29,17 +29,17 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.io.sstable.CQLSSTableWriter;
 import org.apache.cassandra.io.sstable.SSTableLoader;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.schema.CompressionParams;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.OutputHandler;
@@ -121,7 +121,7 @@ public class LongStreamingTest
             public void init(String keyspace)
             {
                 for (Replica range : StorageService.instance.getLocalReplicas(KS))
-                    addRangeForEndpoint(range.range(), FBUtilities.getBroadcastAddressAndPort());
+                    addRangeForEndpoint(range.getRange(), FBUtilities.getBroadcastAddressAndPort());
 
                 this.ks = keyspace;
             }
@@ -148,7 +148,7 @@ public class LongStreamingTest
             public void init(String keyspace)
             {
                 for (Replica range : StorageService.instance.getLocalReplicas(KS))
-                    addRangeForEndpoint(range.range(), FBUtilities.getBroadcastAddressAndPort());
+                    addRangeForEndpoint(range.getRange(), FBUtilities.getBroadcastAddressAndPort());
 
                 this.ks = keyspace;
             }

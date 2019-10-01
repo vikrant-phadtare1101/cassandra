@@ -21,9 +21,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
-import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.dht.Token;
 
@@ -43,25 +43,23 @@ public class OldNetworkTopologyStrategy extends AbstractReplicationStrategy
         this.rf = ReplicationFactor.fromString(this.configOptions.get("replication_factor"));
     }
 
-    public EndpointsForRange calculateNaturalReplicas(Token token, TokenMetadata metadata)
+    public ReplicaList calculateNaturalReplicas(Token token, TokenMetadata metadata)
     {
+        ReplicaList replicas = new ReplicaList(rf.replicas);
         ArrayList<Token> tokens = metadata.sortedTokens();
+
         if (tokens.isEmpty())
-            return EndpointsForRange.empty(new Range<>(metadata.partitioner.getMinimumToken(), metadata.partitioner.getMinimumToken()));
+            return replicas;
 
         Iterator<Token> iter = TokenMetadata.ringIterator(tokens, token, false);
         Token primaryToken = iter.next();
         Token previousToken = metadata.getPredecessor(primaryToken);
-        Range<Token> tokenRange = new Range<>(previousToken, primaryToken);
-
-        EndpointsForRange.Builder replicas = new EndpointsForRange.Builder(tokenRange, rf.allReplicas);
-
-        assert !rf.hasTransientReplicas() : "support transient replicas";
+        assert rf.trans == 0: "support transient replicas";
         replicas.add(new Replica(metadata.getEndpoint(primaryToken), previousToken, primaryToken, true));
 
         boolean bDataCenter = false;
         boolean bOtherRack = false;
-        while (replicas.size() < rf.allReplicas && iter.hasNext())
+        while (replicas.size() < rf.replicas && iter.hasNext())
         {
             // First try to find one in a different data center
             Token t = iter.next();
@@ -91,19 +89,19 @@ public class OldNetworkTopologyStrategy extends AbstractReplicationStrategy
 
         // If we found N number of nodes we are good. This loop wil just exit. Otherwise just
         // loop through the list and add until we have N nodes.
-        if (replicas.size() < rf.allReplicas)
+        if (replicas.size() < rf.replicas)
         {
             iter = TokenMetadata.ringIterator(tokens, token, false);
-            while (replicas.size() < rf.allReplicas && iter.hasNext())
+            while (replicas.size() < rf.replicas && iter.hasNext())
             {
                 Token t = iter.next();
                 Replica replica = new Replica(metadata.getEndpoint(t), previousToken, primaryToken, true);
-                if (!replicas.endpoints().contains(replica.endpoint()))
+                if (!replicas.containsEndpoint(replica.getEndpoint()))
                     replicas.add(replica);
             }
         }
 
-        return replicas.build();
+        return replicas;
     }
 
     public ReplicationFactor getReplicationFactor()

@@ -30,8 +30,6 @@ import org.apache.cassandra.service.StorageService;
 
 import org.apache.cassandra.utils.FBUtilities;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
 public class DynamicEndpointSnitchLongTest
 {
     static
@@ -56,21 +54,19 @@ public class DynamicEndpointSnitchLongTest
             DynamicEndpointSnitch dsnitch = new DynamicEndpointSnitch(ss, String.valueOf(ss.hashCode()));
             InetAddressAndPort self = FBUtilities.getBroadcastAddressAndPort();
 
-            EndpointsForRange.Builder replicasBuilder = EndpointsForRange.builder(ReplicaUtils.FULL_RANGE);
+            ReplicaList replicas = new ReplicaList();
             // We want a big list of hosts so  sorting takes time, making it much more likely to reproduce the
             // problem we're looking for.
             for (int i = 0; i < 100; i++)
                 for (int j = 0; j < 256; j++)
-                    replicasBuilder.add(ReplicaUtils.full(InetAddressAndPort.getByAddress(new byte[]{ 127, 0, (byte)i, (byte)j})));
-
-            EndpointsForRange replicas = replicasBuilder.build();
+                    replicas.add(ReplicaUtils.full(InetAddressAndPort.getByAddress(new byte[]{ 127, 0, (byte)i, (byte)j})));
 
             ScoreUpdater updater = new ScoreUpdater(dsnitch, replicas);
             updater.start();
 
-            EndpointsForRange result = replicas;
+            ReplicaList result = null;
             for (int i = 0; i < ITERATIONS; i++)
-                result = dsnitch.sortedByProximity(self, result);
+                result = dsnitch.getSortedListByProximity(self, replicas);
 
             updater.stopped = true;
             updater.join();
@@ -88,10 +84,10 @@ public class DynamicEndpointSnitchLongTest
         public volatile boolean stopped;
 
         private final DynamicEndpointSnitch dsnitch;
-        private final EndpointsForRange hosts;
+        private final ReplicaList hosts;
         private final Random random = new Random();
 
-        public ScoreUpdater(DynamicEndpointSnitch dsnitch, EndpointsForRange hosts)
+        public ScoreUpdater(DynamicEndpointSnitch dsnitch, ReplicaList hosts)
         {
             this.dsnitch = dsnitch;
             this.hosts = hosts;
@@ -103,7 +99,7 @@ public class DynamicEndpointSnitchLongTest
             {
                 Replica host = hosts.get(random.nextInt(hosts.size()));
                 int score = random.nextInt(SCORE_RANGE);
-                dsnitch.receiveTiming(host.endpoint(), score, MILLISECONDS);
+                dsnitch.receiveTiming(host.getEndpoint(), score);
             }
         }
     }
