@@ -15,11 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.cassandra.service.reads;
 
 import com.google.common.base.Objects;
 
-import com.codahale.metrics.Snapshot;
+import com.codahale.metrics.Timer;
 
 public class NeverSpeculativeRetryPolicy implements SpeculativeRetryPolicy
 {
@@ -30,7 +31,7 @@ public class NeverSpeculativeRetryPolicy implements SpeculativeRetryPolicy
     }
 
     @Override
-    public long calculateThreshold(Snapshot latency, long existingValue)
+    public long calculateThreshold(Timer readLatency)
     {
         return Long.MAX_VALUE;
     }
@@ -57,10 +58,5 @@ public class NeverSpeculativeRetryPolicy implements SpeculativeRetryPolicy
     public String toString()
     {
         return Kind.NEVER.toString();
-    }
-
-    static boolean stringMatches(String str)
-    {
-        return str.equalsIgnoreCase("NEVER") || str.equalsIgnoreCase("NONE");
     }
 }

@@ -21,9 +21,9 @@ package org.apache.cassandra.db.monitoring;
 public interface Monitorable
 {
     String name();
-    long creationTimeNanos();
-    long timeoutNanos();
-    long slowTimeoutNanos();
+    long constructionTime();
+    long timeout();
+    long slowTimeout();
 
     boolean isInProgress();
     boolean isAborted();

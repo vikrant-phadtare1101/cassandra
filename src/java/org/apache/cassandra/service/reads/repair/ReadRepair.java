@@ -15,83 +15,58 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.cassandra.service.reads.repair;
 
-import java.util.Map;
+import java.util.List;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.locator.Endpoints;
-
-import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.ReadCommand;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.ReplicaPlan;
+import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.reads.DigestResolver;
+import org.apache.cassandra.service.reads.ResponseResolver;
+import org.apache.cassandra.tracing.TraceState;
 
-public interface ReadRepair<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
+public interface ReadRepair
 {
-    public interface Factory
-    {
-        <E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-        ReadRepair<E, P> create(ReadCommand command, ReplicaPlan.Shared<E, P> replicaPlan, long queryStartNanoTime);
-    }
-
-    static <E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-    ReadRepair<E, P> create(ReadCommand command, ReplicaPlan.Shared<E, P> replicaPlan, long queryStartNanoTime)
-    {
-        return command.metadata().params.readRepair.create(command, replicaPlan, queryStartNanoTime);
-    }
-
     /**
      * Used by DataResolver to generate corrections as the partition iterator is consumed
      */
-    UnfilteredPartitionIterators.MergeListener getMergeListener(P replicaPlan);
+    UnfilteredPartitionIterators.MergeListener getMergeListener(InetAddressAndPort[] endpoints);
 
     /**
      * Called when the digests from the initial read don't match. Reads may block on the
      * repair started by this method.
-     * @param digestResolver supplied so we can get the original data response
-     * @param resultConsumer hook for the repair to set it's result on completion
      */
-    public void startRepair(DigestResolver<E, P> digestResolver, Consumer<PartitionIterator> resultConsumer);
+    public void startForegroundRepair(DigestResolver digestResolver,
+                                      List<InetAddressAndPort> allEndpoints,
+                                      List<InetAddressAndPort> contactedEndpoints,
+                                      Consumer<PartitionIterator> resultConsumer);
 
     /**
-     * Block on the reads (or timeout) sent out in {@link ReadRepair#startRepair}
+     * Wait for any operations started by {@link ReadRepair#startForegroundRepair} to complete
+     * @throws ReadTimeoutException
      */
-    public void awaitReads() throws ReadTimeoutException;
+    public void awaitForegroundRepairFinish() throws ReadTimeoutException;
 
     /**
-     * if it looks like we might not receive data requests from everyone in time, send additional requests
-     * to additional replicas not contacted in the initial full data read. If the collection of nodes that
-     * end up responding in time end up agreeing on the data, and we don't consider the response from the
-     * disagreeing replica that triggered the read repair, that's ok, since the disagreeing data would not
-     * have been successfully written and won't be included in the response the the client, preserving the
-     * expectation of monotonic quorum reads
+     * Called when responses from all replicas have been received. Read will not block on this.
+     * @param resolver
      */
-    public void maybeSendAdditionalReads();
+    public void maybeStartBackgroundRepair(ResponseResolver resolver);
 
     /**
-     * If it looks like we might not receive acks for all the repair mutations we sent out, combine all
-     * the unacked mutations and send them to the minority of nodes not involved in the read repair data
-     * read / write cycle. We will accept acks from them in lieu of acks from the initial mutations sent
-     * out, so long as we receive the same number of acks as repair mutations transmitted. This prevents
-     * misbehaving nodes from killing a quorum read, while continuing to guarantee monotonic quorum reads
+     * If {@link ReadRepair#maybeStartBackgroundRepair} was called with a {@link DigestResolver}, this will
+     * be called to perform a repair if there was a digest mismatch
      */
-    public void maybeSendAdditionalWrites();
+    public void backgroundDigestRepair(TraceState traceState);
 
-    /**
-     * Block on any mutations (or timeout) we sent out to repair replicas in {@link ReadRepair#repairPartition}
-     */
-    public void awaitWrites();
-
-    /**
-     * Repairs a partition _after_ receiving data responses. This method receives replica list, since
-     * we will block repair only on the replicas that have responded.
-     */
-    void repairPartition(DecoratedKey partitionKey, Map<Replica, Mutation> mutations, P replicaPlan);
+    static ReadRepair create(ReadCommand command, List<InetAddressAndPort> endpoints, long queryStartNanoTime, ConsistencyLevel consistency)
+    {
+        return new BlockingReadRepair(command, endpoints, queryStartNanoTime, consistency);
+    }
 }
