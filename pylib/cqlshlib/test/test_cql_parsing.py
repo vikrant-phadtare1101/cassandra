@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # to configure behavior, define $CQL_TEST_HOST to the destination address
-# and $CQL_TEST_PORT to the associated port.
+# for Thrift connections, and $CQL_TEST_PORT to the associated port.
 
 from unittest import TestCase
 from operator import itemgetter

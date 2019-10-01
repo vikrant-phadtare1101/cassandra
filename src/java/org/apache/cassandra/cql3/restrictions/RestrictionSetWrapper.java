@@ -20,14 +20,11 @@ package org.apache.cassandra.cql3.restrictions;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
-
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.db.filter.RowFilter;
-import org.apache.cassandra.index.IndexRegistry;
+import org.apache.cassandra.index.SecondaryIndexManager;
 
 /**
  * A <code>RestrictionSet</code> wrapper that can be extended to allow to modify the <code>RestrictionSet</code>
@@ -46,13 +43,13 @@ class RestrictionSetWrapper implements Restrictions
     }
 
     public void addRowFilterTo(RowFilter filter,
-                               IndexRegistry indexRegistry,
+                               SecondaryIndexManager indexManager,
                                QueryOptions options)
     {
-        restrictions.addRowFilterTo(filter, indexRegistry, options);
+        restrictions.addRowFilterTo(filter, indexManager, options);
     }
 
-    public List<ColumnMetadata> getColumnDefs()
+    public List<ColumnDefinition> getColumnDefs()
     {
         return restrictions.getColumnDefs();
     }
@@ -72,17 +69,17 @@ class RestrictionSetWrapper implements Restrictions
         return restrictions.size();
     }
 
-    public boolean hasSupportingIndex(IndexRegistry indexRegistry)
+    public boolean hasSupportingIndex(SecondaryIndexManager indexManager)
     {
-        return restrictions.hasSupportingIndex(indexRegistry);
+        return restrictions.hasSupportingIndex(indexManager);
     }
 
-    public ColumnMetadata getFirstColumn()
+    public ColumnDefinition getFirstColumn()
     {
         return restrictions.getFirstColumn();
     }
 
-    public ColumnMetadata getLastColumn()
+    public ColumnDefinition getLastColumn()
     {
         return restrictions.getLastColumn();
     }
@@ -107,14 +104,8 @@ class RestrictionSetWrapper implements Restrictions
         return restrictions.hasOnlyEqualityRestrictions();
     }
 
-    public Set<Restriction> getRestrictions(ColumnMetadata columnDef)
+    public Set<Restriction> getRestrictions(ColumnDefinition columnDef)
     {
         return restrictions.getRestrictions(columnDef);
-    }
-    
-    @Override
-    public String toString()
-    {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
     }
 }

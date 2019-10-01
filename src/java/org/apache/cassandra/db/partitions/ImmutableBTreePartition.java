@@ -18,37 +18,34 @@
 */
 package org.apache.cassandra.db.partitions;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletionInfo;
-import org.apache.cassandra.db.RegularAndStaticColumns;
+import org.apache.cassandra.db.PartitionColumns;
 import org.apache.cassandra.db.rows.*;
 
 public class ImmutableBTreePartition extends AbstractBTreePartition
 {
 
     protected final Holder holder;
-    protected final TableMetadata metadata;
 
-    public ImmutableBTreePartition(TableMetadata metadata,
-                                   DecoratedKey partitionKey,
-                                   RegularAndStaticColumns columns,
-                                   Row staticRow,
-                                   Object[] tree,
-                                   DeletionInfo deletionInfo,
-                                   EncodingStats stats)
+    public ImmutableBTreePartition(CFMetaData metadata,
+                                      DecoratedKey partitionKey,
+                                      PartitionColumns columns,
+                                      Row staticRow,
+                                      Object[] tree,
+                                      DeletionInfo deletionInfo,
+                                      EncodingStats stats)
     {
-        super(partitionKey);
-        this.metadata = metadata;
+        super(metadata, partitionKey);
         this.holder = new Holder(columns, tree, deletionInfo, staticRow, stats);
     }
 
-    protected ImmutableBTreePartition(TableMetadata metadata,
+    protected ImmutableBTreePartition(CFMetaData metadata,
                                       DecoratedKey partitionKey,
                                       Holder holder)
     {
-        super(partitionKey);
-        this.metadata = metadata;
+        super(metadata, partitionKey);
         this.holder = holder;
     }
 
@@ -112,11 +109,6 @@ public class ImmutableBTreePartition extends AbstractBTreePartition
     public static ImmutableBTreePartition create(UnfilteredRowIterator iterator, int initialRowCapacity, boolean ordered)
     {
         return new ImmutableBTreePartition(iterator.metadata(), iterator.partitionKey(), build(iterator, initialRowCapacity, ordered));
-    }
-
-    public TableMetadata metadata()
-    {
-        return metadata;
     }
 
     protected Holder holder()

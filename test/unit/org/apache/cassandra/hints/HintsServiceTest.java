@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.hints;
 
+import java.net.InetAddress;
+import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -32,25 +34,22 @@ import org.junit.Test;
 
 import com.datastax.driver.core.utils.MoreFutures;
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.NoPayload;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.gms.IFailureDetectionEventListener;
 import org.apache.cassandra.gms.IFailureDetector;
 import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.MockMessagingService;
 import org.apache.cassandra.net.MockMessagingSpy;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.Util.dk;
-import static org.apache.cassandra.net.Verb.HINT_REQ;
-import static org.apache.cassandra.net.Verb.HINT_RSP;
 import static org.apache.cassandra.net.MockMessagingService.verb;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -79,10 +78,9 @@ public class HintsServiceTest
     }
 
     @Before
-    public void reinstanciateService() throws Throwable
+    public void reinstanciateService() throws ExecutionException, InterruptedException
     {
-        MessagingService.instance().inboundSink.clear();
-        MessagingService.instance().outboundSink.clear();
+        MessagingService.instance().clearMessageSinks();
 
         if (!HintsService.instance.isShutDown())
         {
@@ -91,9 +89,7 @@ public class HintsServiceTest
         }
 
         failureDetector.isAlive = true;
-
         HintsService.instance = new HintsService(failureDetector);
-
         HintsService.instance.startDispatch();
     }
 
@@ -184,16 +180,20 @@ public class HintsServiceTest
     private MockMessagingSpy sendHintsAndResponses(int noOfHints, int noOfResponses)
     {
         // create spy for hint messages, but only create responses for noOfResponses hints
-        Message<NoPayload> message = Message.internalResponse(HINT_RSP, NoPayload.noPayload);
+        MessageIn<HintResponse> messageIn = MessageIn.create(FBUtilities.getBroadcastAddress(),
+                HintResponse.instance,
+                Collections.emptyMap(),
+                MessagingService.Verb.REQUEST_RESPONSE,
+                MessagingService.current_version);
 
         MockMessagingSpy spy;
         if (noOfResponses != -1)
         {
-            spy = MockMessagingService.when(verb(HINT_REQ)).respondN(message, noOfResponses);
+            spy = MockMessagingService.when(verb(MessagingService.Verb.HINT)).respondN(messageIn, noOfResponses);
         }
         else
         {
-            spy = MockMessagingService.when(verb(HINT_REQ)).respond(message);
+            spy = MockMessagingService.when(verb(MessagingService.Verb.HINT)).respond(messageIn);
         }
 
         // create and write noOfHints using service
@@ -202,8 +202,8 @@ public class HintsServiceTest
         {
             long now = System.currentTimeMillis();
             DecoratedKey dkey = dk(String.valueOf(i));
-            TableMetadata metadata = Schema.instance.getTableMetadata(KEYSPACE, TABLE);
-            PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(metadata, dkey).timestamp(now);
+            CFMetaData cfMetaData = Schema.instance.getCFMetaData(KEYSPACE, TABLE);
+            PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(cfMetaData, dkey).timestamp(now);
             builder.row("column0").add("val", "value0");
             Hint hint = Hint.create(builder.buildAsMutation(), now);
             HintsService.instance.write(hostId, hint);
@@ -215,17 +215,17 @@ public class HintsServiceTest
     {
         private boolean isAlive = true;
 
-        public boolean isAlive(InetAddressAndPort ep)
+        public boolean isAlive(InetAddress ep)
         {
             return isAlive;
         }
 
-        public void interpret(InetAddressAndPort ep)
+        public void interpret(InetAddress ep)
         {
             throw new UnsupportedOperationException();
         }
 
-        public void report(InetAddressAndPort ep)
+        public void report(InetAddress ep)
         {
             throw new UnsupportedOperationException();
         }
@@ -240,12 +240,12 @@ public class HintsServiceTest
             throw new UnsupportedOperationException();
         }
 
-        public void remove(InetAddressAndPort ep)
+        public void remove(InetAddress ep)
         {
             throw new UnsupportedOperationException();
         }
 
-        public void forceConviction(InetAddressAndPort ep)
+        public void forceConviction(InetAddress ep)
         {
             throw new UnsupportedOperationException();
         }

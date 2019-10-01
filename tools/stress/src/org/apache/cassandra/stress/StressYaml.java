@@ -26,7 +26,6 @@ import java.util.Map;
 
 public class StressYaml
 {
-    public String specname;
     public String keyspace;
     public String keyspace_definition;
     public String table;

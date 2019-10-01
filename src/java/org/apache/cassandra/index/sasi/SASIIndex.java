@@ -19,14 +19,13 @@ package org.apache.cassandra.index.sasi;
 
 import java.util.*;
 import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 
 import com.googlecode.concurrenttrees.common.Iterables;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.Operator;
-import org.apache.cassandra.cql3.statements.schema.IndexTarget;
+import org.apache.cassandra.cql3.statements.IndexTarget;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.OperationType;
@@ -53,27 +52,20 @@ import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.format.SSTableFlushObserver;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.notifications.*;
-import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.IndexMetadata;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.concurrent.OpOrder;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
 public class SASIIndex implements Index, INotificationConsumer
 {
-    public final static String USAGE_WARNING = "SASI indexes are experimental and are not recommended for production use.";
-
     private static class SASIIndexBuildingSupport implements IndexBuildingSupport
     {
         public SecondaryIndexBuilder getIndexBuildTask(ColumnFamilyStore cfs,
                                                        Set<Index> indexes,
                                                        Collection<SSTableReader> sstablesToRebuild)
         {
-            NavigableMap<SSTableReader, Map<ColumnMetadata, ColumnIndex>> sstables = new TreeMap<>((a, b) -> {
+            NavigableMap<SSTableReader, Map<ColumnDefinition, ColumnIndex>> sstables = new TreeMap<>((a, b) -> {
                 return Integer.compare(a.descriptor.generation, b.descriptor.generation);
             });
 
@@ -85,7 +77,7 @@ public class SASIIndex implements Index, INotificationConsumer
                        sstablesToRebuild.stream()
                                         .filter((sstable) -> !sasi.index.hasSSTable(sstable))
                                         .forEach((sstable) -> {
-                                            Map<ColumnMetadata, ColumnIndex> toBuild = sstables.get(sstable);
+                                            Map<ColumnDefinition, ColumnIndex> toBuild = sstables.get(sstable);
                                             if (toBuild == null)
                                                 sstables.put(sstable, (toBuild = new HashMap<>()));
 
@@ -108,18 +100,18 @@ public class SASIIndex implements Index, INotificationConsumer
         this.baseCfs = baseCfs;
         this.config = config;
 
-        ColumnMetadata column = TargetParser.parse(baseCfs.metadata(), config).left;
-        this.index = new ColumnIndex(baseCfs.metadata().partitionKeyType, column, config);
+        ColumnDefinition column = TargetParser.parse(baseCfs.metadata, config).left;
+        this.index = new ColumnIndex(baseCfs.metadata.getKeyValidator(), column, config);
 
         Tracker tracker = baseCfs.getTracker();
         tracker.subscribe(this);
 
-        SortedMap<SSTableReader, Map<ColumnMetadata, ColumnIndex>> toRebuild = new TreeMap<>((a, b)
+        SortedMap<SSTableReader, Map<ColumnDefinition, ColumnIndex>> toRebuild = new TreeMap<>((a, b)
                                                 -> Integer.compare(a.descriptor.generation, b.descriptor.generation));
 
         for (SSTableReader sstable : index.init(tracker.getView().liveSSTables()))
         {
-            Map<ColumnMetadata, ColumnIndex> perSSTable = toRebuild.get(sstable);
+            Map<ColumnDefinition, ColumnIndex> perSSTable = toRebuild.get(sstable);
             if (perSSTable == null)
                 toRebuild.put(sstable, (perSSTable = new HashMap<>()));
 
@@ -132,16 +124,16 @@ public class SASIIndex implements Index, INotificationConsumer
     /**
      * Called via reflection at {@link IndexMetadata#validateCustomIndexOptions}
      */
-    public static Map<String, String> validateOptions(Map<String, String> options, TableMetadata metadata)
+    public static Map<String, String> validateOptions(Map<String, String> options, CFMetaData cfm)
     {
-        if (!(metadata.partitioner instanceof Murmur3Partitioner))
+        if (!(cfm.partitioner instanceof Murmur3Partitioner))
             throw new ConfigurationException("SASI only supports Murmur3Partitioner.");
 
         String targetColumn = options.get("target");
         if (targetColumn == null)
             throw new ConfigurationException("unknown target column");
 
-        Pair<ColumnMetadata, IndexTarget.Type> target = TargetParser.parse(metadata, targetColumn);
+        Pair<ColumnDefinition, IndexTarget.Type> target = TargetParser.parse(cfm, targetColumn);
         if (target == null)
             throw new ConfigurationException("failed to retrieve target column for: " + targetColumn);
 
@@ -214,17 +206,17 @@ public class SASIIndex implements Index, INotificationConsumer
         return Optional.empty();
     }
 
-    public boolean indexes(RegularAndStaticColumns columns)
+    public boolean indexes(PartitionColumns columns)
     {
         return columns.contains(index.getDefinition());
     }
 
-    public boolean dependsOn(ColumnMetadata column)
+    public boolean dependsOn(ColumnDefinition column)
     {
         return index.getDefinition().compareTo(column) == 0;
     }
 
-    public boolean supportsExpression(ColumnMetadata column, Operator operator)
+    public boolean supportsExpression(ColumnDefinition column, Operator operator)
     {
         return dependsOn(column) && index.supports(operator);
     }
@@ -250,7 +242,7 @@ public class SASIIndex implements Index, INotificationConsumer
     public void validate(PartitionUpdate update) throws InvalidRequestException
     {}
 
-    public Indexer indexerFor(DecoratedKey key, RegularAndStaticColumns columns, int nowInSec, WriteContext context, IndexTransaction.Type transactionType)
+    public Indexer indexerFor(DecoratedKey key, PartitionColumns columns, int nowInSec, OpOrder.Group opGroup, IndexTransaction.Type transactionType)
     {
         return new Indexer()
         {
@@ -266,7 +258,7 @@ public class SASIIndex implements Index, INotificationConsumer
             public void insertRow(Row row)
             {
                 if (isNewData())
-                    adjustMemtableSize(index.index(key, row), CassandraWriteContext.fromContext(context).getGroup());
+                    adjustMemtableSize(index.index(key, row), opGroup);
             }
 
             public void updateRow(Row oldRow, Row newRow)
@@ -296,14 +288,14 @@ public class SASIIndex implements Index, INotificationConsumer
 
     public Searcher searcherFor(ReadCommand command) throws InvalidRequestException
     {
-        TableMetadata config = command.metadata();
-        ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(config.id);
-        return controller -> new QueryPlan(cfs, command, DatabaseDescriptor.getRangeRpcTimeout(MILLISECONDS)).execute(controller);
+        CFMetaData config = command.metadata();
+        ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(config.cfId);
+        return controller -> new QueryPlan(cfs, command, DatabaseDescriptor.getRangeRpcTimeout()).execute(controller);
     }
 
     public SSTableFlushObserver getFlushObserver(Descriptor descriptor, OperationType opType)
     {
-        return newWriter(baseCfs.metadata().partitionKeyType, descriptor, Collections.singletonMap(index.getDefinition(), index), opType);
+        return newWriter(baseCfs.metadata.getKeyValidator(), descriptor, Collections.singletonMap(index.getDefinition(), index), opType);
     }
 
     public BiFunction<PartitionIterator, ReadCommand, PartitionIterator> postProcessorFor(ReadCommand command)
@@ -350,7 +342,7 @@ public class SASIIndex implements Index, INotificationConsumer
 
     protected static PerSSTableIndexWriter newWriter(AbstractType<?> keyValidator,
                                                      Descriptor descriptor,
-                                                     Map<ColumnMetadata, ColumnIndex> indexes,
+                                                     Map<ColumnDefinition, ColumnIndex> indexes,
                                                      OperationType opType)
     {
         return new PerSSTableIndexWriter(keyValidator, descriptor, opType, indexes);

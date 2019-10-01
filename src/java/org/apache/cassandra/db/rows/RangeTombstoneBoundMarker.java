@@ -18,11 +18,11 @@
 package org.apache.cassandra.db.rows;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.Objects;
+import java.util.Set;
 
-import com.google.common.hash.Hasher;
-
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.utils.memory.AbstractAllocator;
 
@@ -66,11 +66,6 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
     public boolean isBoundary()
     {
         return false;
-    }
-
-    public boolean hasInvalidDeletions()
-    {
-        return !deletionTime().validate();
     }
 
     /**
@@ -132,13 +127,19 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
         return new RangeTombstoneBoundMarker(clustering(), newDeletionTime);
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
-        bound.digest(hasher);
-        deletion.digest(hasher);
+        bound.digest(digest);
+        deletion.digest(digest);
     }
 
-    public String toString(TableMetadata metadata)
+    @Override
+    public void digest(MessageDigest digest, Set<ByteBuffer> columnsToExclude)
+    {
+        digest(digest);
+    }
+
+    public String toString(CFMetaData metadata)
     {
         return String.format("Marker %s@%d/%d", bound.toString(metadata), deletion.markedForDeleteAt(), deletion.localDeletionTime());
     }

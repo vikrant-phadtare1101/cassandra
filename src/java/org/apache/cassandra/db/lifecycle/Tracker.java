@@ -38,7 +38,6 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.notifications.*;
@@ -360,7 +359,7 @@ public class Tracker
         notifyDiscarded(memtable);
 
         // TODO: if we're invalidated, should we notifyadded AND removed, or just skip both?
-        fail = notifyAdded(sstables, memtable, fail);
+        fail = notifyAdded(sstables, fail);
 
         if (!isDummy() && !cfstore.isValid())
             dropSSTables();
@@ -418,9 +417,9 @@ public class Tracker
         return accumulate;
     }
 
-    Throwable notifyAdded(Iterable<SSTableReader> added, Memtable memtable, Throwable accumulate)
+    Throwable notifyAdded(Iterable<SSTableReader> added, Throwable accumulate)
     {
-        INotification notification = new SSTableAddedNotification(added, memtable);
+        INotification notification = new SSTableAddedNotification(added);
         for (INotificationConsumer subscriber : subscribers)
         {
             try
@@ -437,7 +436,7 @@ public class Tracker
 
     public void notifyAdded(Iterable<SSTableReader> added)
     {
-        maybeFail(notifyAdded(added, null, null));
+        maybeFail(notifyAdded(added, null));
     }
 
     public void notifySSTableRepairedStatusChanged(Collection<SSTableReader> repairStatusesChanged)
@@ -445,14 +444,6 @@ public class Tracker
         INotification notification = new SSTableRepairStatusChanged(repairStatusesChanged);
         for (INotificationConsumer subscriber : subscribers)
             subscriber.handleNotification(notification, this);
-    }
-
-    public void notifySSTableMetadataChanged(SSTableReader levelChanged, StatsMetadata oldMetadata)
-    {
-        INotification notification = new SSTableMetadataChanged(levelChanged, oldMetadata);
-        for (INotificationConsumer subscriber : subscribers)
-            subscriber.handleNotification(notification, this);
-
     }
 
     public void notifyDeleting(SSTableReader deleting)

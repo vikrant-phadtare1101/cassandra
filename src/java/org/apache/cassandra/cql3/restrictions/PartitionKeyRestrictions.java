@@ -20,7 +20,7 @@ package org.apache.cassandra.cql3.restrictions;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.statements.Bound;
 
@@ -53,16 +53,16 @@ interface PartitionKeyRestrictions extends Restrictions
     /**
      * checks if specified restrictions require filtering
      *
-     * @param table column family metadata
+     * @param cfm column family metadata
      * @return <code>true</code> if filtering is required, <code>false</code> otherwise
      */
-    public boolean needFiltering(TableMetadata table);
+    public boolean needFiltering(CFMetaData cfm);
 
     /**
      * Checks if the partition key has unrestricted components.
      *
-     * @param table column family metadata
+     * @param cfm column family metadata
      * @return <code>true</code> if the partition key has unrestricted components, <code>false</code> otherwise.
      */
-    public boolean hasUnrestrictedPartitionKeyComponents(TableMetadata table);
+    public boolean hasUnrestrictedPartitionKeyComponents(CFMetaData cfm);
 }

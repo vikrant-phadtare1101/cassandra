@@ -21,6 +21,7 @@ import java.io.DataInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -45,7 +46,7 @@ public class GoogleCloudSnitch extends AbstractNetworkTopologySnitch
     protected static final String ZONE_NAME_QUERY_URL = "http://metadata.google.internal/computeMetadata/v1/instance/zone";
     private static final String DEFAULT_DC = "UNKNOWN-DC";
     private static final String DEFAULT_RACK = "UNKNOWN-RACK";
-    private Map<InetAddressAndPort, Map<String, String>> savedEndpoints;
+    private Map<InetAddress, Map<String, String>> savedEndpoints;
     protected String gceZone;
     protected String gceRegion;
 
@@ -93,9 +94,9 @@ public class GoogleCloudSnitch extends AbstractNetworkTopologySnitch
         }
     }
 
-    public String getRack(InetAddressAndPort endpoint)
+    public String getRack(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return gceZone;
         EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
         if (state == null || state.getApplicationState(ApplicationState.RACK) == null)
@@ -109,9 +110,9 @@ public class GoogleCloudSnitch extends AbstractNetworkTopologySnitch
         return state.getApplicationState(ApplicationState.RACK).value;
     }
 
-    public String getDatacenter(InetAddressAndPort endpoint)
+    public String getDatacenter(InetAddress endpoint)
     {
-        if (endpoint.equals(FBUtilities.getBroadcastAddressAndPort()))
+        if (endpoint.equals(FBUtilities.getBroadcastAddress()))
             return gceRegion;
         EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
         if (state == null || state.getApplicationState(ApplicationState.DC) == null)

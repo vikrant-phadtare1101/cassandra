@@ -43,25 +43,25 @@ public class MockMessagingSpy
     public int messagesIntercepted = 0;
     public int mockedMessageResponses = 0;
 
-    private final BlockingQueue<Message<?>> interceptedMessages = new LinkedBlockingQueue<>();
-    private final BlockingQueue<Message<?>> deliveredResponses = new LinkedBlockingQueue<>();
+    private final BlockingQueue<MessageOut<?>> interceptedMessages = new LinkedBlockingQueue<>();
+    private final BlockingQueue<MessageIn<?>> deliveredResponses = new LinkedBlockingQueue<>();
 
     private static final Executor executor = Executors.newSingleThreadExecutor();
 
     /**
      * Returns a future with the first mocked incoming message that has been created and delivered.
      */
-    public ListenableFuture<Message<?>> captureMockedMessage()
+    public ListenableFuture<MessageIn<?>> captureMockedMessageIn()
     {
-        return Futures.transform(captureMockedMessageN(1), (List<Message<?>> result) -> result.isEmpty() ? null : result.get(0));
+        return Futures.transform(captureMockedMessageInN(1), (List<MessageIn<?>> result) -> result.isEmpty() ? null : result.get(0));
     }
 
     /**
      * Returns a future with the specified number mocked incoming messages that have been created and delivered.
      */
-    public ListenableFuture<List<Message<?>>> captureMockedMessageN(int noOfMessages)
+    public ListenableFuture<List<MessageIn<?>>> captureMockedMessageInN(int noOfMessages)
     {
-        CapturedResultsFuture<Message<?>> ret = new CapturedResultsFuture<>(noOfMessages, deliveredResponses);
+        CapturedResultsFuture<MessageIn<?>> ret = new CapturedResultsFuture<>(noOfMessages, deliveredResponses);
         executor.execute(ret);
         return ret;
     }
@@ -69,17 +69,17 @@ public class MockMessagingSpy
     /**
      * Returns a future that will indicate if a mocked incoming message has been created and delivered.
      */
-    public ListenableFuture<Boolean> expectMockedMessage()
+    public ListenableFuture<Boolean> expectMockedMessageIn()
     {
-        return expectMockedMessage(1);
+        return expectMockedMessageIn(1);
     }
 
     /**
      * Returns a future that will indicate if the specified number of mocked incoming message have been created and delivered.
      */
-    public ListenableFuture<Boolean> expectMockedMessage(int noOfMessages)
+    public ListenableFuture<Boolean> expectMockedMessageIn(int noOfMessages)
     {
-        ResultsCompletionFuture<Message<?>> ret = new ResultsCompletionFuture<>(noOfMessages, deliveredResponses);
+        ResultsCompletionFuture<MessageIn<?>> ret = new ResultsCompletionFuture<>(noOfMessages, deliveredResponses);
         executor.execute(ret);
         return ret;
     }
@@ -87,17 +87,17 @@ public class MockMessagingSpy
     /**
      * Returns a future with the first intercepted outbound message that would have been send.
      */
-    public ListenableFuture<Message<?>> captureMessageOut()
+    public ListenableFuture<MessageOut<?>> captureMessageOut()
     {
-        return Futures.transform(captureMessageOut(1), (List<Message<?>> result) -> result.isEmpty() ? null : result.get(0));
+        return Futures.transform(captureMessageOut(1), (List<MessageOut<?>> result) -> result.isEmpty() ? null : result.get(0));
     }
 
     /**
      * Returns a future with the specified number of intercepted outbound messages that would have been send.
      */
-    public ListenableFuture<List<Message<?>>> captureMessageOut(int noOfMessages)
+    public ListenableFuture<List<MessageOut<?>>> captureMessageOut(int noOfMessages)
     {
-        CapturedResultsFuture<Message<?>> ret = new CapturedResultsFuture<>(noOfMessages, interceptedMessages);
+        CapturedResultsFuture<MessageOut<?>> ret = new CapturedResultsFuture<>(noOfMessages, interceptedMessages);
         executor.execute(ret);
         return ret;
     }
@@ -115,7 +115,7 @@ public class MockMessagingSpy
      */
     public ListenableFuture<Boolean> interceptMessageOut(int noOfMessages)
     {
-        ResultsCompletionFuture<Message<?>> ret = new ResultsCompletionFuture<>(noOfMessages, interceptedMessages);
+        ResultsCompletionFuture<MessageOut<?>> ret = new ResultsCompletionFuture<>(noOfMessages, interceptedMessages);
         executor.execute(ret);
         return ret;
     }
@@ -125,19 +125,19 @@ public class MockMessagingSpy
      */
     public ListenableFuture<Boolean> interceptNoMsg(long time, TimeUnit unit)
     {
-        ResultAbsenceFuture<Message<?>> ret = new ResultAbsenceFuture<>(interceptedMessages, time, unit);
+        ResultAbsenceFuture<MessageOut<?>> ret = new ResultAbsenceFuture<>(interceptedMessages, time, unit);
         executor.execute(ret);
         return ret;
     }
 
-    void matchingMessage(Message<?> message)
+    void matchingMessage(MessageOut<?> message)
     {
         messagesIntercepted++;
         logger.trace("Received matching message: {}", message);
         interceptedMessages.add(message);
     }
 
-    void matchingResponse(Message<?> response)
+    void matchingResponse(MessageIn<?> response)
     {
         mockedMessageResponses++;
         logger.trace("Responding to intercepted message: {}", response);

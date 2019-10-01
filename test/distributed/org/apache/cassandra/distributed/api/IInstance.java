@@ -21,7 +21,6 @@ package org.apache.cassandra.distributed.api;
 import org.apache.cassandra.locator.InetAddressAndPort;
 
 import java.util.UUID;
-import java.util.concurrent.Future;
 
 // The cross-version API requires that an Instance has a constructor signature of (IInstanceConfig, ClassLoader)
 public interface IInstance extends IIsolatedExecutor
@@ -37,14 +36,9 @@ public interface IInstance extends IIsolatedExecutor
     UUID schemaVersion();
 
     void startup();
-    boolean isShutdown();
-    Future<Void> shutdown();
-    Future<Void> shutdown(boolean graceful);
+    void shutdown();
 
     // these methods are not for external use, but for simplicity we leave them public and on the normal IInstance interface
     void startup(ICluster cluster);
     void receiveMessage(IMessage message);
-
-    int getMessagingVersion();
-    void setMessagingVersion(InetAddressAndPort endpoint, int version);
 }

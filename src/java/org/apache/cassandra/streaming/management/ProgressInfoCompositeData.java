@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.streaming.management;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.HashMap;
 import java.util.Map;
@@ -25,14 +26,12 @@ import javax.management.openmbean.*;
 
 import com.google.common.base.Throwables;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.streaming.ProgressInfo;
 
 public class ProgressInfoCompositeData
 {
     private static final String[] ITEM_NAMES = new String[]{"planId",
                                                             "peer",
-                                                            "peer storage port",
                                                             "sessionIndex",
                                                             "fileName",
                                                             "direction",
@@ -40,15 +39,13 @@ public class ProgressInfoCompositeData
                                                             "totalBytes"};
     private static final String[] ITEM_DESCS = new String[]{"String representation of Plan ID",
                                                             "Session peer",
-                                                            "Session peer storage port",
                                                             "Index of session",
-                                                            "Name of the stream",
+                                                            "Name of the file",
                                                             "Direction('IN' or 'OUT')",
                                                             "Current bytes transferred",
                                                             "Total bytes to transfer"};
     private static final OpenType<?>[] ITEM_TYPES = new OpenType[]{SimpleType.STRING,
                                                                    SimpleType.STRING,
-                                                                   SimpleType.INTEGER,
                                                                    SimpleType.INTEGER,
                                                                    SimpleType.STRING,
                                                                    SimpleType.STRING,
@@ -76,13 +73,12 @@ public class ProgressInfoCompositeData
     {
         Map<String, Object> valueMap = new HashMap<>();
         valueMap.put(ITEM_NAMES[0], planId.toString());
-        valueMap.put(ITEM_NAMES[1], progressInfo.peer.address.getHostAddress());
-        valueMap.put(ITEM_NAMES[2], progressInfo.peer.port);
-        valueMap.put(ITEM_NAMES[3], progressInfo.sessionIndex);
-        valueMap.put(ITEM_NAMES[4], progressInfo.fileName);
-        valueMap.put(ITEM_NAMES[5], progressInfo.direction.name());
-        valueMap.put(ITEM_NAMES[6], progressInfo.currentBytes);
-        valueMap.put(ITEM_NAMES[7], progressInfo.totalBytes);
+        valueMap.put(ITEM_NAMES[1], progressInfo.peer.getHostAddress());
+        valueMap.put(ITEM_NAMES[2], progressInfo.sessionIndex);
+        valueMap.put(ITEM_NAMES[3], progressInfo.fileName);
+        valueMap.put(ITEM_NAMES[4], progressInfo.direction.name());
+        valueMap.put(ITEM_NAMES[5], progressInfo.currentBytes);
+        valueMap.put(ITEM_NAMES[6], progressInfo.totalBytes);
         try
         {
             return new CompositeDataSupport(COMPOSITE_TYPE, valueMap);
@@ -98,12 +94,12 @@ public class ProgressInfoCompositeData
         Object[] values = cd.getAll(ITEM_NAMES);
         try
         {
-            return new ProgressInfo(InetAddressAndPort.getByNameOverrideDefaults((String) values[1], (Integer)values[2]),
-                                    (int) values[3],
-                                    (String) values[4],
-                                    ProgressInfo.Direction.valueOf((String)values[5]),
-                                    (long) values[6],
-                                    (long) values[7]);
+            return new ProgressInfo(InetAddress.getByName((String) values[1]),
+                                    (int) values[2],
+                                    (String) values[3],
+                                    ProgressInfo.Direction.valueOf((String)values[4]),
+                                    (long) values[5],
+                                    (long) values[6]);
         }
         catch (UnknownHostException e)
         {

@@ -20,11 +20,9 @@ package org.apache.cassandra.service;
 
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
-import org.apache.cassandra.utils.ExecutorUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,35 +47,28 @@ public class PendingRangeCalculatorService
 
     public PendingRangeCalculatorService()
     {
-        executor.setRejectedExecutionHandler((r, e) ->
+        executor.setRejectedExecutionHandler(new RejectedExecutionHandler()
+        {
+            public void rejectedExecution(Runnable r, ThreadPoolExecutor e)
             {
-                PendingRangeCalculatorServiceDiagnostics.taskRejected(instance, updateJobs);
                 PendingRangeCalculatorService.instance.finishUpdate();
             }
+        }
         );
     }
 
     private static class PendingRangeTask implements Runnable
     {
-        private final AtomicInteger updateJobs;
-
-        PendingRangeTask(AtomicInteger updateJobs)
-        {
-            this.updateJobs = updateJobs;
-        }
-
         public void run()
         {
             try
             {
-                PendingRangeCalculatorServiceDiagnostics.taskStarted(instance, updateJobs);
                 long start = System.currentTimeMillis();
                 List<String> keyspaces = Schema.instance.getNonLocalStrategyKeyspaces();
                 for (String keyspaceName : keyspaces)
                     calculatePendingRanges(Keyspace.open(keyspaceName).getReplicationStrategy(), keyspaceName);
                 if (logger.isTraceEnabled())
                     logger.trace("Finished PendingRangeTask for {} keyspaces in {}ms", keyspaces.size(), System.currentTimeMillis() - start);
-                PendingRangeCalculatorServiceDiagnostics.taskFinished(instance, updateJobs);
             }
             finally
             {
@@ -88,15 +79,13 @@ public class PendingRangeCalculatorService
 
     private void finishUpdate()
     {
-        int jobs = updateJobs.decrementAndGet();
-        PendingRangeCalculatorServiceDiagnostics.taskCountChanged(instance, jobs);
+        updateJobs.decrementAndGet();
     }
 
     public void update()
     {
-        int jobs = updateJobs.incrementAndGet();
-        PendingRangeCalculatorServiceDiagnostics.taskCountChanged(instance, jobs);
-        executor.execute(new PendingRangeTask(updateJobs));
+        updateJobs.incrementAndGet();
+        executor.submit(new PendingRangeTask());
     }
 
     public void blockUntilFinished()
@@ -123,8 +112,9 @@ public class PendingRangeCalculatorService
     }
 
     @VisibleForTesting
-    public void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    public void shutdownExecutor() throws InterruptedException
     {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, executor);
+        executor.shutdown();
+        executor.awaitTermination(60, TimeUnit.SECONDS);
     }
 }

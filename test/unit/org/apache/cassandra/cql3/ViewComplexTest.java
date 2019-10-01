@@ -41,7 +41,6 @@ public class ViewComplexTest extends CQLTester
     {
         requireNetwork();
     }
-
     @Before
     public void begin()
     {
@@ -71,8 +70,8 @@ public class ViewComplexTest extends CQLTester
     private void updateViewWithFlush(String query, boolean flush, Object... params) throws Throwable
     {
         executeNet(protocolVersion, query, params);
-        while (!(((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getPendingTaskCount() == 0
-                && ((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getActiveTaskCount() == 0))
+        while (!(((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getPendingTasks() == 0
+                && ((SEPExecutor) StageManager.getStage(Stage.VIEW_MUTATION)).getActiveCount() == 0))
         {
             Thread.sleep(1);
         }
@@ -80,7 +79,7 @@ public class ViewComplexTest extends CQLTester
             Keyspace.open(keyspace()).flush();
     }
 
-    // for now, unselected column cannot be fully supported, SEE CASSANDRA-11500
+    // for now, unselected column cannot be fully supported, SEE CASSANDRA-13826
     @Ignore
     @Test
     public void testPartialDeleteUnselectedColumn() throws Throwable
@@ -144,7 +143,7 @@ public class ViewComplexTest extends CQLTester
         executeNet(protocolVersion, "USE " + keyspace());
         createTable("CREATE TABLE %s (k int, c int, a int, b int, e int, f int, PRIMARY KEY (k, c))");
         createView("mv",
-                   "CREATE MATERIALIZED VIEW %s AS SELECT a, b, c, k FROM %%s WHERE k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (k,c)");
+                   "CREATE MATERIALIZED VIEW %s AS SELECT a, b FROM %%s WHERE k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (k,c)");
         Keyspace ks = Keyspace.open(keyspace());
         ks.getColumnFamilyStore("mv").disableAutoCompaction();
 
@@ -401,7 +400,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT * from %s WHERE c = ? AND p = ?", 0, 0), row(0, 0, null, 1));
         assertRowsIgnoringOrder(execute("SELECT * from mv WHERE c = ? AND p = ?", 0, 0), row(0, 0));
 
-        assertInvalidMessage(String.format("Cannot drop column v2 on base table %s with materialized views", baseTable), "ALTER TABLE %s DROP v2");
+        assertInvalidMessage(String.format("Cannot drop column v2 on base table %s with materialized views.", baseTable), "ALTER TABLE %s DROP v2");
         // // drop unselected base column, unselected metadata should be removed, thus view row is dead
         // updateView("ALTER TABLE %s DROP v2");
         // assertRowsIgnoringOrder(execute("SELECT * from %s WHERE c = ? AND p = ?", 0, 0));
@@ -428,7 +427,7 @@ public class ViewComplexTest extends CQLTester
         executeNet(protocolVersion, "USE " + keyspace());
         String baseTable = createTable("CREATE TABLE %s (k int, c int, a int, b int, l list<int>, s set<int>, m map<int,int>, PRIMARY KEY (k, c))");
         createView("mv",
-                   "CREATE MATERIALIZED VIEW %s AS SELECT a, b, c, k FROM %%s WHERE k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (c, k)");
+                   "CREATE MATERIALIZED VIEW %s AS SELECT a, b FROM %%s WHERE k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (c, k)");
         Keyspace ks = Keyspace.open(keyspace());
         ks.getColumnFamilyStore("mv").disableAutoCompaction();
 
@@ -462,7 +461,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT k,c,a,b from %s"), row(1, 1, null, null));
         assertRowsIgnoringOrder(execute("SELECT * from mv"), row(1, 1, null, null));
 
-        assertInvalidMessage(String.format("Cannot drop column m on base table %s with materialized views", baseTable), "ALTER TABLE %s DROP m");
+        assertInvalidMessage(String.format("Cannot drop column m on base table %s with materialized views.", baseTable), "ALTER TABLE %s DROP m");
         // executeNet(protocolVersion, "ALTER TABLE %s DROP m");
         // ks.getColumnFamilyStore("mv").forceMajorCompaction();
         // assertRowsIgnoringOrder(execute("SELECT k,c,a,b from %s WHERE k = 1 AND c = 1"));
@@ -851,10 +850,10 @@ public class ViewComplexTest extends CQLTester
         for (String view : Arrays.asList("mv1", "mv2"))
         {
             // paging
-            assertEquals(1, executeNetWithPaging(protocolVersion, String.format("SELECT k,a,b FROM %s limit 1", view), 1).all().size());
-            assertEquals(2, executeNetWithPaging(protocolVersion, String.format("SELECT k,a,b FROM %s limit 2", view), 1).all().size());
-            assertEquals(2, executeNetWithPaging(protocolVersion, String.format("SELECT k,a,b FROM %s", view), 1).all().size());
-            assertRowsNet(protocolVersion, executeNetWithPaging(protocolVersion, String.format("SELECT k,a,b FROM %s ", view), 1),
+            assertEquals(1, executeNetWithPaging(String.format("SELECT k,a,b FROM %s limit 1", view), 1).all().size());
+            assertEquals(2, executeNetWithPaging(String.format("SELECT k,a,b FROM %s limit 2", view), 1).all().size());
+            assertEquals(2, executeNetWithPaging(String.format("SELECT k,a,b FROM %s", view), 1).all().size());
+            assertRowsNet(executeNetWithPaging(String.format("SELECT k,a,b FROM %s ", view), 1),
                           row(50, 50, 50),
                           row(100, 100, 100));
             // limit
@@ -931,7 +930,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT k,a,b from mv"), row(1, 1, 2));
         assertRowsIgnoringOrder(execute("SELECT k,a,b from %s"), row(1, 1, 2));
 
-        assertInvalidMessage(String.format("Cannot drop column a on base table %s with materialized views", baseTable), "ALTER TABLE %s DROP a");
+        assertInvalidMessage(String.format("Cannot drop column a on base table %s with materialized views.", baseTable), "ALTER TABLE %s DROP a");
     }
 
     @Test
@@ -1273,7 +1272,7 @@ public class ViewComplexTest extends CQLTester
                                                   // all selected
                                                   "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL PRIMARY KEY (a,b)",
                                                   // unselected e,f
-                                                  "CREATE MATERIALIZED VIEW %s AS SELECT a,b,c,d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL PRIMARY KEY (a,b)",
+                                                  "CREATE MATERIALIZED VIEW %s AS SELECT c,d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL PRIMARY KEY (a,b)",
                                                   // no selected
                                                   "CREATE MATERIALIZED VIEW %s AS SELECT a,b FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL PRIMARY KEY (a,b)",
                                                   // all selected, re-order keys
@@ -1404,4 +1403,5 @@ public class ViewComplexTest extends CQLTester
             }
         }
     }
+
 }

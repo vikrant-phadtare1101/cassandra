@@ -17,9 +17,7 @@
  */
 package org.apache.cassandra.concurrent;
 
-import java.util.Collections;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.concurrent.*;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -27,12 +25,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
-import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.config.DatabaseDescriptor.*;
-import static org.apache.cassandra.utils.ExecutorUtils.*;
 
 
 /**
@@ -61,18 +56,24 @@ public class StageManager
         stages.put(Stage.ANTI_ENTROPY, new JMXEnabledThreadPoolExecutor(Stage.ANTI_ENTROPY));
         stages.put(Stage.MIGRATION, new JMXEnabledThreadPoolExecutor(Stage.MIGRATION));
         stages.put(Stage.MISC, new JMXEnabledThreadPoolExecutor(Stage.MISC));
+        stages.put(Stage.READ_REPAIR, multiThreadedStage(Stage.READ_REPAIR, FBUtilities.getAvailableProcessors()));
         stages.put(Stage.TRACING, tracingExecutor());
-        stages.put(Stage.IMMEDIATE, ImmediateExecutor.INSTANCE);
     }
 
     private static LocalAwareExecutorService tracingExecutor()
     {
-        RejectedExecutionHandler reh = (r, executor) -> MessagingService.instance().metrics.recordSelfDroppedMessage(Verb._TRACE);
+        RejectedExecutionHandler reh = new RejectedExecutionHandler()
+        {
+            public void rejectedExecution(Runnable r, ThreadPoolExecutor executor)
+            {
+                MessagingService.instance().incrementDroppedMessages(MessagingService.Verb._TRACE);
+            }
+        };
         return new TracingExecutor(1,
                                    1,
                                    KEEPALIVE,
                                    TimeUnit.SECONDS,
-                                   new ArrayBlockingQueue<>(1000),
+                                   new ArrayBlockingQueue<Runnable>(1000),
                                    new NamedThreadFactory(Stage.TRACING.getJmxName()),
                                    reh);
     }
@@ -113,9 +114,12 @@ public class StageManager
     }
 
     @VisibleForTesting
-    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    public static void shutdownAndWait() throws InterruptedException
     {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, StageManager.stages.values());
+        for (Stage stage : Stage.values())
+            StageManager.stages.get(stage).shutdown();
+        for (Stage stage : Stage.values())
+            StageManager.stages.get(stage).awaitTermination(60, TimeUnit.SECONDS);
     }
 
     /**
@@ -138,18 +142,5 @@ public class StageManager
         {
             execute(command);
         }
-
-        @Override
-        public int getActiveTaskCount()
-        {
-            return getActiveCount();
-        }
-
-        @Override
-        public int getPendingTaskCount()
-        {
-            return getQueue().size();
-        }
     }
-
 }
