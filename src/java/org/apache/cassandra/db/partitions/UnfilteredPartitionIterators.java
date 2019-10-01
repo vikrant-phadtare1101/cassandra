@@ -256,19 +256,20 @@ public abstract class UnfilteredPartitionIterators
     /**
      * Digests the the provided iterator.
      *
-     * Caller must close the provided iterator.
-     *
      * @param iterator the iterator to digest.
      * @param hasher the {@link Hasher} to use for the digest.
      * @param version the messaging protocol to use when producing the digest.
      */
     public static void digest(UnfilteredPartitionIterator iterator, Hasher hasher, int version)
     {
-        while (iterator.hasNext())
+        try (UnfilteredPartitionIterator iter = iterator)
         {
-            try (UnfilteredRowIterator partition = iterator.next())
+            while (iter.hasNext())
             {
+                try (UnfilteredRowIterator partition = iter.next())
+                {
                     UnfilteredRowIterators.digest(partition, hasher, version);
+                }
             }
         }
     }

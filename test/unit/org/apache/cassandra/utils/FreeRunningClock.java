@@ -20,41 +20,23 @@ package org.apache.cassandra.utils;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A freely adjustable clock that can be used for unit testing. See {@link MonotonicClock#instance} how to
+ * A freely adjustable clock that can be used for unit testing. See {@link Clock#instance} how to
  * enable this class.
  */
-public class FreeRunningClock implements MonotonicClock
+public class FreeRunningClock extends Clock
 {
     private long nanoTime = 0;
 
     @Override
-    public long now()
+    public long nanoTime()
     {
         return nanoTime;
     }
 
     @Override
-    public long error()
+    public long currentTimeMillis()
     {
-        return 0;
-    }
-
-    @Override
-    public MonotonicClockTranslation translate()
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean isAfter(long instant)
-    {
-        return instant > nanoTime;
-    }
-
-    @Override
-    public boolean isAfter(long now, long instant)
-    {
-        return now > instant;
+        return TimeUnit.NANOSECONDS.toMillis(nanoTime());
     }
 
     public void advance(long time, TimeUnit unit)
