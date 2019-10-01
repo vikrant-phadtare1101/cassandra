@@ -68,11 +68,6 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
         return false;
     }
 
-    public boolean hasInvalidDeletions()
-    {
-        return !deletionTime().validate();
-    }
-
     /**
      * The deletion time for the range tombstone this is a bound of.
      */
@@ -140,7 +135,7 @@ public class RangeTombstoneBoundMarker extends AbstractRangeTombstoneMarker<Clus
 
     public String toString(TableMetadata metadata)
     {
-        return String.format("Marker %s@%d/%d", bound.toString(metadata), deletion.markedForDeleteAt(), deletion.localDeletionTime());
+        return "Marker " + bound.toString(metadata) + '@' + deletion.markedForDeleteAt();
     }
 
     @Override

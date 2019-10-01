@@ -18,65 +18,45 @@
 
 package org.apache.cassandra.service.reads.repair;
 
-import java.util.Map;
+import java.net.InetAddress;
+import java.util.List;
 import java.util.function.Consumer;
 
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
-import org.apache.cassandra.locator.Endpoints;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.ReplicaPlan;
+import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.reads.DigestResolver;
+import org.apache.cassandra.service.reads.ResponseResolver;
+import org.apache.cassandra.tracing.TraceState;
 
-/**
- * Bypasses the read repair path for short read protection and testing
- */
-public class NoopReadRepair<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-        implements ReadRepair<E, P>
+public class NoopReadRepair implements ReadRepair
 {
     public static final NoopReadRepair instance = new NoopReadRepair();
 
     private NoopReadRepair() {}
 
-    @Override
-    public UnfilteredPartitionIterators.MergeListener getMergeListener(P replicas)
+    public UnfilteredPartitionIterators.MergeListener getMergeListener(InetAddressAndPort[] endpoints)
     {
         return UnfilteredPartitionIterators.MergeListener.NOOP;
     }
 
-    @Override
-    public void startRepair(DigestResolver<E, P> digestResolver, Consumer<PartitionIterator> resultConsumer)
+    public void startForegroundRepair(DigestResolver digestResolver, List<InetAddressAndPort> allEndpoints, List<InetAddressAndPort> contactedEndpoints, Consumer<PartitionIterator> resultConsumer)
     {
         resultConsumer.accept(digestResolver.getData());
     }
 
-    public void awaitReads() throws ReadTimeoutException
-    {
-    }
-
-    @Override
-    public void maybeSendAdditionalReads()
+    public void awaitForegroundRepairFinish() throws ReadTimeoutException
     {
 
     }
 
-    @Override
-    public void maybeSendAdditionalWrites()
+    public void maybeStartBackgroundRepair(ResponseResolver resolver)
     {
 
     }
 
-    @Override
-    public void awaitWrites()
-    {
-
-    }
-
-    @Override
-    public void repairPartition(DecoratedKey partitionKey, Map<Replica, Mutation> mutations, P replicaPlan)
+    public void backgroundDigestRepair(TraceState traceState)
     {
 
     }

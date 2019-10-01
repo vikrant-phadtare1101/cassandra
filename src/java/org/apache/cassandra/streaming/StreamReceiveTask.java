@@ -19,20 +19,15 @@ package org.apache.cassandra.streaming;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.db.CassandraWriteHandler;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
 
 /**
  * Task that manages receiving files for the session for certain ColumnFamily.
@@ -55,7 +50,6 @@ public class StreamReceiveTask extends StreamTask
     private volatile boolean done = false;
 
     private int remoteStreamsReceived = 0;
-    private long bytesReceived = 0;
 
     public StreamReceiveTask(StreamSession session, TableId tableId, int totalStreams, long totalSize)
     {
@@ -83,10 +77,8 @@ public class StreamReceiveTask extends StreamTask
         }
 
         remoteStreamsReceived++;
-        bytesReceived += stream.getSize();
         Preconditions.checkArgument(tableId.equals(stream.getTableId()));
-        logger.debug("received {} of {} total files {} of total bytes {}", remoteStreamsReceived, totalStreams,
-                     bytesReceived, totalSize);
+        logger.debug("recevied {} of {} total files", remoteStreamsReceived, totalStreams);
 
         receiver.received(stream);
 
@@ -163,12 +155,5 @@ public class StreamReceiveTask extends StreamTask
 
         done = true;
         receiver.abort();
-    }
-
-    @VisibleForTesting
-    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        shutdown(executor);
-        awaitTermination(timeout, unit, executor);
     }
 }
