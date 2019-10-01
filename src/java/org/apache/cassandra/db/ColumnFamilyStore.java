@@ -88,8 +88,8 @@ import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
+import static org.apache.cassandra.utils.ExecutorUtils.*;
 import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
 import static org.apache.cassandra.utils.Throwables.maybeFail;
 
 public class ColumnFamilyStore implements ColumnFamilyStoreMBean
@@ -226,12 +226,16 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         postFlushExecutor.awaitTermination(60, TimeUnit.SECONDS);
     }
 
-    public static void shutdownExecutorsAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    public static void shutdownExecutorsAndWait(long timeout, TimeUnit units) throws InterruptedException, TimeoutException
     {
-        List<ExecutorService> executors = new ArrayList<>(perDiskflushExecutors.length + 3);
-        Collections.addAll(executors, reclaimExecutor, postFlushExecutor, flushExecutor);
-        Collections.addAll(executors, perDiskflushExecutors);
-        ExecutorUtils.shutdownAndWait(timeout, unit, executors);
+        List<ExecutorService> executors = ImmutableList.<ExecutorService>builder()
+                                          .add(perDiskflushExecutors)
+                                          .add(reclaimExecutor)
+                                          .add(postFlushExecutor)
+                                          .add(flushExecutor)
+                                          .build();
+        shutdown(executors);
+        awaitTermination(timeout, units, executors);
     }
 
     public void reload()
@@ -2380,14 +2384,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     // End JMX get/set.
 
-    public int getMeanEstimatedCellPerPartitionCount()
+    public int getMeanColumns()
     {
         long sum = 0;
         long count = 0;
         for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
         {
-            long n = sstable.getEstimatedCellPerPartitionCount().count();
-            sum += sstable.getEstimatedCellPerPartitionCount().mean() * n;
+            long n = sstable.getEstimatedColumnCount().count();
+            sum += sstable.getEstimatedColumnCount().mean() * n;
             count += n;
         }
         return count > 0 ? (int) (sum / count) : 0;
@@ -2404,19 +2408,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             count += n;
         }
         return count > 0 ? sum * 1.0 / count : 0;
-    }
-
-    public int getMeanRowCount()
-    {
-        long totalRows = 0;
-        long totalPartitions = 0;
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
-        {
-            totalPartitions += sstable.getEstimatedPartitionSize().count();
-            totalRows += sstable.getTotalRows();
-        }
-
-        return totalPartitions > 0 ? (int) (totalRows / totalPartitions) : 0;
     }
 
     public long estimateKeys()
@@ -2559,7 +2550,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (SSTableReader sstable : getSSTables(SSTableSet.LIVE))
         {
             allDroppable += sstable.getDroppableTombstonesBefore(localTime - metadata().params.gcGraceSeconds);
-            allColumns += sstable.getEstimatedCellPerPartitionCount().mean() * sstable.getEstimatedCellPerPartitionCount().count();
+            allColumns += sstable.getEstimatedColumnCount().mean() * sstable.getEstimatedColumnCount().count();
         }
         return allColumns > 0 ? allDroppable / allColumns : 0;
     }

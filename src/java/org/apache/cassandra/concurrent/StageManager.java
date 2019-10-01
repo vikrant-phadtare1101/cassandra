@@ -28,7 +28,6 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.Verb;
-import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.config.DatabaseDescriptor.*;
@@ -113,9 +112,10 @@ public class StageManager
     }
 
     @VisibleForTesting
-    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    public static void shutdownAndWait(long timeout, TimeUnit units) throws InterruptedException, TimeoutException
     {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, StageManager.stages.values());
+        shutdown(StageManager.stages.values());
+        awaitTermination(timeout, units, StageManager.stages.values());
     }
 
     /**
