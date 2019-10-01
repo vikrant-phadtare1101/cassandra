@@ -17,14 +17,14 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import io.airlift.airline.Option;
-import org.apache.cassandra.schema.SchemaConstants;
+import io.airlift.command.Option;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 
@@ -42,19 +42,18 @@ public class Cleanup extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        List<String> keyspaces = parseOptionalKeyspace(args, probe, KeyspaceSet.NON_LOCAL_STRATEGY);
-        String[] tableNames = parseOptionalTables(args);
+        List<String> keyspaces = parseOptionalKeyspace(args, probe);
+        String[] cfnames = parseOptionalColumnFamilies(args);
 
         for (String keyspace : keyspaces)
         {
-            if (SchemaConstants.isLocalSystemKeyspace(keyspace))
+            if (SystemKeyspace.NAME.equals(keyspace))
                 continue;
 
             try
             {
-                probe.forceKeyspaceCleanup(System.out, jobs, keyspace, tableNames);
-            }
-            catch (Exception e)
+                probe.forceKeyspaceCleanup(System.out, jobs, keyspace, cfnames);
+            } catch (Exception e)
             {
                 throw new RuntimeException("Error occurred during cleanup", e);
             }

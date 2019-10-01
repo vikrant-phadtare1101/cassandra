@@ -18,10 +18,10 @@
 package org.apache.cassandra.utils.obs;
 
 import java.io.Closeable;
+import java.io.DataOutput;
 import java.io.IOException;
 
-import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.utils.concurrent.Ref;
+import org.apache.cassandra.db.TypeSizes;
 
 public interface IBitSet extends Closeable
 {
@@ -44,9 +44,9 @@ public interface IBitSet extends Closeable
      */
     public void clear(long index);
 
-    public void serialize(DataOutputPlus out) throws IOException;
+    public void serialize(DataOutput out) throws IOException;
 
-    public long serializedSize();
+    public long serializedSize(TypeSizes type);
 
     public void clear();
 
@@ -57,6 +57,4 @@ public interface IBitSet extends Closeable
      * @return the amount of memory in bytes used off heap
      */
     public long offHeapSize();
-
-    public void addTo(Ref.IdentityCollection identities);
 }

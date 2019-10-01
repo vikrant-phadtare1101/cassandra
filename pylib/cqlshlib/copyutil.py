@@ -37,23 +37,22 @@ from calendar import timegm
 from collections import defaultdict, namedtuple
 from decimal import Decimal
 from Queue import Queue
-from random import randint
+from random import randrange
 from StringIO import StringIO
 from select import select
 from uuid import UUID
 from util import profile_on, profile_off
 
-from cassandra import OperationTimedOut
-from cassandra.cluster import Cluster, DefaultConnection
+from cassandra.cluster import Cluster
 from cassandra.cqltypes import ReversedType, UserType
 from cassandra.metadata import protect_name, protect_names, protect_value
-from cassandra.policies import RetryPolicy, WhiteListRoundRobinPolicy, DCAwareRoundRobinPolicy, FallthroughRetryPolicy
+from cassandra.policies import RetryPolicy, WhiteListRoundRobinPolicy, DCAwareRoundRobinPolicy
 from cassandra.query import BatchStatement, BatchType, SimpleStatement, tuple_factory
 from cassandra.util import Date, Time
 
 from cql3handling import CqlRuleSet
 from displaying import NO_COLOR_MAP
-from formatting import format_value_default, CqlType, DateTimeFormat, EMPTY, get_formatter
+from formatting import format_value_default, DateTimeFormat, EMPTY, get_formatter
 from sslhandling import ssl_settings
 
 PROFILE_ON = False
@@ -339,10 +338,8 @@ class CopyTask(object):
         copy_options['pagetimeout'] = int(opts.pop('pagetimeout', max(10, 10 * (copy_options['pagesize'] / 1000))))
         copy_options['maxattempts'] = int(opts.pop('maxattempts', 5))
         copy_options['dtformats'] = DateTimeFormat(opts.pop('datetimeformat', shell.display_timestamp_format),
-                                                   shell.display_date_format, shell.display_nanotime_format,
-                                                   milliseconds_only=True)
-        copy_options['floatprecision'] = int(opts.pop('floatprecision', '5'))
-        copy_options['doubleprecision'] = int(opts.pop('doubleprecision', '12'))
+                                                   shell.display_date_format, shell.display_nanotime_format)
+        copy_options['float_precision'] = shell.display_float_precision
         copy_options['chunksize'] = int(opts.pop('chunksize', 5000))
         copy_options['ingestrate'] = int(opts.pop('ingestrate', 100000))
         copy_options['maxbatchsize'] = int(opts.pop('maxbatchsize', 20))
@@ -359,23 +356,11 @@ class CopyTask(object):
         copy_options['skiprows'] = int(opts.pop('skiprows', '0'))
         copy_options['skipcols'] = opts.pop('skipcols', '')
         copy_options['maxparseerrors'] = int(opts.pop('maxparseerrors', '-1'))
-        copy_options['maxinserterrors'] = int(opts.pop('maxinserterrors', '1000'))
+        copy_options['maxinserterrors'] = int(opts.pop('maxinserterrors', '-1'))
         copy_options['errfile'] = safe_normpath(opts.pop('errfile', 'import_%s_%s.err' % (self.ks, self.table,)))
         copy_options['ratefile'] = safe_normpath(opts.pop('ratefile', ''))
         copy_options['maxoutputsize'] = int(opts.pop('maxoutputsize', '-1'))
         copy_options['preparedstatements'] = bool(opts.pop('preparedstatements', 'true').lower() == 'true')
-        copy_options['ttl'] = int(opts.pop('ttl', -1))
-
-        # Hidden properties, they do not appear in the documentation but can be set in config files
-        # or on the cmd line but w/o completion
-        copy_options['maxinflightmessages'] = int(opts.pop('maxinflightmessages', '512'))
-        copy_options['maxbackoffattempts'] = int(opts.pop('maxbackoffattempts', '12'))
-        copy_options['maxpendingchunks'] = int(opts.pop('maxpendingchunks', '24'))
-        # set requesttimeout to a value high enough so that maxbatchsize rows will never timeout if the server
-        # responds: here we set it to 1 sec per 10 rows but no less than 60 seconds
-        copy_options['requesttimeout'] = int(opts.pop('requesttimeout', max(60, 1 * copy_options['maxbatchsize'] / 10)))
-        # set childtimeout higher than requesttimeout so that child processes have a chance to report request timeouts
-        copy_options['childtimeout'] = int(opts.pop('childtimeout', copy_options['requesttimeout'] + 30))
 
         self.check_options(copy_options)
         return CopyOptions(copy=copy_options, dialect=dialect_options, unrecognized=opts)
@@ -409,11 +394,8 @@ class CopyTask(object):
         """
         try:
             num_cores_for_testing = os.environ.get('CQLSH_COPY_TEST_NUM_CORES', '')
-            ret = int(num_cores_for_testing) if num_cores_for_testing else mp.cpu_count()
-            printdebugmsg("Detected %d core(s)" % (ret,))
-            return ret
+            return int(num_cores_for_testing) if num_cores_for_testing else mp.cpu_count()
         except NotImplementedError:
-            printdebugmsg("Failed to detect number of cores, returning 1")
             return 1
 
     @staticmethod
@@ -883,18 +865,15 @@ class FilesReader(object):
             try:
                 return open(fname, 'rb')
             except IOError, e:
-                raise IOError("Can't open %r for reading: %s" % (fname, e))
+                printdebugmsg("Can't open %r for reading: %s" % (fname, e))
+                return None
 
         for path in paths.split(','):
             path = path.strip()
             if os.path.isfile(path):
                 yield make_source(path)
             else:
-                result = glob.glob(path)
-                if len(result) == 0:
-                    raise IOError("Can't open %r for reading: no matching file found" % (path,))
-
-                for f in result:
+                for f in glob.glob(path):
                     yield (make_source(f))
 
     def start(self):
@@ -1206,20 +1185,8 @@ class ImportTask(CopyTask):
         if not self.fname:
             self.send_stdin_rows()
 
-        child_timeout = self.options.copy['childtimeout']
-        last_recv_num_records = 0
-        last_recv_time = time.time()
-
         while self.feeding_result is None or self.receive_meter.total_records < self.feeding_result.sent:
             self.receive_results()
-
-            if self.feeding_result is not None:
-                if self.receive_meter.total_records != last_recv_num_records:
-                    last_recv_num_records = self.receive_meter.total_records
-                    last_recv_time = time.time()
-                elif (time.time() - last_recv_time) > child_timeout:
-                    self.shell.printerr("No records inserted in {} seconds, aborting".format(child_timeout))
-                    break
 
             if self.error_handler.max_exceeded() or not self.all_processes_running():
                 break
@@ -1291,7 +1258,6 @@ class FeedingProcess(mp.Process):
         self.send_meter = RateMeter(log_fcn=None, update_interval=1)
         self.ingest_rate = options.copy['ingestrate']
         self.num_worker_processes = options.copy['numprocesses']
-        self.max_pending_chunks = options.copy['maxpendingchunks']
         self.chunk_id = 0
         self.parent_cluster = parent_cluster
 
@@ -1327,28 +1293,12 @@ class FeedingProcess(mp.Process):
         self.on_fork()
 
         reader = self.reader
-        try:
-            reader.start()
-        except IOError, exc:
-            self.outmsg.send(ImportTaskError(exc.__class__.__name__, exc.message))
-
+        reader.start()
         channels = self.worker_channels
-        max_pending_chunks = self.max_pending_chunks
         sent = 0
-        failed_attempts = 0
 
         while not reader.exhausted:
-            channels_eligible = filter(lambda c: c.num_pending() < max_pending_chunks, channels)
-            if not channels_eligible:
-                failed_attempts += 1
-                delay = randint(1, pow(2, failed_attempts))
-                printdebugmsg("All workers busy, sleeping for %d second(s)" % (delay,))
-                time.sleep(delay)
-                continue
-            elif failed_attempts > 0:
-                failed_attempts = 0
-
-            for ch in channels_eligible:
+            for ch in channels:
                 try:
                     max_rows = self.ingest_rate - self.send_meter.current_record
                     if max_rows <= 0:
@@ -1478,13 +1428,14 @@ class ExpBackoffRetryPolicy(RetryPolicy):
         this maximum is per query.
         To back-off we should wait a random number of seconds
         between 0 and 2^c - 1, where c is the number of total failures.
+        randrange() excludes the last value, so we drop the -1.
 
         :return : the number of seconds to wait for, -1 if we should not retry
         """
         if retry_num >= self.max_attempts:
             return -1
 
-        delay = randint(0, pow(2, retry_num + 1) - 1)
+        delay = randrange(0, pow(2, retry_num + 1))
         return delay
 
 
@@ -1537,8 +1488,7 @@ class ExportProcess(ChildProcess):
     def __init__(self, params):
         ChildProcess.__init__(self, params=params, target=self.run)
         options = params['options']
-        self.float_precision = options.copy['floatprecision']
-        self.double_precision = options.copy['doubleprecision']
+        self.float_precision = options.copy['float_precision']
         self.nullval = options.copy['nullval']
         self.max_requests = options.copy['maxrequests']
 
@@ -1662,17 +1612,12 @@ class ExportProcess(ChildProcess):
         return session
 
     def attach_callbacks(self, token_range, future, session):
-        metadata = session.cluster.metadata
-        ks_meta = metadata.keyspaces[self.ks]
-        table_meta = ks_meta.tables[self.table]
-        cql_types = [CqlType(table_meta.columns[c].cql_type, ks_meta) for c in self.columns]
-
         def result_callback(rows):
             if future.has_more_pages:
                 future.start_fetching_next_page()
-                self.write_rows_to_csv(token_range, rows, cql_types)
+                self.write_rows_to_csv(token_range, rows)
             else:
-                self.write_rows_to_csv(token_range, rows, cql_types)
+                self.write_rows_to_csv(token_range, rows)
                 self.send((None, None))
                 session.complete_request()
 
@@ -1682,7 +1627,7 @@ class ExportProcess(ChildProcess):
 
         future.add_callbacks(callback=result_callback, errback=err_callback)
 
-    def write_rows_to_csv(self, token_range, rows, cql_types):
+    def write_rows_to_csv(self, token_range, rows):
         if not rows:
             return  # no rows in this range
 
@@ -1691,7 +1636,7 @@ class ExportProcess(ChildProcess):
             writer = csv.writer(output, **self.options.dialect)
 
             for row in rows:
-                writer.writerow(map(self.format_value, row, cql_types))
+                writer.writerow(map(self.format_value, row))
 
             data = (output.getvalue(), len(rows))
             self.send((token_range, data))
@@ -1700,21 +1645,18 @@ class ExportProcess(ChildProcess):
         except Exception, e:
             self.report_error(e, token_range)
 
-    def format_value(self, val, cqltype):
+    def format_value(self, val):
         if val is None or val == EMPTY:
             return format_value_default(self.nullval, colormap=NO_COLOR_MAP)
 
-        formatter = self.formatters.get(cqltype, None)
+        ctype = type(val)
+        formatter = self.formatters.get(ctype, None)
         if not formatter:
-            formatter = get_formatter(val, cqltype)
-            self.formatters[cqltype] = formatter
+            formatter = get_formatter(ctype)
+            self.formatters[ctype] = formatter
 
-        if not hasattr(cqltype, 'precision'):
-            cqltype.precision = self.double_precision if cqltype.type_name == 'double' else self.float_precision
-
-        return formatter(val, cqltype=cqltype,
-                         encoding=self.encoding, colormap=NO_COLOR_MAP, date_time_format=self.date_time_format,
-                         float_precision=cqltype.precision, nullval=self.nullval, quote=False,
+        return formatter(val, encoding=self.encoding, colormap=NO_COLOR_MAP, date_time_format=self.date_time_format,
+                         float_precision=self.float_precision, nullval=self.nullval, quote=False,
                          decimal_sep=self.decimal_sep, thousands_sep=self.thousands_sep,
                          boolean_styles=self.boolean_styles)
 
@@ -1903,30 +1845,11 @@ class ImportConversion(object):
 
         def split(val, sep=','):
             """
-            Split "val" into a list of values whenever the separator "sep" is found, but
+            Split into a list of values whenever we encounter a separator but
             ignore separators inside parentheses or single quotes, except for the two
-            outermost parentheses, which will be ignored. This method is called when parsing composite
-            types, "val" should be at least 2 characters long, the first char should be an
-            open parenthesis and the last char should be a matching closing parenthesis. We could also
-            check exactly which parenthesis type depending on the caller, but I don't want to enforce
-            too many checks that don't necessarily provide any additional benefits, and risk breaking
-            data that could previously be imported, even if strictly speaking it is incorrect CQL.
-            For example, right now we accept sets that start with '[' and ']', I don't want to break this
-            by enforcing '{' and '}' in a minor release.
+            outermost parentheses, which will be ignored. We expect val to be at least
+            2 characters long (the two outer parentheses).
             """
-            def is_open_paren(cc):
-                return cc == '{' or cc == '[' or cc == '('
-
-            def is_close_paren(cc):
-                return cc == '}' or cc == ']' or cc == ')'
-
-            def paren_match(c1, c2):
-                return (c1 == '{' and c2 == '}') or (c1 == '[' and c2 == ']') or (c1 == '(' and c2 == ')')
-
-            if len(val) < 2 or not paren_match(val[0], val[-1]):
-                raise ParseError('Invalid composite string, it should start and end with matching parentheses: {}'
-                                 .format(val))
-
             ret = []
             last = 1
             level = 0
@@ -1935,9 +1858,9 @@ class ImportConversion(object):
                 if c == '\'':
                     quote = not quote
                 elif not quote:
-                    if is_open_paren(c):
+                    if c == '{' or c == '[' or c == '(':
                         level += 1
-                    elif is_close_paren(c):
+                    elif c == '}' or c == ']' or c == ')':
                         level -= 1
                     elif c == sep and level == 1:
                         ret.append(val[last:i])
@@ -1948,9 +1871,9 @@ class ImportConversion(object):
 
             return ret
 
-        # this should match all possible CQL and CQLSH datetime formats
+        # this should match all possible CQL datetime formats
         p = re.compile("(\d{4})\-(\d{2})\-(\d{2})\s?(?:'T')?" +  # YYYY-MM-DD[( |'T')]
-                       "(?:(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?))?" +  # [HH:MM[:SS[.NNNNNN]]]
+                       "(?:(\d{2}):(\d{2})(?::(\d{2}))?)?" +  # [HH:MM[:SS]]
                        "(?:([+\-])(\d{2}):?(\d{2}))?")  # [(+|-)HH[:]MM]]
 
         def convert_datetime(val, **_):
@@ -1962,13 +1885,7 @@ class ImportConversion(object):
 
             m = p.match(val)
             if not m:
-                try:
-                    # in case of overflow COPY TO prints dates as milliseconds from the epoch, see
-                    # deserialize_date_fallback_int in cqlsh.py
-                    return int(val)
-                except ValueError:
-                    raise ValueError("can't interpret %r as a date with format %s or as int" % (val,
-                                                                                                self.date_time_format))
+                raise ValueError("can't interpret %r as a date with this format: %s" % (val, self.date_time_format))
 
             # https://docs.python.org/2/library/time.html#time.struct_time
             tval = time.struct_time((int(m.group(1)), int(m.group(2)), int(m.group(3)),  # year, month, day
@@ -1977,16 +1894,13 @@ class ImportConversion(object):
                                     int(m.group(6)) if m.group(6) else 0,  # second
                                     0, 1, -1))  # day of week, day of year, dst-flag
 
-            # convert sub-seconds (a number between 1 and 6 digits) to milliseconds
-            milliseconds = 0 if not m.group(7) else int(m.group(7)) * pow(10, 3 - len(m.group(7)))
-
-            if m.group(8):
-                offset = (int(m.group(9)) * 3600 + int(m.group(10)) * 60) * int(m.group(8) + '1')
+            if m.group(7):
+                offset = (int(m.group(8)) * 3600 + int(m.group(9)) * 60) * int(m.group(7) + '1')
             else:
                 offset = -time.timezone
 
             # scale seconds to millis for the raw value
-            return ((timegm(tval) + offset) * 1e3) + milliseconds
+            return (timegm(tval) + offset) * 1e3
 
         def convert_date(v, **_):
             return Date(v)
@@ -2103,13 +2017,6 @@ class ImportConversion(object):
             try:
                 return c(v) if v != self.nullval else self.get_null_val()
             except Exception, e:
-                # if we could not convert an empty string, then self.nullval has been set to a marker
-                # because the user needs to import empty strings, except that the converters for some types
-                # will fail to convert an empty string, in this case the null value should be inserted
-                # see CASSANDRA-12794
-                if v == '':
-                    return self.get_null_val()
-
                 if self.debug:
                     traceback.print_exc()
                 raise ParseError("Failed to parse %s : %s" % (val, e.message))
@@ -2209,58 +2116,24 @@ class TokenMap(object):
 
 class FastTokenAwarePolicy(DCAwareRoundRobinPolicy):
     """
-    Send to any replicas attached to the query, or else fall back to DCAwareRoundRobinPolicy. Perform
-    exponential back-off if too many in flight requests to all replicas are already in progress.
+    Send to any replicas attached to the query, or else fall back to DCAwareRoundRobinPolicy
     """
 
-    def __init__(self, parent):
-        DCAwareRoundRobinPolicy.__init__(self, parent.local_dc, 0)
-        self.max_backoff_attempts = parent.max_backoff_attempts
-        self.max_inflight_messages = parent.max_inflight_messages
+    def __init__(self, local_dc='', used_hosts_per_remote_dc=0):
+        DCAwareRoundRobinPolicy.__init__(self, local_dc, used_hosts_per_remote_dc)
 
     def make_query_plan(self, working_keyspace=None, query=None):
         """
         Extend TokenAwarePolicy.make_query_plan() so that we choose the same replicas in preference
-        and most importantly we avoid repeating the (slow) bisect. We also implement a backoff policy
-        by sleeping an exponentially larger delay in case all connections to eligible replicas have
-        too many in flight requests.
+        and most importantly we avoid repeating the (slow) bisect
         """
-        connections = ConnectionWrapper.connections
-        replicas = list(query.replicas) if hasattr(query, 'replicas') else []
-        replicas.extend([r for r in DCAwareRoundRobinPolicy.make_query_plan(self, working_keyspace, query)
-                        if r not in replicas])
+        replicas = query.replicas if hasattr(query, 'replicas') else []
+        for r in replicas:
+            yield r
 
-        if replicas:
-            def replica_is_not_overloaded(r):
-                if r.address in connections:
-                    conn = connections[r.address]
-                    return conn.in_flight < min(conn.max_request_id, self.max_inflight_messages)
-                return True
-
-            for i in xrange(self.max_backoff_attempts):
-                for r in filter(replica_is_not_overloaded, replicas):
-                    yield r
-
-                # the back-off starts at 10 ms (0.01) and it can go up to to 2^max_backoff_attempts,
-                # which is currently 12, so 2^12 = 4096 = ~40 seconds when dividing by 0.01
-                delay = randint(1, pow(2, i + 1)) * 0.01
-                printdebugmsg("All replicas busy, sleeping for %d second(s)..." % (delay,))
-                time.sleep(delay)
-
-            printdebugmsg("Replicas too busy, given up")
-
-
-class ConnectionWrapper(DefaultConnection):
-    """
-    A wrapper to the driver default connection that helps in keeping track of messages in flight.
-    The newly created connection is registered into a global dictionary so that FastTokenAwarePolicy
-    is able to determine if a connection has too many in flight requests.
-    """
-    connections = {}
-
-    def __init__(self, *args, **kwargs):
-        DefaultConnection.__init__(self, *args, **kwargs)
-        self.connections[self.host] = self
+        for r in DCAwareRoundRobinPolicy.make_query_plan(self, working_keyspace, query):
+            if r not in replicas:
+                yield r
 
 
 class ImportProcess(ChildProcess):
@@ -2278,11 +2151,6 @@ class ImportProcess(ChildProcess):
         self.min_batch_size = options.copy['minbatchsize']
         self.max_batch_size = options.copy['maxbatchsize']
         self.use_prepared_statements = options.copy['preparedstatements']
-        self.ttl = options.copy['ttl']
-        self.max_inflight_messages = options.copy['maxinflightmessages']
-        self.max_backoff_attempts = options.copy['maxbackoffattempts']
-        self.request_timeout = options.copy['requesttimeout']
-
         self.dialect_options = options.dialect
         self._session = None
         self.query = None
@@ -2298,17 +2166,16 @@ class ImportProcess(ChildProcess):
                 cql_version=self.cql_version,
                 protocol_version=self.protocol_version,
                 auth_provider=self.auth_provider,
-                load_balancing_policy=FastTokenAwarePolicy(self),
+                load_balancing_policy=FastTokenAwarePolicy(local_dc=self.local_dc),
                 ssl_options=ssl_settings(self.hostname, self.config_file) if self.ssl else None,
-                default_retry_policy=FallthroughRetryPolicy(),  # we throw on timeouts and retry in the error callback
+                default_retry_policy=ExpBackoffRetryPolicy(self),
                 compression=None,
                 control_connection_timeout=self.connect_timeout,
                 connect_timeout=self.connect_timeout,
-                idle_heartbeat_interval=0,
-                connection_class=ConnectionWrapper)
+                idle_heartbeat_interval=0)
 
             self._session = cluster.connect(self.ks)
-            self._session.default_timeout = self.request_timeout
+            self._session.default_timeout = None
         return self._session
 
     def run(self):
@@ -2348,8 +2215,7 @@ class ImportProcess(ChildProcess):
                                                             protect_name(self.table),
                                                             ', '.join(protect_names(self.valid_columns),),
                                                             ', '.join(['?' for _ in self.valid_columns]))
-            if self.ttl >= 0:
-                query += 'USING TTL %s' % (self.ttl,)
+
             query = self.session.prepare(query)
             query.consistency_level = self.consistency_level
             prepared_statement = query
@@ -2358,8 +2224,6 @@ class ImportProcess(ChildProcess):
             query = 'INSERT INTO %s.%s (%s) VALUES (%%s)' % (protect_name(self.ks),
                                                              protect_name(self.table),
                                                              ', '.join(protect_names(self.valid_columns),))
-            if self.ttl >= 0:
-                query += 'USING TTL %s' % (self.ttl,)
             make_statement = self.wrap_make_statement(self.make_non_prepared_batch_statement)
 
         conv = ImportConversion(self, table_meta, prepared_statement)
@@ -2394,10 +2258,6 @@ class ImportProcess(ChildProcess):
                         future = session.execute_async(statement)
                         future.add_callbacks(callback=result_callback, callback_args=(batch, chunk),
                                              errback=err_callback, errback_args=(batch, chunk, replicas))
-                    # do not handle else case, if a statement could not be created, the exception is handled
-                    # in self.wrap_make_statement and the error is reported, if a failure is injected that
-                    # causes the statement to be None, then we should not report the error so that we can test
-                    # the parent process handling missing batches from child processes
 
             except Exception, exc:
                 self.report_error(exc, chunk, chunk['rows'])
@@ -2412,28 +2272,33 @@ class ImportProcess(ChildProcess):
                 return None
 
         def make_statement_with_failures(query, conv, chunk, batch, replicas):
-            failed_batch, apply_failure = self.maybe_inject_failures(batch)
-            if apply_failure:
+            failed_batch = self.maybe_inject_failures(batch)
+            if failed_batch:
                 return failed_batch
             return make_statement(query, conv, chunk, batch, replicas)
 
         return make_statement_with_failures if self.test_failures else make_statement
 
     def make_counter_batch_statement(self, query, conv, batch, replicas):
-        statement = BatchStatement(batch_type=BatchType.COUNTER, consistency_level=self.consistency_level)
-        statement.replicas = replicas
-        statement.keyspace = self.ks
-        for row in batch['rows']:
+        def make_full_query(r):
             where_clause = []
             set_clause = []
-            for i, value in enumerate(row):
+            for i, value in enumerate(r):
                 if i in conv.primary_key_indexes:
                     where_clause.append("%s=%s" % (self.valid_columns[i], value))
                 else:
                     set_clause.append("%s=%s+%s" % (self.valid_columns[i], self.valid_columns[i], value))
+            return query % (','.join(set_clause), ' AND '.join(where_clause))
 
-            full_query_text = query % (','.join(set_clause), ' AND '.join(where_clause))
-            statement.add(full_query_text)
+        if len(batch['rows']) == 1:
+            statement = SimpleStatement(make_full_query(batch['rows'][0]), consistency_level=self.consistency_level)
+        else:
+            statement = BatchStatement(batch_type=BatchType.COUNTER, consistency_level=self.consistency_level)
+            for row in batch['rows']:
+                statement.add(make_full_query(row))
+
+        statement.replicas = replicas
+        statement.keyspace = self.ks
         return statement
 
     def make_prepared_batch_statement(self, query, _, batch, replicas):
@@ -2447,17 +2312,25 @@ class ImportProcess(ChildProcess):
         We could optimize further by removing bound_statements altogether but we'd have to duplicate much
         more driver's code (BoundStatement.bind()).
         """
-        statement = BatchStatement(batch_type=BatchType.UNLOGGED, consistency_level=self.consistency_level)
+        if len(batch['rows']) == 1:
+            statement = query.bind(batch['rows'][0])
+        else:
+            statement = BatchStatement(batch_type=BatchType.UNLOGGED, consistency_level=self.consistency_level)
+            statement._statements_and_parameters = [(True, query.query_id, query.bind(r).values) for r in batch['rows']]
+
         statement.replicas = replicas
         statement.keyspace = self.ks
-        statement._statements_and_parameters = [(True, query.query_id, query.bind(r).values) for r in batch['rows']]
         return statement
 
     def make_non_prepared_batch_statement(self, query, _, batch, replicas):
-        statement = BatchStatement(batch_type=BatchType.UNLOGGED, consistency_level=self.consistency_level)
+        if len(batch['rows']) == 1:
+            statement = SimpleStatement(query % (','.join(batch['rows'][0]),), consistency_level=self.consistency_level)
+        else:
+            statement = BatchStatement(batch_type=BatchType.UNLOGGED, consistency_level=self.consistency_level)
+            statement._statements_and_parameters = [(False, query % (','.join(r),), ()) for r in batch['rows']]
+
         statement.replicas = replicas
         statement.keyspace = self.ks
-        statement._statements_and_parameters = [(False, query % (','.join(r),), ()) for r in batch['rows']]
         return statement
 
     def convert_rows(self, conv, chunk):
@@ -2490,12 +2363,10 @@ class ImportProcess(ChildProcess):
 
     def maybe_inject_failures(self, batch):
         """
-        Examine self.test_failures and see if the batch is a batch
-        supposed to cause a failure (failing_batch), or to terminate the worker process
-        (exit_batch), or not to be sent (unsent_batch).
-
-        @return any statement that will cause a failure or None if the statement should not be sent
-        plus a boolean indicating if a failure should be applied at all
+        Examine self.test_failures and see if token_range is either a token range
+        supposed to cause a failure (failing_range) or to terminate the worker process
+        (exit_range). If not then call prepare_export_query(), which implements the
+        normal behavior.
         """
         if 'failing_batch' in self.test_failures:
             failing_batch = self.test_failures['failing_batch']
@@ -2503,19 +2374,14 @@ class ImportProcess(ChildProcess):
                 if batch['attempts'] < failing_batch['failures']:
                     statement = SimpleStatement("INSERT INTO badtable (a, b) VALUES (1, 2)",
                                                 consistency_level=self.consistency_level)
-                    return statement, True  # use this statement, which will cause an error
+                    return statement
 
         if 'exit_batch' in self.test_failures:
             exit_batch = self.test_failures['exit_batch']
             if exit_batch['id'] == batch['id']:
                 sys.exit(1)
 
-        if 'unsent_batch' in self.test_failures:
-            unsent_batch = self.test_failures['unsent_batch']
-            if unsent_batch['id'] == batch['id']:
-                return None, True  # do not send this batch, which will cause missing acks in the parent process
-
-        return None, False  # carry on as normal, do not apply any failures
+        return None  # carry on as normal
 
     @staticmethod
     def make_batch(batch_id, rows, attempts=1):
@@ -2576,8 +2442,6 @@ class ImportProcess(ChildProcess):
         self.update_chunk(batch['rows'], chunk)
 
     def err_callback(self, response, batch, chunk, replicas):
-        if isinstance(response, OperationTimedOut) and chunk['imported'] == chunk['num_rows_sent']:
-            return  # occasionally the driver sends false timeouts for rows already processed (PYTHON-652)
         err_is_final = batch['attempts'] >= self.max_attempts
         self.report_error(response, chunk, batch['rows'], batch['attempts'], err_is_final)
         if not err_is_final:

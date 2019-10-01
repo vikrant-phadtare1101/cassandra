@@ -15,282 +15,249 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.cassandra.db;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.primitives.Ints;
+import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.rows.*;
-import org.apache.cassandra.io.ISerializer;
-import org.apache.cassandra.io.sstable.IndexInfo;
-import org.apache.cassandra.io.sstable.format.SSTableFlushObserver;
-import org.apache.cassandra.io.sstable.format.Version;
-import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.io.util.SequentialWriter;
+import org.apache.cassandra.db.composites.Composite;
+import org.apache.cassandra.io.sstable.IndexHelper;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
-/**
- * Column index builder used by {@link org.apache.cassandra.io.sstable.format.big.BigTableWriter}.
- * For index entries that exceed {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb},
- * this uses the serialization logic as in {@link RowIndexEntry}.
- */
 public class ColumnIndex
 {
-    // used, if the row-index-entry reaches config column_index_cache_size_in_kb
-    private DataOutputBuffer buffer;
-    // used to track the size of the serialized size of row-index-entry (unused for buffer)
-    private int indexSamplesSerializedSize;
-    // used, until the row-index-entry reaches config column_index_cache_size_in_kb
-    private final List<IndexInfo> indexSamples = new ArrayList<>();
+    public final List<IndexHelper.IndexInfo> columnsIndex;
 
-    private DataOutputBuffer reusableBuffer;
+    private static final ColumnIndex EMPTY = new ColumnIndex(Collections.<IndexHelper.IndexInfo>emptyList());
 
-    public int columnIndexCount;
-    private int[] indexOffsets;
-
-    private final SerializationHeader header;
-    private final int version;
-    private final SequentialWriter writer;
-    private long initialPosition;
-    private final  ISerializer<IndexInfo> idxSerializer;
-    public long headerLength;
-    private long startPosition;
-
-    private int written;
-    private long previousRowStart;
-
-    private ClusteringPrefix firstClustering;
-    private ClusteringPrefix lastClustering;
-
-    private DeletionTime openMarker;
-
-    private final Collection<SSTableFlushObserver> observers;
-
-    public ColumnIndex(SerializationHeader header,
-                        SequentialWriter writer,
-                        Version version,
-                        Collection<SSTableFlushObserver> observers,
-                        ISerializer<IndexInfo> indexInfoSerializer)
+    private ColumnIndex(List<IndexHelper.IndexInfo> columnsIndex)
     {
-        this.header = header;
-        this.writer = writer;
-        this.version = version.correspondingMessagingVersion();
-        this.observers = observers;
-        this.idxSerializer = indexInfoSerializer;
+        assert columnsIndex != null;
+
+        this.columnsIndex = columnsIndex;
     }
 
-    public void reset()
+    @VisibleForTesting
+    public static ColumnIndex nothing()
     {
-        this.initialPosition = writer.position();
-        this.headerLength = -1;
-        this.startPosition = -1;
-        this.previousRowStart = 0;
-        this.columnIndexCount = 0;
-        this.written = 0;
-        this.indexSamplesSerializedSize = 0;
-        this.indexSamples.clear();
-        this.firstClustering = null;
-        this.lastClustering = null;
-        this.openMarker = null;
-        if (this.buffer != null)
-            this.reusableBuffer = this.buffer;
-        this.buffer = null;
+        return EMPTY;
     }
 
-    public void buildRowIndex(UnfilteredRowIterator iterator) throws IOException
+    /**
+     * Help to create an index for a column family based on size of columns,
+     * and write said columns to disk.
+     */
+    public static class Builder
     {
-        writePartitionHeader(iterator);
-        this.headerLength = writer.position() - initialPosition;
+        private final ColumnIndex result;
+        private final long indexOffset;
+        private long startPosition = -1;
+        private long endPosition = 0;
+        private long blockSize;
+        private OnDiskAtom firstColumn;
+        private OnDiskAtom lastColumn;
+        private OnDiskAtom lastBlockClosing;
+        private final DataOutputPlus output;
+        private final RangeTombstone.Tracker tombstoneTracker;
+        private int atomCount;
+        private final ByteBuffer key;
+        private final DeletionInfo deletionInfo; // only used for serializing and calculating row header size
 
-        while (iterator.hasNext())
-            add(iterator.next());
+        private final OnDiskAtom.SerializerForWriting atomSerializer;
 
-        finish();
-    }
-
-    private void writePartitionHeader(UnfilteredRowIterator iterator) throws IOException
-    {
-        ByteBufferUtil.writeWithShortLength(iterator.partitionKey().getKey(), writer);
-        DeletionTime.serializer.serialize(iterator.partitionLevelDeletion(), writer);
-        if (header.hasStatic())
+        public Builder(ColumnFamily cf,
+                       ByteBuffer key,
+                       DataOutputPlus output)
         {
-            Row staticRow = iterator.staticRow();
-
-            UnfilteredSerializer.serializer.serializeStaticRow(staticRow, header, writer, version);
-            if (!observers.isEmpty())
-                observers.forEach((o) -> o.nextUnfilteredCluster(staticRow));
-        }
-    }
-
-    private long currentPosition()
-    {
-        return writer.position() - initialPosition;
-    }
-
-    public ByteBuffer buffer()
-    {
-        return buffer != null ? buffer.buffer() : null;
-    }
-
-    public List<IndexInfo> indexSamples()
-    {
-        if (indexSamplesSerializedSize + columnIndexCount * TypeSizes.sizeof(0) <= DatabaseDescriptor.getColumnIndexCacheSize())
-        {
-            return indexSamples;
+            this(cf, key, output, cf.getComparator().onDiskAtomSerializer());
         }
 
-        return null;
-    }
-
-    public int[] offsets()
-    {
-        return indexOffsets != null
-               ? Arrays.copyOf(indexOffsets, columnIndexCount)
-               : null;
-    }
-
-    private void addIndexBlock() throws IOException
-    {
-        IndexInfo cIndexInfo = new IndexInfo(firstClustering,
-                                             lastClustering,
-                                             startPosition,
-                                             currentPosition() - startPosition,
-                                             openMarker);
-
-        // indexOffsets is used for both shallow (ShallowIndexedEntry) and non-shallow IndexedEntry.
-        // For shallow ones, we need it to serialize the offsts in finish().
-        // For non-shallow ones, the offsts are passed into IndexedEntry, so we don't have to
-        // calculate the offsets again.
-
-        // indexOffsets contains the offsets of the serialized IndexInfo objects.
-        // I.e. indexOffsets[0] is always 0 so we don't have to deal with a special handling
-        // for index #0 and always subtracting 1 for the index (which could be error-prone).
-        if (indexOffsets == null)
-            indexOffsets = new int[10];
-        else
+        public Builder(ColumnFamily cf,
+                ByteBuffer key,
+                DataOutputPlus output,
+                OnDiskAtom.SerializerForWriting serializer)
         {
-            if (columnIndexCount >= indexOffsets.length)
-                indexOffsets = Arrays.copyOf(indexOffsets, indexOffsets.length + 10);
+            assert cf != null;
+            assert key != null;
+            assert output != null;
 
-            //the 0th element is always 0
-            if (columnIndexCount == 0)
-            {
-                indexOffsets[columnIndexCount] = 0;
-            }
-            else
-            {
-                indexOffsets[columnIndexCount] =
-                buffer != null
-                ? Ints.checkedCast(buffer.position())
-                : indexSamplesSerializedSize;
-            }
+            this.key = key;
+            deletionInfo = cf.deletionInfo();
+            this.indexOffset = rowHeaderSize(key, deletionInfo);
+            this.result = new ColumnIndex(new ArrayList<IndexHelper.IndexInfo>());
+            this.output = output;
+            this.tombstoneTracker = new RangeTombstone.Tracker(cf.getComparator());
+            this.atomSerializer = serializer;
         }
-        columnIndexCount++;
 
-        // First, we collect the IndexInfo objects until we reach Config.column_index_cache_size_in_kb in an ArrayList.
-        // When column_index_cache_size_in_kb is reached, we switch to byte-buffer mode.
-        if (buffer == null)
+        /**
+         * Returns the number of bytes between the beginning of the row and the
+         * first serialized column.
+         */
+        private static long rowHeaderSize(ByteBuffer key, DeletionInfo delInfo)
         {
-            indexSamplesSerializedSize += idxSerializer.serializedSize(cIndexInfo);
-            if (indexSamplesSerializedSize + columnIndexCount * TypeSizes.sizeof(0) > DatabaseDescriptor.getColumnIndexCacheSize())
+            TypeSizes typeSizes = TypeSizes.NATIVE;
+            // TODO fix constantSize when changing the nativeconststs.
+            int keysize = key.remaining();
+            return typeSizes.sizeof((short) keysize) + keysize          // Row key
+                 + DeletionTime.serializer.serializedSize(delInfo.getTopLevelDeletion(), typeSizes);
+        }
+
+        public RangeTombstone.Tracker tombstoneTracker()
+        {
+            return tombstoneTracker;
+        }
+
+        public int writtenAtomCount()
+        {
+            return atomCount + tombstoneTracker.writtenAtom();
+        }
+
+        /**
+         * Serializes the index into in-memory structure with all required components
+         * such as Bloom Filter, index block size, IndexInfo list
+         *
+         * @param cf Column family to create index for
+         *
+         * @return information about index - it's Bloom Filter, block size and IndexInfo list
+         */
+        public ColumnIndex build(ColumnFamily cf) throws IOException
+        {
+            // cf has disentangled the columns and range tombstones, we need to re-interleave them in comparator order
+            Comparator<Composite> comparator = cf.getComparator();
+            DeletionInfo.InOrderTester tester = cf.deletionInfo().inOrderTester();
+            Iterator<RangeTombstone> rangeIter = cf.deletionInfo().rangeIterator();
+            RangeTombstone tombstone = rangeIter.hasNext() ? rangeIter.next() : null;
+
+            for (Cell c : cf)
             {
-                buffer = reuseOrAllocateBuffer();
-                for (IndexInfo indexSample : indexSamples)
+                while (tombstone != null && comparator.compare(c.name(), tombstone.min) >= 0)
                 {
-                    idxSerializer.serialize(indexSample, buffer);
+                    // skip range tombstones that are shadowed by partition tombstones
+                    if (!cf.deletionInfo().getTopLevelDeletion().isDeleted(tombstone))
+                        add(tombstone);
+                    tombstone = rangeIter.hasNext() ? rangeIter.next() : null;
                 }
+
+                // We can skip any cell if it's shadowed by a tombstone already. This is a more
+                // general case than was handled by CASSANDRA-2589.
+                if (!tester.isDeleted(c))
+                    add(c);
             }
-            else
+
+            while (tombstone != null)
             {
-                indexSamples.add(cIndexInfo);
+                add(tombstone);
+                tombstone = rangeIter.hasNext() ? rangeIter.next() : null;
+            }
+            finishAddingAtoms();
+            ColumnIndex index = build();
+
+            maybeWriteEmptyRowHeader();
+
+            return index;
+        }
+
+        /**
+         * The important distinction wrt build() is that we may be building for a row that ends up
+         * being compacted away entirely, i.e., the input consists only of expired tombstones (or
+         * columns shadowed by expired tombstone).  Thus, it is the caller's responsibility
+         * to decide whether to write the header for an empty row.
+         */
+        public ColumnIndex buildForCompaction(Iterator<OnDiskAtom> columns) throws IOException
+        {
+            while (columns.hasNext())
+            {
+                OnDiskAtom c =  columns.next();
+                add(c);
+            }
+            finishAddingAtoms();
+
+            return build();
+        }
+
+        public void add(OnDiskAtom column) throws IOException
+        {
+            atomCount++;
+
+            if (firstColumn == null)
+            {
+                firstColumn = column;
+                startPosition = endPosition;
+                // TODO: have that use the firstColumn as min + make sure we optimize that on read
+                endPosition += tombstoneTracker.writeOpenedMarkers(firstColumn.name(), output, atomSerializer);
+                blockSize = 0; // We don't count repeated tombstone marker in the block size, to avoid a situation
+                               // where we wouldn't make any progress because a block is filled by said marker
+
+                maybeWriteRowHeader();
+            }
+
+            if (tombstoneTracker.update(column, false))
+            {
+                long size = tombstoneTracker.writeUnwrittenTombstones(output, atomSerializer);
+                size += atomSerializer.serializedSizeForSSTable(column);
+                endPosition += size;
+                blockSize += size;
+
+                atomSerializer.serializeForSSTable(column, output);
+            }
+
+            lastColumn = column;
+
+            // if we hit the column index size that we have to index after, go ahead and index it.
+            if (blockSize >= DatabaseDescriptor.getColumnIndexSize())
+            {
+                IndexHelper.IndexInfo cIndexInfo = new IndexHelper.IndexInfo(firstColumn.name(), column.name(), indexOffset + startPosition, endPosition - startPosition);
+                result.columnsIndex.add(cIndexInfo);
+                firstColumn = null;
+                lastBlockClosing = column;
             }
         }
-        // don't put an else here...
-        if (buffer != null)
+
+        private void maybeWriteRowHeader() throws IOException
         {
-            idxSerializer.serialize(cIndexInfo, buffer);
+            if (lastColumn == null)
+            {
+                ByteBufferUtil.writeWithShortLength(key, output);
+                DeletionTime.serializer.serialize(deletionInfo.getTopLevelDeletion(), output);
+            }
         }
 
-        firstClustering = null;
-    }
-
-    private DataOutputBuffer reuseOrAllocateBuffer()
-    {
-        // Check whether a reusable DataOutputBuffer already exists for this
-        // ColumnIndex instance and return it.
-        if (reusableBuffer != null) {
-            DataOutputBuffer buffer = reusableBuffer;
-            buffer.clear();
-            return buffer;
-        }
-        // don't use the standard RECYCLER as that only recycles up to 1MB and requires proper cleanup
-        return new DataOutputBuffer(DatabaseDescriptor.getColumnIndexCacheSize() * 2);
-    }
-
-    private void add(Unfiltered unfiltered) throws IOException
-    {
-        long pos = currentPosition();
-
-        if (firstClustering == null)
+        public void finishAddingAtoms() throws IOException
         {
-            // Beginning of an index block. Remember the start and position
-            firstClustering = unfiltered.clustering();
-            startPosition = pos;
+            long size = tombstoneTracker.writeUnwrittenTombstones(output, atomSerializer);
+            endPosition += size;
+            blockSize += size;
         }
 
-        UnfilteredSerializer.serializer.serialize(unfiltered, header, writer, pos - previousRowStart, version);
-
-        // notify observers about each new row
-        if (!observers.isEmpty())
-            observers.forEach((o) -> o.nextUnfilteredCluster(unfiltered));
-
-        lastClustering = unfiltered.clustering();
-        previousRowStart = pos;
-        ++written;
-
-        if (unfiltered.kind() == Unfiltered.Kind.RANGE_TOMBSTONE_MARKER)
+        public ColumnIndex build()
         {
-            RangeTombstoneMarker marker = (RangeTombstoneMarker) unfiltered;
-            openMarker = marker.isOpen(false) ? marker.openDeletionTime(false) : null;
+            assert !tombstoneTracker.hasUnwrittenTombstones();  // finishAddingAtoms must be called before building.
+            // all columns were GC'd after all
+            if (lastColumn == null)
+                return ColumnIndex.EMPTY;
+
+            // the last column may have fallen on an index boundary already.  if not, index it explicitly.
+            if (result.columnsIndex.isEmpty() || lastBlockClosing != lastColumn)
+            {
+                IndexHelper.IndexInfo cIndexInfo = new IndexHelper.IndexInfo(firstColumn.name(), lastColumn.name(), indexOffset + startPosition, endPosition - startPosition);
+                result.columnsIndex.add(cIndexInfo);
+            }
+
+            // we should always have at least one computed index block, but we only write it out if there is more than that.
+            assert result.columnsIndex.size() > 0;
+            return result;
         }
 
-        // if we hit the column index size that we have to index after, go ahead and index it.
-        if (currentPosition() - startPosition >= DatabaseDescriptor.getColumnIndexSize())
-            addIndexBlock();
-    }
-
-    private void finish() throws IOException
-    {
-        UnfilteredSerializer.serializer.writeEndOfPartition(writer);
-
-        // It's possible we add no rows, just a top level deletion
-        if (written == 0)
-            return;
-
-        // the last column may have fallen on an index boundary already.  if not, index it explicitly.
-        if (firstClustering != null)
-            addIndexBlock();
-
-        // If we serialize the IndexInfo objects directly in the code above into 'buffer',
-        // we have to write the offsts to these here. The offsets have already been are collected
-        // in indexOffsets[]. buffer is != null, if it exceeds Config.column_index_cache_size_in_kb.
-        // In the other case, when buffer==null, the offsets are serialized in RowIndexEntry.IndexedEntry.serialize().
-        if (buffer != null)
-            RowIndexEntry.Serializer.serializeOffsets(buffer, indexOffsets, columnIndexCount);
-
-        // we should always have at least one computed index block, but we only write it out if there is more than that.
-        assert columnIndexCount > 0 && headerLength >= 0;
-    }
-
-    public int indexInfoSerializedSize()
-    {
-        return buffer != null
-               ? buffer.buffer().limit()
-               : indexSamplesSerializedSize + columnIndexCount * TypeSizes.sizeof(0);
+        public void maybeWriteEmptyRowHeader() throws IOException
+        {
+            if (!deletionInfo.isLive())
+                maybeWriteRowHeader();
+        }
     }
 }

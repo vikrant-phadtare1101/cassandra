@@ -18,79 +18,93 @@
 package org.apache.cassandra.io.sstable;
 
 import java.io.File;
-import java.io.IOException;
 
 import com.google.common.base.Throwables;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.schema.TableMetadataRef;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.io.FSError;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
 
 /**
  * A SSTable writer that assumes rows are in (partitioner) sorted order.
- * <p>
  * Contrarily to SSTableSimpleUnsortedWriter, this writer does not buffer
  * anything into memory, however it assumes that row are added in sorted order
  * (an exception will be thrown otherwise), which for the RandomPartitioner
  * means that rows should be added by increasing md5 of the row key. This is
  * rarely possible and SSTableSimpleUnsortedWriter should most of the time be
  * prefered.
+ *
+ * @see AbstractSSTableSimpleWriter
+ *
+ * @deprecated this class is depracted in favor of {@link CQLSSTableWriter}.
  */
-class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
+@Deprecated
+public class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
 {
-    protected DecoratedKey currentKey;
-    protected PartitionUpdate.Builder update;
+    private final SSTableWriter writer;
 
-    private SSTableTxnWriter writer;
-
-    protected SSTableSimpleWriter(File directory, TableMetadataRef metadata, RegularAndStaticColumns columns)
+    /**
+     * Create a new writer.
+     * @param directory the directory where to write the sstable
+     * @param partitioner the partitioner
+     * @param keyspace the keyspace name
+     * @param columnFamily the column family name
+     * @param comparator the column family comparator
+     * @param subComparator the column family subComparator or null if not a Super column family.
+     */
+    public SSTableSimpleWriter(File directory,
+                               IPartitioner partitioner,
+                               String keyspace,
+                               String columnFamily,
+                               AbstractType<?> comparator,
+                               AbstractType<?> subComparator)
     {
-        super(directory, metadata, columns);
+        this(directory, CFMetaData.denseCFMetaData(keyspace, columnFamily, comparator, subComparator), partitioner);
     }
 
-    private SSTableTxnWriter getOrCreateWriter()
+    public SSTableSimpleWriter(File directory, CFMetaData metadata, IPartitioner partitioner)
     {
-        if (writer == null)
-            writer = createWriter();
-
-        return writer;
+        super(directory, metadata, partitioner);
+        writer = getWriter();
     }
 
-    PartitionUpdate.Builder getUpdateFor(DecoratedKey key) throws IOException
+    SSTableReader closeAndOpenReader()
     {
-        assert key != null;
-
-        // If that's not the current key, write the current one if necessary and create a new
-        // update for the new key.
-        if (!key.equals(currentKey))
-        {
-            if (update != null)
-                writePartition(update.build());
-            currentKey = key;
-            update = new PartitionUpdate.Builder(metadata.get(), currentKey, columns, 4);
-        }
-
-        assert update != null;
-        return update;
+        if (currentKey != null)
+            writeRow(currentKey, columnFamily);
+        return writer.finish(true);
     }
 
     public void close()
     {
         try
         {
-            if (update != null)
-                writePartition(update.build());
-            if (writer != null)
-                writer.finish(false);
+            if (currentKey != null)
+                writeRow(currentKey, columnFamily);
+            writer.finish(false);
         }
         catch (Throwable t)
         {
-            throw Throwables.propagate(writer == null ? t : writer.abort(t));
+            throw Throwables.propagate(writer.abort(t));
         }
     }
 
-    private void writePartition(PartitionUpdate update) throws IOException
+    protected void writeRow(DecoratedKey key, ColumnFamily columnFamily)
     {
-        getOrCreateWriter().append(update.unfilteredIterator());
+        writer.append(key, columnFamily);
+    }
+
+    protected ColumnFamily getColumnFamily()
+    {
+        return ArrayBackedSortedColumns.factory.create(metadata);
+    }
+
+    public Descriptor getCurrentDescriptor()
+    {
+        return writer.descriptor;
     }
 }

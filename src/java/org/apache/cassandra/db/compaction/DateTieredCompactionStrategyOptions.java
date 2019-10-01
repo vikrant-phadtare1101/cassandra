@@ -27,7 +27,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 
 public final class DateTieredCompactionStrategyOptions
 {
-    private static final Logger logger = LoggerFactory.getLogger(DateTieredCompactionStrategyOptions.class);
+    private static final Logger logger = LoggerFactory.getLogger(DateTieredCompactionStrategy.class);
     protected static final TimeUnit DEFAULT_TIMESTAMP_RESOLUTION = TimeUnit.MICROSECONDS;
     @Deprecated
     protected static final double DEFAULT_MAX_SSTABLE_AGE_DAYS = 365*1000;
@@ -44,7 +44,6 @@ public final class DateTieredCompactionStrategyOptions
 
     @Deprecated
     protected final long maxSSTableAge;
-    protected final TimeUnit timestampResolution;
     protected final long baseTime;
     protected final long expiredSSTableCheckFrequency;
     protected final long maxWindowSize;
@@ -52,9 +51,9 @@ public final class DateTieredCompactionStrategyOptions
     public DateTieredCompactionStrategyOptions(Map<String, String> options)
     {
         String optionValue = options.get(TIMESTAMP_RESOLUTION_KEY);
-        timestampResolution = optionValue == null ? DEFAULT_TIMESTAMP_RESOLUTION : TimeUnit.valueOf(optionValue);
+        TimeUnit timestampResolution = optionValue == null ? DEFAULT_TIMESTAMP_RESOLUTION : TimeUnit.valueOf(optionValue);
         if (timestampResolution != DEFAULT_TIMESTAMP_RESOLUTION)
-            logger.warn("Using a non-default timestamp_resolution {} - are you really doing inserts with USING TIMESTAMP <non_microsecond_timestamp> (or driver equivalent)?", timestampResolution);
+            logger.warn("Using a non-default timestamp_resolution {} - are you really doing inserts with USING TIMESTAMP <non_microsecond_timestamp> (or driver equivalent)?", timestampResolution.toString());
         optionValue = options.get(MAX_SSTABLE_AGE_KEY);
         double fractionalDays = optionValue == null ? DEFAULT_MAX_SSTABLE_AGE_DAYS : Double.parseDouble(optionValue);
         maxSSTableAge = Math.round(fractionalDays * timestampResolution.convert(1, TimeUnit.DAYS));
@@ -69,10 +68,9 @@ public final class DateTieredCompactionStrategyOptions
     public DateTieredCompactionStrategyOptions()
     {
         maxSSTableAge = Math.round(DEFAULT_MAX_SSTABLE_AGE_DAYS * DEFAULT_TIMESTAMP_RESOLUTION.convert((long) DEFAULT_MAX_SSTABLE_AGE_DAYS, TimeUnit.DAYS));
-        timestampResolution = DEFAULT_TIMESTAMP_RESOLUTION;
-        baseTime = timestampResolution.convert(DEFAULT_BASE_TIME_SECONDS, TimeUnit.SECONDS);
+        baseTime = DEFAULT_TIMESTAMP_RESOLUTION.convert(DEFAULT_BASE_TIME_SECONDS, TimeUnit.SECONDS);
         expiredSSTableCheckFrequency = TimeUnit.MILLISECONDS.convert(DEFAULT_EXPIRED_SSTABLE_CHECK_FREQUENCY_SECONDS, TimeUnit.SECONDS);
-        maxWindowSize = timestampResolution.convert(1, TimeUnit.DAYS);
+        maxWindowSize = DEFAULT_TIMESTAMP_RESOLUTION.convert(1, TimeUnit.DAYS);
     }
 
     public static Map<String, String> validateOptions(Map<String, String> options, Map<String, String> uncheckedOptions) throws  ConfigurationException

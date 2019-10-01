@@ -17,9 +17,9 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
-import io.airlift.airline.Option;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
+import io.airlift.command.Option;
 
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.tools.NodeProbe;
@@ -36,7 +36,7 @@ public class Stop extends NodeToolCmd
 
     @Option(title = "compactionId",
            name = {"-id", "--compaction-id"},
-           description = "Use -id to stop a compaction by the specified id. Ids can be found in the transaction log files whose name starts with compaction_, located in the table transactions folder.",
+           description = "Use -id to stop a compaction by the specified id. Ids can be found in the system.compactions_in_progress table.",
            required = false)
     private String compactionId = "";
 

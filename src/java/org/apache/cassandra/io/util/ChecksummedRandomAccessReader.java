@@ -19,27 +19,111 @@ package org.apache.cassandra.io.util;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.zip.Adler32;
 
-import org.apache.cassandra.utils.ChecksumType;
+import org.apache.cassandra.io.compress.BufferType;
+import org.apache.cassandra.utils.ByteBufferUtil;
 
-public final class ChecksummedRandomAccessReader
+public class ChecksummedRandomAccessReader extends RandomAccessReader
 {
-    @SuppressWarnings("resource") // The Rebufferer owns both the channel and the validator and handles closing both.
-    public static RandomAccessReader open(File file, File crcFile) throws IOException
+    @SuppressWarnings("serial")
+    public static class CorruptFileException extends RuntimeException
     {
-        ChannelProxy channel = new ChannelProxy(file);
+        public final File file;
+
+        public CorruptFileException(Exception cause, File file)
+        {
+            super(cause);
+            this.file = file;
+        }
+    }
+
+    private final DataIntegrityMetadata.ChecksumValidator validator;
+    private final File file;
+
+    protected ChecksummedRandomAccessReader(File file, ChannelProxy channel, DataIntegrityMetadata.ChecksumValidator validator)
+    {
+        super(channel, validator.chunkSize, -1, BufferType.ON_HEAP, null);
+        this.validator = validator;
+        this.file = file;
+    }
+
+    @SuppressWarnings("resource")
+    public static ChecksummedRandomAccessReader open(File file, File crcFile) throws IOException
+    {
+        try (ChannelProxy channel = new ChannelProxy(file))
+        {
+            RandomAccessReader crcReader = RandomAccessReader.open(crcFile);
+            boolean closeCrcReader = true;
+            try
+            {
+                DataIntegrityMetadata.ChecksumValidator validator =
+                        new DataIntegrityMetadata.ChecksumValidator(new Adler32(), crcReader, file.getPath());
+                closeCrcReader = false;
+                boolean closeValidator = true;
+                try
+                {
+                    ChecksummedRandomAccessReader retval = new ChecksummedRandomAccessReader(file, channel, validator);
+                    closeValidator = false;
+                    return retval;
+                }
+                finally
+                {
+                    if (closeValidator)
+                        validator.close();
+                }
+            }
+            finally
+            {
+                if (closeCrcReader)
+                    crcReader.close();
+            }
+        }
+    }
+
+    @Override
+    protected void reBuffer()
+    {
+        long desiredPosition = current();
+        // align with buffer size, as checksums were computed in chunks of buffer size each.
+        bufferOffset = (desiredPosition / buffer.capacity()) * buffer.capacity();
+
+        buffer.clear();
+
+        long position = bufferOffset;
+        while (buffer.hasRemaining())
+        {
+            int n = channel.read(buffer, position);
+            if (n < 0)
+                break;
+            position += n;
+        }
+
+        buffer.flip();
+
         try
         {
-            DataIntegrityMetadata.ChecksumValidator validator = new DataIntegrityMetadata.ChecksumValidator(ChecksumType.CRC32,
-                                                                                                            RandomAccessReader.open(crcFile),
-                                                                                                            file.getPath());
-            Rebufferer rebufferer = new ChecksummedRebufferer(channel, validator);
-            return new RandomAccessReader.RandomAccessReaderWithOwnChannel(rebufferer);
+            validator.validate(ByteBufferUtil.getArray(buffer), 0, buffer.remaining());
         }
-        catch (Throwable t)
+        catch (IOException e)
         {
-            channel.close();
-            throw t;
+            throw new CorruptFileException(e, file);
         }
+
+        buffer.position((int) (desiredPosition - bufferOffset));
+    }
+
+    @Override
+    public void seek(long newPosition)
+    {
+        validator.seek(newPosition);
+        super.seek(newPosition);
+    }
+
+    @Override
+    public void close()
+    {
+        super.close();
+        validator.close();
     }
 }

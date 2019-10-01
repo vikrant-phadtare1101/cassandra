@@ -19,7 +19,6 @@ package org.apache.cassandra.auth;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 import com.google.common.base.Joiner;
@@ -28,13 +27,13 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.Sets;
 import org.apache.commons.lang3.StringUtils;
 
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.cql3.functions.Functions;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.TypeParser;
-import org.apache.cassandra.exceptions.InvalidRequestException;
 
 /**
  * IResource implementation representing functions.
@@ -134,11 +133,6 @@ public class FunctionResource implements IResource
         return new FunctionResource(keyspace, name, argTypes);
     }
 
-    public static FunctionResource function(Function function)
-    {
-        return new FunctionResource(function.name().keyspace, function.name().name, function.argTypes());
-    }
-
     /**
      * Creates a FunctionResource representing a specific, keyspace-scoped function.
      * This variant is used to create an instance during parsing of a CQL statement.
@@ -152,19 +146,11 @@ public class FunctionResource implements IResource
      */
     public static FunctionResource functionFromCql(String keyspace, String name, List<CQL3Type.Raw> argTypes)
     {
-        if (keyspace == null)
-            throw new InvalidRequestException("In this context function name must be " +
-                                              "explictly qualified by a keyspace");
-        List<AbstractType<?>> abstractTypes = new ArrayList<>(argTypes.size());
+        List<AbstractType<?>> abstractTypes = new ArrayList<>();
         for (CQL3Type.Raw cqlType : argTypes)
             abstractTypes.add(cqlType.prepare(keyspace).getType());
 
         return new FunctionResource(keyspace, name, abstractTypes);
-    }
-
-    public static FunctionResource functionFromCql(FunctionName name, List<CQL3Type.Raw> argTypes)
-    {
-        return functionFromCql(name.keyspace, name.name, argTypes);
     }
 
     /**
@@ -258,7 +244,7 @@ public class FunctionResource implements IResource
             case KEYSPACE:
                 return Schema.instance.getKeyspaces().contains(keyspace);
             case FUNCTION:
-                return Schema.instance.findFunction(getFunctionName(), argTypes).isPresent();
+                return Functions.find(getFunctionName(), argTypes) != null;
         }
         throw new AssertionError();
     }
@@ -272,9 +258,9 @@ public class FunctionResource implements IResource
                 return COLLECTION_LEVEL_PERMISSIONS;
             case FUNCTION:
             {
-                Optional<Function> function = Schema.instance.findFunction(getFunctionName(), argTypes);
-                assert function.isPresent() : "Unable to find function object for resource " + toString();
-                return function.get().isAggregate() ? AGGREGATE_FUNCTION_PERMISSIONS : SCALAR_FUNCTION_PERMISSIONS;
+                Function function = Functions.find(getFunctionName(), argTypes);
+                assert function != null : "Unable to find function object for resource " + toString();
+                return function.isAggregate() ? AGGREGATE_FUNCTION_PERMISSIONS : SCALAR_FUNCTION_PERMISSIONS;
             }
         }
         throw new AssertionError();
