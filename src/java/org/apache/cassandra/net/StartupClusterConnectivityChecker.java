@@ -42,11 +42,12 @@ import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.gms.IEndpointStateChangeSubscriber;
 import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType;
 import org.apache.cassandra.utils.FBUtilities;
 
-import static org.apache.cassandra.net.Verb.PING_REQ;
-import static org.apache.cassandra.net.ConnectionType.LARGE_MESSAGES;
-import static org.apache.cassandra.net.ConnectionType.SMALL_MESSAGES;
+import static org.apache.cassandra.net.MessagingService.Verb.PING;
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType.LARGE_MESSAGE;
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType.SMALL_MESSAGE;
 
 public class StartupClusterConnectivityChecker
 {
@@ -148,11 +149,11 @@ public class StartupClusterConnectivityChecker
         }
 
         boolean succeeded = true;
-        for (CountDownLatch countDownLatch : dcToRemainingPeers.values())
+        for (String datacenter: dcToRemainingPeers.keySet())
         {
             long remainingNanos = Math.max(1, timeoutNanos - (System.nanoTime() - startNanos));
-            //noinspection UnstableApiUsage
-            succeeded &= Uninterruptibles.awaitUninterruptibly(countDownLatch, remainingNanos, TimeUnit.NANOSECONDS);
+            succeeded &= Uninterruptibles.awaitUninterruptibly(dcToRemainingPeers.get(datacenter),
+                                                               remainingNanos, TimeUnit.NANOSECONDS);
         }
 
         Gossiper.instance.unregister(listener);
@@ -172,32 +173,63 @@ public class StartupClusterConnectivityChecker
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos), numDown);
         }
 
+        // Send out a second round of ping messages which give the LatencySubscribers (e.g. the dsnitch) a latency
+        // landscape of the cluster that does not include handshake latency (See CASSANDRA-14459)
+        sendPingMessages(peers, LatencyMeasurementType.PROBE, msg -> null);
+
         return succeeded;
+    }
+
+    /**
+     * Sends ping messages to open up the initial handshakes with nodes and appropriately decrements the
+     * passed CountDownLatches as we receive responses.
+     */
+    private void sendPingMessages(Set<InetAddressAndPort> peers, Map<String, CountDownLatch> dcToRemainingPeers,
+                                  AckMap acks, Function<InetAddressAndPort, String> getDatacenter)
+    {
+        Function<MessageIn, Void> handleAck = msg -> {
+            if (acks.incrementAndCheck(msg.from))
+            {
+                String datacenter = getDatacenter.apply(msg.from);
+                // We have to check because we might only have the local DC in the map
+                if (dcToRemainingPeers.containsKey(datacenter))
+                    dcToRemainingPeers.get(datacenter).countDown();
+            }
+            return null;
+        };
+        sendPingMessages(peers, LatencyMeasurementType.IGNORE, handleAck);
     }
 
     /**
      * Sends a "connection warmup" message to each peer in the collection, on every {@link ConnectionType}
      * used for internode messaging (that is not gossip).
      */
-    private void sendPingMessages(Set<InetAddressAndPort> peers, Map<String, CountDownLatch> dcToRemainingPeers,
-                                  AckMap acks, Function<InetAddressAndPort, String> getDatacenter)
+    private void sendPingMessages(Set<InetAddressAndPort> peers, LatencyMeasurementType latencyMeasurementTypeForSnitch,
+                                  Function<MessageIn, Void> response)
     {
-        RequestCallback responseHandler = msg -> {
-            if (acks.incrementAndCheck(msg.from()))
+        IAsyncCallback responseHandler = new IAsyncCallback()
+        {
+            @Override
+            public LatencyMeasurementType latencyMeasurementType()
             {
-                String datacenter = getDatacenter.apply(msg.from());
-                // We have to check because we might only have the local DC in the map
-                if (dcToRemainingPeers.containsKey(datacenter))
-                    dcToRemainingPeers.get(datacenter).countDown();
+                return latencyMeasurementTypeForSnitch;
+            }
+
+            @Override
+            public void response(MessageIn msg)
+            {
+                response.apply(msg);
             }
         };
 
-        Message<PingRequest> small = Message.out(PING_REQ, PingRequest.forSmall);
-        Message<PingRequest> large = Message.out(PING_REQ, PingRequest.forLarge);
+        MessageOut<PingMessage> smallChannelMessageOut = new MessageOut<>(PING, PingMessage.smallChannelMessage,
+                                                                          PingMessage.serializer, SMALL_MESSAGE);
+        MessageOut<PingMessage> largeChannelMessageOut = new MessageOut<>(PING, PingMessage.largeChannelMessage,
+                                                                          PingMessage.serializer, LARGE_MESSAGE);
         for (InetAddressAndPort peer : peers)
         {
-            MessagingService.instance().sendWithCallback(small, peer, responseHandler, SMALL_MESSAGES);
-            MessagingService.instance().sendWithCallback(large, peer, responseHandler, LARGE_MESSAGES);
+            MessagingService.instance().sendRR(smallChannelMessageOut, peer, responseHandler);
+            MessagingService.instance().sendRR(largeChannelMessageOut, peer, responseHandler);
         }
     }
 
