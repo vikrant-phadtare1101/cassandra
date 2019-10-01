@@ -18,20 +18,18 @@
 package org.apache.cassandra.dht;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
-import java.util.UUID;
+import java.util.Map;
+import java.util.Set;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Predicates;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Multimap;
 
-import org.apache.cassandra.dht.RangeStreamer.FetchReplica;
 import org.apache.commons.math3.stat.descriptive.SummaryStatistics;
 
 import org.junit.AfterClass;
@@ -42,9 +40,7 @@ import org.junit.runner.RunWith;
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.tokenallocator.TokenAllocation;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -55,7 +51,6 @@ import org.apache.cassandra.locator.RackInferringSnitch;
 import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.streaming.StreamOperation;
 import org.apache.cassandra.utils.FBUtilities;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
@@ -63,7 +58,6 @@ public class BootStrapperTest
 {
     static IPartitioner oldPartitioner;
 
-    static Predicate<Replica> originalAlivePredicate = RangeStreamer.ALIVE_PREDICATE;
     @BeforeClass
     public static void setup() throws ConfigurationException
     {
@@ -72,14 +66,12 @@ public class BootStrapperTest
         SchemaLoader.startGossiper();
         SchemaLoader.prepareServer();
         SchemaLoader.schemaDefinition("BootStrapperTest");
-        RangeStreamer.ALIVE_PREDICATE = Predicates.alwaysTrue();
     }
 
     @AfterClass
     public static void tearDown()
     {
         DatabaseDescriptor.setPartitionerUnsafe(oldPartitioner);
-        RangeStreamer.ALIVE_PREDICATE = originalAlivePredicate;
     }
 
     @Test
@@ -88,7 +80,7 @@ public class BootStrapperTest
         final int[] clusterSizes = new int[] { 1, 3, 5, 10, 100};
         for (String keyspaceName : Schema.instance.getNonLocalStrategyKeyspaces())
         {
-            int replicationFactor = Keyspace.open(keyspaceName).getReplicationStrategy().getReplicationFactor().allReplicas;
+            int replicationFactor = Keyspace.open(keyspaceName).getReplicationStrategy().getReplicationFactor();
             for (int clusterSize : clusterSizes)
                 if (clusterSize >= replicationFactor)
                     testSourceTargetComputation(keyspaceName, clusterSize, replicationFactor);
@@ -102,37 +94,40 @@ public class BootStrapperTest
 
         generateFakeEndpoints(numOldNodes);
         Token myToken = tmd.partitioner.getRandomToken();
-        InetAddressAndPort myEndpoint = InetAddressAndPort.getByName("127.0.0.1");
+        InetAddress myEndpoint = InetAddress.getByName("127.0.0.1");
 
         assertEquals(numOldNodes, tmd.sortedTokens().size());
+        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, "Bootstrap", true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), false);
         IFailureDetector mockFailureDetector = new IFailureDetector()
         {
-            public boolean isAlive(InetAddressAndPort ep)
+            public boolean isAlive(InetAddress ep)
             {
                 return true;
             }
 
-            public void interpret(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
-            public void report(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
+            public void interpret(InetAddress ep) { throw new UnsupportedOperationException(); }
+            public void report(InetAddress ep) { throw new UnsupportedOperationException(); }
             public void registerFailureDetectionEventListener(IFailureDetectionEventListener listener) { throw new UnsupportedOperationException(); }
             public void unregisterFailureDetectionEventListener(IFailureDetectionEventListener listener) { throw new UnsupportedOperationException(); }
-            public void remove(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
-            public void forceConviction(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
+            public void remove(InetAddress ep) { throw new UnsupportedOperationException(); }
+            public void forceConviction(InetAddress ep) { throw new UnsupportedOperationException(); }
         };
-        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, StreamOperation.BOOTSTRAP, true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), mockFailureDetector, false, 1);
-        assertNotNull(Keyspace.open(keyspaceName));
+        s.addSourceFilter(new RangeStreamer.FailureDetectorSourceFilter(mockFailureDetector));
         s.addRanges(keyspaceName, Keyspace.open(keyspaceName).getReplicationStrategy().getPendingAddressRanges(tmd, myToken, myEndpoint));
 
-
-        Multimap<InetAddressAndPort, FetchReplica> toFetch = s.toFetch().get(keyspaceName);
+        Collection<Map.Entry<InetAddress, Collection<Range<Token>>>> toFetch = s.toFetch().get(keyspaceName);
 
         // Check we get get RF new ranges in total
-        assertEquals(replicationFactor, toFetch.size());
+        Set<Range<Token>> ranges = new HashSet<>();
+        for (Map.Entry<InetAddress, Collection<Range<Token>>> e : toFetch)
+            ranges.addAll(e.getValue());
+
+        assertEquals(replicationFactor, ranges.size());
 
         // there isn't any point in testing the size of these collections for any specific size.  When a random partitioner
         // is used, they will vary.
-        assert toFetch.values().size() > 0;
-        assert toFetch.keys().stream().noneMatch(myEndpoint::equals);
+        assert toFetch.iterator().next().getValue().size() > 0;
+        assert !toFetch.iterator().next().getKey().equals(myEndpoint);
         return s;
     }
 
@@ -154,7 +149,7 @@ public class BootStrapperTest
         for (int i = 1; i <= numOldNodes; i++)
         {
             // leave .1 for myEndpoint
-            InetAddressAndPort addr = InetAddressAndPort.getByName("127." + dc + "." + rack + "." + (i + 1));
+            InetAddress addr = InetAddress.getByName("127." + dc + "." + rack + "." + (i + 1));
             List<Token> tokens = Lists.newArrayListWithCapacity(numVNodes);
             for (int j = 0; j < numVNodes; ++j)
                 tokens.add(p.getRandomToken());
@@ -170,19 +165,8 @@ public class BootStrapperTest
         String ks = "BootStrapperTestKeyspace3";
         TokenMetadata tm = new TokenMetadata();
         generateFakeEndpoints(tm, 10, vn);
-        InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
+        InetAddress addr = FBUtilities.getBroadcastAddress();
         allocateTokensForNode(vn, ks, tm, addr);
-    }
-
-    @Test
-    public void testAllocateTokensLocalRf() throws UnknownHostException
-    {
-        int vn = 16;
-        int allocateTokensForLocalRf = 3;
-        TokenMetadata tm = new TokenMetadata();
-        generateFakeEndpoints(tm, 10, vn);
-        InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
-        allocateTokensForNode(vn, allocateTokensForLocalRf, tm, addr);
     }
 
     public void testAllocateTokensNetworkStrategy(int rackCount, int replicas) throws UnknownHostException
@@ -194,19 +178,12 @@ public class BootStrapperTest
             int vn = 16;
             String ks = "BootStrapperTestNTSKeyspace" + rackCount + replicas;
             String dc = "1";
-
-            // Register peers with expected DC for NetworkTopologyStrategy.
-            TokenMetadata metadata = StorageService.instance.getTokenMetadata();
-            metadata.clearUnsafe();
-            metadata.updateHostId(UUID.randomUUID(), InetAddressAndPort.getByName("127.1.0.99"));
-            metadata.updateHostId(UUID.randomUUID(), InetAddressAndPort.getByName("127.15.0.99"));
-
             SchemaLoader.createKeyspace(ks, KeyspaceParams.nts(dc, replicas, "15", 15), SchemaLoader.standardCFMD(ks, "Standard1"));
             TokenMetadata tm = StorageService.instance.getTokenMetadata();
             tm.clearUnsafe();
             for (int i = 0; i < rackCount; ++i)
                 generateFakeEndpoints(tm, 10, vn, dc, Integer.toString(i));
-            InetAddressAndPort addr = InetAddressAndPort.getByName("127." + dc + ".0.99");
+            InetAddress addr = InetAddress.getByName("127." + dc + ".0.99");
             allocateTokensForNode(vn, ks, tm, addr);
             // Note: Not matching replication factor in second datacentre, but this should not affect us.
         } finally {
@@ -244,7 +221,7 @@ public class BootStrapperTest
         testAllocateTokensNetworkStrategy(1, 1);
     }
 
-    private void allocateTokensForNode(int vn, String ks, TokenMetadata tm, InetAddressAndPort addr)
+    private void allocateTokensForNode(int vn, String ks, TokenMetadata tm, InetAddress addr)
     {
         SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn, 0);
@@ -252,14 +229,6 @@ public class BootStrapperTest
         tm.updateNormalTokens(tokens, addr);
         SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         verifyImprovement(os, ns);
-    }
-
-    private void allocateTokensForNode(int vn, int rf, TokenMetadata tm, InetAddressAndPort addr)
-    {
-        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, rf, vn, 0);
-        assertEquals(vn, tokens.size());
-        tm.updateNormalTokens(tokens, addr);
-        // SummaryStatistics is not implemented for `allocate_tokens_for_local_replication_factor` so can't be verified
     }
 
     private void verifyImprovement(SummaryStatistics os, SummaryStatistics ns)
@@ -282,14 +251,14 @@ public class BootStrapperTest
         TokenMetadata tm = new TokenMetadata();
         generateFakeEndpoints(tm, 10, vn);
         
-        InetAddressAndPort dcaddr = FBUtilities.getBroadcastAddressAndPort();
+        InetAddress dcaddr = FBUtilities.getBroadcastAddress();
         SummaryStatistics os3 = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks3).getReplicationStrategy(), dcaddr);
         SummaryStatistics os2 = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks2).getReplicationStrategy(), dcaddr);
         String cks = ks3;
         String nks = ks2;
         for (int i=11; i<=20; ++i)
         {
-            allocateTokensForNode(vn, cks, tm, InetAddressAndPort.getByName("127.0.0." + (i + 1)));
+            allocateTokensForNode(vn, cks, tm, InetAddress.getByName("127.0.0." + (i + 1)));
             String t = cks; cks = nks; nks = t;
         }
         

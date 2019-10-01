@@ -18,11 +18,11 @@
 package org.apache.cassandra.db.context;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.hash.Hasher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -134,6 +134,14 @@ public class CounterContext
     public boolean isUpdate(ByteBuffer context)
     {
         return ContextState.wrap(context).getCounterId().equals(UPDATE_CLOCK_ID);
+    }
+
+    /**
+     * Returns the count associated with the update counter id, or 0 if no such shard is present.
+     */
+    public long getUpdateCount(ByteBuffer context)
+    {
+        return getClockAndCountOf(context, UPDATE_CLOCK_ID).count;
     }
 
     /**
@@ -629,7 +637,7 @@ public class CounterContext
 
         ByteBuffer marked = ByteBuffer.allocate(context.remaining());
         marked.putShort(marked.position(), (short) (count * -1));
-        ByteBufferUtil.copyBytes(context,
+        ByteBufferUtil.arrayCopy(context,
                                  context.position() + HEADER_SIZE_LENGTH,
                                  marked,
                                  marked.position() + HEADER_SIZE_LENGTH,
@@ -668,7 +676,7 @@ public class CounterContext
             cleared.putShort(cleared.position() + HEADER_SIZE_LENGTH + i * HEADER_ELT_LENGTH, globalShardIndexes.get(i));
 
         int origHeaderLength = headerLength(context);
-        ByteBufferUtil.copyBytes(context,
+        ByteBufferUtil.arrayCopy(context,
                                  context.position() + origHeaderLength,
                                  cleared,
                                  cleared.position() + headerLength(cleared),
@@ -684,20 +692,20 @@ public class CounterContext
     }
 
     /**
-     * Update a {@link Hasher} with the content of a context.
+     * Update a MessageDigest with the content of a context.
      * Note that this skips the header entirely since the header information
      * has local meaning only, while digests are meant for comparison across
      * nodes. This means in particular that we always have:
      *  updateDigest(ctx) == updateDigest(clearAllLocal(ctx))
      */
-    public void updateDigest(Hasher hasher, ByteBuffer context)
+    public void updateDigest(MessageDigest message, ByteBuffer context)
     {
         // context can be empty due to the optimization from CASSANDRA-10657
         if (!context.hasRemaining())
             return;
         ByteBuffer dup = context.duplicate();
         dup.position(context.position() + headerLength(context));
-        HashingUtils.updateBytes(hasher, dup);
+        message.update(dup);
     }
 
     /**
@@ -706,14 +714,6 @@ public class CounterContext
     public ClockAndCount getLocalClockAndCount(ByteBuffer context)
     {
         return getClockAndCountOf(context, CounterId.getLocalId());
-    }
-
-    /**
-     * Returns the count associated with the local counter id, or 0 if no such shard is present.
-     */
-    public long getLocalCount(ByteBuffer context)
-    {
-        return getLocalClockAndCount(context).count;
     }
 
     /**

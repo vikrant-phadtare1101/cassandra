@@ -32,7 +32,6 @@ import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.util.*;
 import org.apache.cassandra.schema.CompressionParams;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static org.apache.cassandra.utils.Throwables.merge;
 
@@ -60,8 +59,6 @@ public class CompressedSequentialWriter extends SequentialWriter
 
     private final ByteBuffer crcCheckBuffer = ByteBuffer.allocate(4);
     private final Optional<File> digestFile;
-
-    private final int maxCompressedLength;
 
     /**
      * Create CompressedSequentialWriter without digest file.
@@ -92,8 +89,6 @@ public class CompressedSequentialWriter extends SequentialWriter
 
         // buffer for compression should be the same size as buffer itself
         compressed = compressor.preferredBufferType().allocate(compressor.initialCompressedBufferLength(buffer.capacity()));
-
-        maxCompressedLength = parameters.maxCompressedLength();
 
         /* Index File (-CompressionInfo.db component) and it's header */
         metadataWriter = CompressionMetadata.Writer.open(parameters, offsetsPath);
@@ -149,28 +144,8 @@ public class CompressedSequentialWriter extends SequentialWriter
             throw new RuntimeException("Compression exception", e); // shouldn't happen
         }
 
-        int uncompressedLength = buffer.position();
         int compressedLength = compressed.position();
-        uncompressedSize += uncompressedLength;
-        ByteBuffer toWrite = compressed;
-        if (compressedLength >= maxCompressedLength)
-        {
-            toWrite = buffer;
-            if (uncompressedLength >= maxCompressedLength)
-            {
-                compressedLength = uncompressedLength;
-            }
-            else
-            {
-                // Pad the uncompressed data so that it reaches the max compressed length.
-                // This could make the chunk appear longer, but this path is only reached at the end of the file, where
-                // we use the file size to limit the buffer on reading.
-                assert maxCompressedLength <= buffer.capacity();   // verified by CompressionParams.validate
-                buffer.limit(maxCompressedLength);
-                ByteBufferUtil.writeZeroes(buffer, maxCompressedLength - uncompressedLength);
-                compressedLength = maxCompressedLength;
-            }
-        }
+        uncompressedSize += buffer.position();
         compressedSize += compressedLength;
 
         try
@@ -180,20 +155,18 @@ public class CompressedSequentialWriter extends SequentialWriter
             chunkCount++;
 
             // write out the compressed data
-            toWrite.flip();
-            channel.write(toWrite);
+            compressed.flip();
+            channel.write(compressed);
 
             // write corresponding checksum
-            toWrite.rewind();
-            crcMetadata.appendDirect(toWrite, true);
+            compressed.rewind();
+            crcMetadata.appendDirect(compressed, true);
             lastFlushOffset = uncompressedSize;
         }
         catch (IOException e)
         {
             throw new FSWriteError(e, getPath());
         }
-        if (toWrite == buffer)
-            buffer.position(uncompressedLength);
 
         // next chunk should be written right after current + length of the checksum (int)
         chunkOffset += compressedLength + 4;
@@ -255,10 +228,7 @@ public class CompressedSequentialWriter extends SequentialWriter
                 // Repopulate buffer from compressed data
                 buffer.clear();
                 compressed.flip();
-                if (chunkSize < maxCompressedLength)
-                    compressor.uncompress(compressed, buffer);
-                else
-                    buffer.put(compressed);
+                compressor.uncompress(compressed, buffer);
             }
             catch (IOException e)
             {

@@ -23,7 +23,6 @@ import java.nio.charset.Charset;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Sets;
@@ -31,24 +30,18 @@ import com.google.common.io.Files;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.RowIndexEntry;
-import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.IPartitioner;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.DiskOptimizationStrategy;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.RandomAccessReader;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.memory.HeapAllocator;
-
-import static org.apache.cassandra.service.ActiveRepairService.NO_PENDING_REPAIR;
-import static org.apache.cassandra.service.ActiveRepairService.UNREPAIRED_SSTABLE;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * This class is built on top of the SequenceFile. It stores
@@ -72,20 +65,21 @@ public abstract class SSTable
 
     public final Descriptor descriptor;
     protected final Set<Component> components;
+    public final CFMetaData metadata;
     public final boolean compression;
 
     public DecoratedKey first;
     public DecoratedKey last;
 
     protected final DiskOptimizationStrategy optimizationStrategy;
-    protected final TableMetadataRef metadata;
 
-    protected SSTable(Descriptor descriptor, Set<Component> components, TableMetadataRef metadata, DiskOptimizationStrategy optimizationStrategy)
+    protected SSTable(Descriptor descriptor, Set<Component> components, CFMetaData metadata, DiskOptimizationStrategy optimizationStrategy)
     {
         // In almost all cases, metadata shouldn't be null, but allowing null allows to create a mostly functional SSTable without
         // full schema definition. SSTableLoader use that ability
         assert descriptor != null;
         assert components != null;
+        assert metadata != null;
 
         this.descriptor = descriptor;
         Set<Component> dataComponents = new HashSet<>(components);
@@ -126,14 +120,9 @@ public abstract class SSTable
         return true;
     }
 
-    public TableMetadata metadata()
-    {
-        return metadata.get();
-    }
-
     public IPartitioner getPartitioner()
     {
-        return metadata().partitioner;
+        return metadata.partitioner;
     }
 
     public DecoratedKey decorateKey(ByteBuffer key)
@@ -174,47 +163,21 @@ public abstract class SSTable
 
     public List<String> getAllFilePaths()
     {
-        List<String> ret = new ArrayList<>(components.size());
+        List<String> ret = new ArrayList<>();
         for (Component component : components)
             ret.add(descriptor.filenameFor(component));
         return ret;
     }
 
     /**
-     * Parse a sstable filename into both a {@link Descriptor} and {@code Component} object.
-     *
-     * @param file the filename to parse.
-     * @return a pair of the {@code Descriptor} and {@code Component} corresponding to {@code file} if it corresponds to
-     * a valid and supported sstable filename, {@code null} otherwise. Note that components of an unknown type will be
-     * returned as CUSTOM ones.
+     * @return Descriptor and Component pair. null if given file is not acceptable as SSTable component.
+     *         If component is of unknown type, returns CUSTOM component.
      */
-    public static Pair<Descriptor, Component> tryComponentFromFilename(File file)
+    public static Pair<Descriptor, Component> tryComponentFromFilename(File dir, String name)
     {
         try
         {
-            return Descriptor.fromFilenameWithComponent(file);
-        }
-        catch (Throwable e)
-        {
-            return null;
-        }
-    }
-
-    /**
-     * Parse a sstable filename into a {@link Descriptor} object.
-     * <p>
-     * Note that this method ignores the component part of the filename; if this is not what you want, use
-     * {@link #tryComponentFromFilename} instead.
-     *
-     * @param file the filename to parse.
-     * @return the {@code Descriptor} corresponding to {@code file} if it corresponds to a valid and supported sstable
-     * filename, {@code null} otherwise.
-     */
-    public static Descriptor tryDescriptorFromFilename(File file)
-    {
-        try
-        {
-            return Descriptor.fromFilename(file);
+            return Component.fromFilename(dir, name);
         }
         catch (Throwable e)
         {
@@ -257,9 +220,17 @@ public abstract class SSTable
         Set<Component> components = Sets.newHashSetWithExpectedSize(knownTypes.size());
         for (Component.Type componentType : knownTypes)
         {
-            Component component = new Component(componentType);
-            if (new File(desc.filenameFor(component)).exists())
-                components.add(component);
+            if (componentType == Component.Type.DIGEST)
+            {
+                if (desc.digestComponent != null && new File(desc.filenameFor(desc.digestComponent)).exists())
+                    components.add(desc.digestComponent);
+            }
+            else
+            {
+                Component component = new Component(componentType);
+                if (new File(desc.filenameFor(component)).exists())
+                    components.add(component);
+            }
         }
         return components;
     }
@@ -348,19 +319,5 @@ public abstract class SSTable
         Collection<Component> componentsToAdd = Collections2.filter(newComponents, Predicates.not(Predicates.in(components)));
         appendTOC(descriptor, componentsToAdd);
         components.addAll(componentsToAdd);
-    }
-
-    public AbstractBounds<Token> getBounds()
-    {
-        return AbstractBounds.bounds(first.getToken(), true, last.getToken(), true);
-    }
-
-    public static void validateRepairedMetadata(long repairedAt, UUID pendingRepair, boolean isTransient)
-    {
-        Preconditions.checkArgument((pendingRepair == NO_PENDING_REPAIR) || (repairedAt == UNREPAIRED_SSTABLE),
-                                    "pendingRepair cannot be set on a repaired sstable");
-        Preconditions.checkArgument(!isTransient || (pendingRepair != NO_PENDING_REPAIR),
-                                    "isTransient can only be true for sstables pending repair");
-
     }
 }

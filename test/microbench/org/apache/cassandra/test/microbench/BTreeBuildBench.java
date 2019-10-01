@@ -93,10 +93,4 @@ public class BTreeBuildBench
         Object[] btree = builder.build();
         return BTree.size(btree);
     }
-
-    @Benchmark
-    public int buildTreeTest()
-    {
-        return buildTree(data);
-    }
 }

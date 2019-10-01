@@ -33,13 +33,13 @@ import com.datastax.driver.core.Row;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.TupleValue;
 import com.datastax.driver.core.UDTValue;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.transport.ProtocolVersion;
 
 public class UFJavaTest extends CQLTester
@@ -106,15 +106,15 @@ public class UFJavaTest extends CQLTester
         catch (InvalidRequestException e)
         {
             Assert.assertTrue(e.getMessage(), e.getMessage().contains("Java source compilation failed"));
-            Assert.assertTrue(e.getMessage(), e.getMessage().contains("foobarbaz cannot be resolved"));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("foobarbaz cannot be resolved to a type"));
         }
     }
 
     @Test
     public void testJavaFunctionInvalidReturn() throws Throwable
     {
-        assertInvalidMessage("cannot convert from long to Double",
-                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".jfir(val double) " +
+        assertInvalidMessage("system keyspace is not user-modifiable",
+                             "CREATE OR REPLACE FUNCTION jfir(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
                              "LANGUAGE JAVA\n" +

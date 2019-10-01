@@ -23,7 +23,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.Assert;
 import org.junit.Test;
 
 import com.google.common.collect.ImmutableMap;
@@ -150,24 +149,14 @@ public class RepairOptionTest
     }
 
     @Test
-    public void testForceOption() throws Exception
+    public void testIncrementalRepairWithSubrangesIsNotGlobal() throws Exception
     {
-        RepairOption option;
-        Map<String, String> options = new HashMap<>();
-
-        // default value
-        option = RepairOption.parse(options, Murmur3Partitioner.instance);
-        Assert.assertFalse(option.isForcedRepair());
-
-        // explicit true
-        options.put(RepairOption.FORCE_REPAIR_KEY, "true");
-        option = RepairOption.parse(options, Murmur3Partitioner.instance);
-        Assert.assertTrue(option.isForcedRepair());
-
-        // explicit false
-        options.put(RepairOption.FORCE_REPAIR_KEY, "false");
-        option = RepairOption.parse(options, Murmur3Partitioner.instance);
-        Assert.assertFalse(option.isForcedRepair());
+        RepairOption ro = RepairOption.parse(ImmutableMap.of(RepairOption.INCREMENTAL_KEY, "true", RepairOption.RANGES_KEY, "41:42"),
+                           Murmur3Partitioner.instance);
+        assertFalse(ro.isGlobal());
+        ro = RepairOption.parse(ImmutableMap.of(RepairOption.INCREMENTAL_KEY, "true", RepairOption.RANGES_KEY, ""),
+                Murmur3Partitioner.instance);
+        assertTrue(ro.isGlobal());
     }
 
     private void assertParseThrowsIllegalArgumentExceptionWithMessage(Map<String, String> optionsToParse, String expectedErrorMessage)
