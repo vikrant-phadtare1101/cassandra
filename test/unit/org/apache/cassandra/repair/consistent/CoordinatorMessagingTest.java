@@ -42,11 +42,10 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.MockMessagingService;
 import org.apache.cassandra.net.MockMessagingSpy;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.repair.AbstractRepairTest;
 import org.apache.cassandra.repair.RepairSessionResult;
 import org.apache.cassandra.repair.messages.FailSession;
@@ -61,6 +60,7 @@ import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ActiveRepairService;
 
 import static org.apache.cassandra.net.MockMessagingService.all;
+import static org.apache.cassandra.net.MockMessagingService.payload;
 import static org.apache.cassandra.net.MockMessagingService.to;
 import static org.apache.cassandra.net.MockMessagingService.verb;
 import static org.junit.Assert.fail;
@@ -256,7 +256,7 @@ public class CoordinatorMessagingTest extends AbstractRepairTest
             // expected
         }
         // we won't send out any fail session message in case of timeouts
-        spyPrepare.expectMockedMessage(2).get(100, TimeUnit.MILLISECONDS);
+        spyPrepare.expectMockedMessageIn(2).get(100, TimeUnit.MILLISECONDS);
         sendFailSessionUnexpectedSpy.interceptNoMsg(100, TimeUnit.MILLISECONDS);
         Assert.assertFalse(repairSubmitted.get());
         Assert.assertFalse(hasFailures.get());
@@ -274,36 +274,52 @@ public class CoordinatorMessagingTest extends AbstractRepairTest
                                               Collection<InetAddressAndPort> timeout,
                                               Function<PrepareConsistentRequest, UUID> sessionIdFunc)
     {
-        return MockMessagingService.when(verb(Verb.PREPARE_CONSISTENT_REQ)).respond((msgOut, to) ->
-        {
-            if (timeout.contains(to))
-                return null;
-
-            return Message.out(Verb.PREPARE_CONSISTENT_RSP,
-                               new PrepareConsistentResponse(sessionIdFunc.apply((PrepareConsistentRequest) msgOut.payload), to, !failed.contains(to)));
-        });
+        return MockMessagingService.when(
+        all(verb(MessagingService.Verb.REPAIR_MESSAGE),
+            payload((p) -> p instanceof PrepareConsistentRequest))
+        ).respond((msgOut, to) ->
+                  {
+                      if(timeout.contains(to)) return null;
+                      else return MessageIn.create(to,
+                                                   new PrepareConsistentResponse(sessionIdFunc.apply((PrepareConsistentRequest) msgOut.payload), to, !failed.contains(to)),
+                                                   Collections.emptyMap(),
+                                                   MessagingService.Verb.REPAIR_MESSAGE,
+                                                   MessagingService.current_version);
+                  });
     }
 
     private MockMessagingSpy createFinalizeSpy(Collection<InetAddressAndPort> failed,
                                                Collection<InetAddressAndPort> timeout)
     {
-        return MockMessagingService.when(verb(Verb.FINALIZE_PROPOSE_MSG)).respond((msgOut, to) ->
-        {
-            if (timeout.contains(to))
-                return null;
-
-            return Message.out(Verb.FINALIZE_PROMISE_MSG, new FinalizePromise(((FinalizePropose) msgOut.payload).sessionID, to, !failed.contains(to)));
-        });
+        return MockMessagingService.when(
+        all(verb(MessagingService.Verb.REPAIR_MESSAGE),
+            payload((p) -> p instanceof FinalizePropose))
+        ).respond((msgOut, to) ->
+                  {
+                      if(timeout.contains(to)) return null;
+                      else return MessageIn.create(to,
+                                                   new FinalizePromise(((FinalizePropose) msgOut.payload).sessionID, to, !failed.contains(to)),
+                                                   Collections.emptyMap(),
+                                                   MessagingService.Verb.REPAIR_MESSAGE,
+                                                   MessagingService.current_version);
+                  });
     }
 
     private MockMessagingSpy createCommitSpy()
     {
-        return MockMessagingService.when(verb(Verb.FINALIZE_COMMIT_MSG)).dontReply();
+        return MockMessagingService.when(
+            all(verb(MessagingService.Verb.REPAIR_MESSAGE),
+                payload((p) -> p instanceof FinalizeCommit))
+        ).dontReply();
     }
 
     private MockMessagingSpy createFailSessionSpy(Collection<InetAddressAndPort> participants)
     {
-        return MockMessagingService.when(all(verb(Verb.FAILED_SESSION_MSG), to(participants::contains))).dontReply();
+        return MockMessagingService.when(
+            all(verb(MessagingService.Verb.REPAIR_MESSAGE),
+                payload((p) -> p instanceof FailSession),
+                to(participants::contains))
+        ).dontReply();
     }
 
     private static RepairSessionResult createResult(CoordinatorSession coordinator)
