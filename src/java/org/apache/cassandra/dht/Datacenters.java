@@ -32,7 +32,7 @@ public class Datacenters
 
     private static class DCHandle
     {
-        private static final String thisDc = DatabaseDescriptor.getEndpointSnitch().getLocalDatacenter();
+        private static final String thisDc = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddressAndPort());
     }
 
     public static String thisDatacenter()

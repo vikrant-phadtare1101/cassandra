@@ -94,7 +94,7 @@ public class Dump implements Runnable
 
             QueryOptions options =
                 QueryOptions.codec.decode(Unpooled.wrappedBuffer(wireIn.read(FullQueryLogger.QUERY_OPTIONS).bytes()),
-                                          ProtocolVersion.decode(protocolVersion, true));
+                                          ProtocolVersion.decode(protocolVersion));
 
             long generatedTimestamp = wireIn.read(FullQueryLogger.GENERATED_TIMESTAMP).int64();
             sb.append("Generated timestamp:")

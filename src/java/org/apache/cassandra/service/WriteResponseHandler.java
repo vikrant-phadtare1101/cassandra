@@ -19,11 +19,13 @@ package org.apache.cassandra.service;
 
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import org.apache.cassandra.locator.ReplicaPlan;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.locator.ReplicaLayout;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.db.WriteType;
 
 /**
@@ -37,21 +39,21 @@ public class WriteResponseHandler<T> extends AbstractWriteResponseHandler<T>
     private static final AtomicIntegerFieldUpdater<WriteResponseHandler> responsesUpdater
             = AtomicIntegerFieldUpdater.newUpdater(WriteResponseHandler.class, "responses");
 
-    public WriteResponseHandler(ReplicaPlan.ForTokenWrite replicaPlan,
+    public WriteResponseHandler(ReplicaLayout.ForToken replicaLayout,
                                 Runnable callback,
                                 WriteType writeType,
                                 long queryStartNanoTime)
     {
-        super(replicaPlan, callback, writeType, queryStartNanoTime);
-        responses = blockFor();
+        super(replicaLayout, callback, writeType, queryStartNanoTime);
+        responses = totalBlockFor();
     }
 
-    public WriteResponseHandler(ReplicaPlan.ForTokenWrite replicaPlan, WriteType writeType, long queryStartNanoTime)
+    public WriteResponseHandler(ReplicaLayout.ForToken replicaLayout, WriteType writeType, long queryStartNanoTime)
     {
-        this(replicaPlan, null, writeType, queryStartNanoTime);
+        this(replicaLayout, null, writeType, queryStartNanoTime);
     }
 
-    public void onResponse(Message<T> m)
+    public void response(MessageIn<T> m)
     {
         if (responsesUpdater.decrementAndGet(this) == 0)
             signal();
@@ -63,6 +65,11 @@ public class WriteResponseHandler<T> extends AbstractWriteResponseHandler<T>
 
     protected int ackCount()
     {
-        return blockFor() - responses;
+        return totalBlockFor() - responses;
+    }
+
+    public boolean isLatencyForSnitch()
+    {
+        return false;
     }
 }
