@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -955,27 +956,34 @@ public class CompactionStrategyManager implements INotificationConsumer
         }
     }
 
-    public CompactionTasks getMaximalTasks(final int gcBefore, final boolean splitOutput)
+    public Collection<AbstractCompactionTask> getMaximalTasks(final int gcBefore, final boolean splitOutput)
     {
         maybeReloadDiskBoundaries();
         // runWithCompactionsDisabled cancels active compactions and disables them, then we are able
         // to make the repaired/unrepaired strategies mark their own sstables as compacting. Once the
         // sstables are marked the compactions are re-enabled
-        return cfs.runWithCompactionsDisabled(() -> {
-            List<AbstractCompactionTask> tasks = new ArrayList<>();
-            readLock.lock();
-            try
+        return cfs.runWithCompactionsDisabled(new Callable<Collection<AbstractCompactionTask>>()
+        {
+            @Override
+            public Collection<AbstractCompactionTask> call()
             {
-                for (AbstractStrategyHolder holder : holders)
+                List<AbstractCompactionTask> tasks = new ArrayList<>();
+                readLock.lock();
+                try
                 {
-                    tasks.addAll(holder.getMaximalTasks(gcBefore, splitOutput));
+                    for (AbstractStrategyHolder holder : holders)
+                    {
+                        tasks.addAll(holder.getMaximalTasks(gcBefore, splitOutput));
+                    }
                 }
+                finally
+                {
+                    readLock.unlock();
+                }
+                if (tasks.isEmpty())
+                    return null;
+                return tasks;
             }
-            finally
-            {
-                readLock.unlock();
-            }
-            return CompactionTasks.create(tasks);
         }, false, false);
     }
 
@@ -988,7 +996,7 @@ public class CompactionStrategyManager implements INotificationConsumer
      * @param gcBefore gc grace period, throw away tombstones older than this
      * @return a list of compaction tasks corresponding to the sstables requested
      */
-    public CompactionTasks getUserDefinedTasks(Collection<SSTableReader> sstables, int gcBefore)
+    public List<AbstractCompactionTask> getUserDefinedTasks(Collection<SSTableReader> sstables, int gcBefore)
     {
         maybeReloadDiskBoundaries();
         List<AbstractCompactionTask> ret = new ArrayList<>();
@@ -1000,7 +1008,7 @@ public class CompactionStrategyManager implements INotificationConsumer
             {
                 ret.addAll(holders.get(i).getUserDefinedTasks(groupedSSTables.get(i), gcBefore));
             }
-            return CompactionTasks.create(ret);
+            return ret;
         }
         finally
         {

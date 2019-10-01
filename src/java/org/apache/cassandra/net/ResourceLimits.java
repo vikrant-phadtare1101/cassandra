@@ -19,7 +19,7 @@ package org.apache.cassandra.net;
 
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
-public abstract class ResourceLimits
+abstract class ResourceLimits
 {
     /**
      * Represents permits to utilise a resource and ways to allocate and release them.
@@ -28,7 +28,7 @@ public abstract class ResourceLimits
      * 1. {@link Concurrent}, for shared limits, which is thread-safe;
      * 2. {@link Basic}, for limits that are not shared between threads, is not thread-safe.
      */
-    public interface Limit
+    interface Limit
     {
         /**
          * @return total amount of permits represented by this {@link Limit} - the capacity
@@ -54,18 +54,9 @@ public abstract class ResourceLimits
         boolean tryAllocate(long amount);
 
         /**
-         * Allocates an amount independent of permits available from this limit. <em>MUST</em> eventually
-         * be released back with {@link #release(long)}.
-         *
-         */
-        void allocate(long amount);
-
-        /**
          * @param amount return the amount of permits back to this limit
-         * @return {@code ABOVE_LIMIT} if there aren't enough permits available even after the release, or
-         *         {@code BELOW_LIMIT} if there are enough permits available after the releaese.
          */
-        Outcome release(long amount);
+        void release(long amount);
     }
 
     /**
@@ -79,7 +70,7 @@ public abstract class ResourceLimits
         private static final AtomicLongFieldUpdater<Concurrent> usingUpdater =
             AtomicLongFieldUpdater.newUpdater(Concurrent.class, "using");
 
-        public Concurrent(long limit)
+        Concurrent(long limit)
         {
             this.limit = limit;
         }
@@ -115,22 +106,11 @@ public abstract class ResourceLimits
             return true;
         }
 
-        public void allocate(long amount)
-        {
-            long current, next;
-            do
-            {
-                current = using;
-                next = current + amount;
-            } while (!usingUpdater.compareAndSet(this, current, next));
-        }
-
-        public Outcome release(long amount)
+        public void release(long amount)
         {
             assert amount >= 0;
             long using = usingUpdater.addAndGet(this, -amount);
             assert using >= 0;
-            return using >= limit ? Outcome.ABOVE_LIMIT : Outcome.BELOW_LIMIT;
         }
     }
 
@@ -171,16 +151,10 @@ public abstract class ResourceLimits
             return true;
         }
 
-        public void allocate(long amount)
-        {
-            using += amount;
-        }
-
-        public Outcome release(long amount)
+        public void release(long amount)
         {
             assert amount >= 0 && amount <= using;
             using -= amount;
-            return using >= limit ? Outcome.ABOVE_LIMIT : Outcome.BELOW_LIMIT;
         }
     }
 
@@ -188,25 +162,15 @@ public abstract class ResourceLimits
      * A convenience class that groups a per-endpoint limit with the global one
      * to allow allocating/releasing permits from/to both limits as one logical operation.
      */
-    public static class EndpointAndGlobal
+    static class EndpointAndGlobal
     {
         final Limit endpoint;
         final Limit global;
 
-        public EndpointAndGlobal(Limit endpoint, Limit global)
+        EndpointAndGlobal(Limit endpoint, Limit global)
         {
             this.endpoint = endpoint;
             this.global = global;
-        }
-
-        public Limit endpoint()
-        {
-            return endpoint;
-        }
-
-        public Limit global()
-        {
-            return global;
         }
 
         /**
@@ -214,7 +178,7 @@ public abstract class ResourceLimits
          *         {@code INSUFFICIENT_ENDPOINT} if there weren't enough permits in the per-endpoint limit, or
          *         {@code SUCCESS} if there were enough permits to take from both.
          */
-        public Outcome tryAllocate(long amount)
+        Outcome tryAllocate(long amount)
         {
             if (!global.tryAllocate(amount))
                 return Outcome.INSUFFICIENT_GLOBAL;
@@ -226,20 +190,12 @@ public abstract class ResourceLimits
             return Outcome.INSUFFICIENT_ENDPOINT;
         }
 
-        public void allocate(long amount)
+        void release(long amount)
         {
-            global.allocate(amount);
-            endpoint.allocate(amount);
-        }
-
-        public Outcome release(long amount)
-        {
-            Outcome endpointReleaseOutcome = endpoint.release(amount);
-            Outcome globalReleaseOutcome = global.release(amount);
-            return (endpointReleaseOutcome == Outcome.ABOVE_LIMIT || globalReleaseOutcome == Outcome.ABOVE_LIMIT)
-                   ? Outcome.ABOVE_LIMIT : Outcome.BELOW_LIMIT;
+            endpoint.release(amount);
+            global.release(amount);
         }
     }
 
-    public enum Outcome { SUCCESS, INSUFFICIENT_ENDPOINT, INSUFFICIENT_GLOBAL, BELOW_LIMIT, ABOVE_LIMIT }
+    enum Outcome { SUCCESS, INSUFFICIENT_ENDPOINT, INSUFFICIENT_GLOBAL }
 }
