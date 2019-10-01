@@ -55,12 +55,6 @@ public interface Unfiltered extends Clusterable
      */
     public void validateData(TableMetadata metadata);
 
-    /**
-     * Do a quick validation of the deletions of the unfiltered (if any)
-     *
-     * @return true if any deletion is invalid
-     */
-    public boolean hasInvalidDeletions();
     public boolean isEmpty();
 
     public String toString(TableMetadata metadata);

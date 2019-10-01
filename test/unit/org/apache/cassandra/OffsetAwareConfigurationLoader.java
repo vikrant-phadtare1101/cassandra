@@ -44,7 +44,7 @@ public class OffsetAwareConfigurationLoader extends YamlConfigurationLoader
         if (offsetStr == null)
             throw new RuntimeException("offset property is not set: "+OFFSET_PROPERTY);
 
-        offset = Integer.valueOf(offsetStr);
+        offset = Integer.parseInt(offsetStr);
 
         assert offset >= 0;
     }
@@ -58,7 +58,6 @@ public class OffsetAwareConfigurationLoader extends YamlConfigurationLoader
 
         config.native_transport_port += offset;
         config.storage_port += offset;
-        config.ssl_storage_port += offset;
 
         //Rewrite the seed ports string
         String[] hosts = config.seed_provider.parameters.get("seeds").split(",", -1);

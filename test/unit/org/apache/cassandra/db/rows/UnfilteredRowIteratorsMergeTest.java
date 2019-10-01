@@ -151,19 +151,20 @@ public class UnfilteredRowIteratorsMergeTest
 
     public UnfilteredRowIterator mergeIterators(List<UnfilteredRowIterator> us, boolean iterations)
     {
+        int now = FBUtilities.nowInSeconds();
         if (iterations)
         {
             UnfilteredRowIterator mi = us.get(0);
             int i;
             for (i = 1; i + 2 <= ITERATORS; i += 2)
-                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i), us.get(i+1)));
+                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i), us.get(i+1)), now);
             if (i + 1 <= ITERATORS)
-                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i)));
+                mi = UnfilteredRowIterators.merge(ImmutableList.of(mi, us.get(i)), now);
             return mi;
         }
         else
         {
-            return UnfilteredRowIterators.merge(us);
+            return UnfilteredRowIterators.merge(us, now);
         }
     }
 
