@@ -28,7 +28,6 @@ import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
@@ -224,7 +223,7 @@ public class CompactionStrategyHolder extends AbstractStrategyHolder
                                                        MetadataCollector collector,
                                                        SerializationHeader header,
                                                        Collection<Index> indexes,
-                                                       LifecycleNewTracker lifecycleNewTracker)
+                                                       LifecycleTransaction txn)
     {
         if (isRepaired)
         {
@@ -248,7 +247,7 @@ public class CompactionStrategyHolder extends AbstractStrategyHolder
                                                  collector,
                                                  header,
                                                  indexes,
-                                                 lifecycleNewTracker);
+                                                 txn);
     }
 
     @Override
