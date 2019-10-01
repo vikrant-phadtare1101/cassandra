@@ -17,9 +17,11 @@
  */
 package org.apache.cassandra.exceptions;
 
+import java.io.IOException;
+
 import org.apache.cassandra.schema.TableId;
 
-public class UnknownTableException extends IncompatibleSchemaException
+public class UnknownTableException extends IOException
 {
     public final TableId id;
 

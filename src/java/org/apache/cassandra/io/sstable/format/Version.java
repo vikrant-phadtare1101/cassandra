@@ -66,8 +66,6 @@ public abstract class Version
      */
     public abstract boolean hasOldBfFormat();
 
-    public abstract boolean hasAccurateMinMax();
-
     public String getVersion()
     {
         return version;

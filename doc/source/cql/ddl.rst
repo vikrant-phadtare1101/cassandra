@@ -73,15 +73,13 @@ A keyspace is created using a ``CREATE KEYSPACE`` statement:
 
 For instance::
 
-    CREATE KEYSPACE excelsior
-        WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};
+    CREATE KEYSPACE Excelsior
+               WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};
 
-    CREATE KEYSPACE excalibur
-        WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1' : 1, 'DC2' : 3}
-        AND durable_writes = false;
+    CREATE KEYSPACE Excalibur
+               WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1' : 1, 'DC2' : 3}
+                AND durable_writes = false;
 
-Attempting to create a keyspace that already exists will return an error unless the ``IF NOT EXISTS`` option is used. If
-it is used, the statement will be a no-op if the keyspace already exists.
 
 The supported ``options`` are:
 
@@ -98,72 +96,14 @@ The ``replication`` property is mandatory and must at least contains the ``'clas
 :ref:`replication strategy <replication-strategy>` class to use. The rest of the sub-options depends on what replication
 strategy is used. By default, Cassandra support the following ``'class'``:
 
-``SimpleStrategy``
-""""""""""""""""""
+- ``'SimpleStrategy'``: A simple strategy that defines a replication factor for the whole cluster. The only sub-options
+  supported is ``'replication_factor'`` to define that replication factor and is mandatory.
+- ``'NetworkTopologyStrategy'``: A replication strategy that allows to set the replication factor independently for
+  each data-center. The rest of the sub-options are key-value pairs where a key is a data-center name and its value is
+  the associated replication factor.
 
-A simple strategy that defines a replication factor for data to be spread
-across the entire cluster. This is generally not a wise choice for production
-because it does not respect datacenter layouts and can lead to wildly varying
-query latency. For a production ready strategy, see
-``NetworkTopologyStrategy``. ``SimpleStrategy`` supports a single mandatory argument:
-
-========================= ====== ======= =============================================
-sub-option                 type   since   description
-========================= ====== ======= =============================================
-``'replication_factor'``   int    all     The number of replicas to store per range
-========================= ====== ======= =============================================
-
-``NetworkTopologyStrategy``
-"""""""""""""""""""""""""""
-
-A production ready replication strategy that allows to set the replication
-factor independently for each data-center. The rest of the sub-options are
-key-value pairs where a key is a data-center name and its value is the
-associated replication factor. Options:
-
-===================================== ====== ====== =============================================
-sub-option                             type   since  description
-===================================== ====== ====== =============================================
-``'<datacenter>'``                     int    all    The number of replicas to store per range in
-                                                     the provided datacenter.
-``'replication_factor'``               int    4.0    The number of replicas to use as a default
-                                                     per datacenter if not specifically provided.
-                                                     Note that this always defers to existing
-                                                     definitions or explicit datacenter settings.
-                                                     For example, to have three replicas per
-                                                     datacenter, supply this with a value of 3.
-===================================== ====== ====== =============================================
-
-Note that when ``ALTER`` ing keyspaces and supplying ``replication_factor``,
-auto-expansion will only *add* new datacenters for safety, it will not alter
-existing datacenters or remove any even if they are no longer in the cluster.
-If you want to remove datacenters while still supplying ``replication_factor``,
-explicitly zero out the datacenter you want to have zero replicas.
-
-An example of auto-expanding datacenters with two datacenters: ``DC1`` and ``DC2``::
-
-    CREATE KEYSPACE excalibur
-        WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}
-
-    DESCRIBE KEYSPACE excalibur
-        CREATE KEYSPACE excalibur WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1': '3', 'DC2': '3'} AND durable_writes = true;
-
-
-An example of auto-expanding and overriding a datacenter::
-
-    CREATE KEYSPACE excalibur
-        WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3, 'DC2': 2}
-
-    DESCRIBE KEYSPACE excalibur
-        CREATE KEYSPACE excalibur WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1': '3', 'DC2': '2'} AND durable_writes = true;
-
-An example that excludes a datacenter while using ``replication_factor``::
-
-    CREATE KEYSPACE excalibur
-        WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3, 'DC2': 0} ;
-
-    DESCRIBE KEYSPACE excalibur
-        CREATE KEYSPACE excalibur WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1': '3'} AND durable_writes = true;
+Attempting to create a keyspace that already exists will return an error unless the ``IF NOT EXISTS`` option is used. If
+it is used, the statement will be a no-op if the keyspace already exists.
 
 If :ref:`transient replication <transient-replication>` has been enabled, transient replicas can be configured for both
 SimpleStrategy and NetworkTopologyStrategy by defining replication factors in the format ``'<total_replicas>/<transient_replicas>'``
@@ -199,7 +139,7 @@ An ``ALTER KEYSPACE`` statement allows to modify the options of a keyspace:
 For instance::
 
     ALTER KEYSPACE Excelsior
-        WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 4};
+              WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 4};
 
 The supported options are the same than for :ref:`creating a keyspace <create-keyspace-statement>`.
 
@@ -523,7 +463,7 @@ A table supports the following options:
 | ``speculative_retry``          | *simple* | 99PERCENTILE| :ref:`Speculative retry options                           |
 |                                |          |             | <speculative-retry-options>`.                             |
 +--------------------------------+----------+-------------+-----------------------------------------------------------+
-| ``additional_write_policy``    | *simple* | 99PERCENTILE| :ref:`Speculative retry options                           |
+| ``speculative_write_threshold``| *simple* | 99PERCENTILE| :ref:`Speculative retry options                           |
 |                                |          |             | <speculative-retry-options>`.                             |
 +--------------------------------+----------+-------------+-----------------------------------------------------------+
 | ``gc_grace_seconds``           | *simple* | 864000      | Time to wait before garbage collecting tombstones         |
@@ -556,7 +496,7 @@ Speculative retry options
 By default, Cassandra read coordinators only query as many replicas as necessary to satisfy
 consistency levels: one for consistency level ``ONE``, a quorum for ``QUORUM``, and so on.
 ``speculative_retry`` determines when coordinators may query additional replicas, which is useful
-when replicas are slow or unresponsive.  ``additional_write_policy`` specifies the threshold at which
+when replicas are slow or unresponsive.  ``speculative_write_threshold`` specifies the threshold at which
 a cheap quorum write will be upgraded to include transient replicas.  The following are legal values (case-insensitive):
 
 ============================ ======================== =============================================================================
@@ -720,9 +660,10 @@ ALTER TABLE
 Altering an existing table uses the ``ALTER TABLE`` statement:
 
 .. productionlist::
-   alter_table_statement: ALTER TABLE `table_name` `alter_table_instruction`
-   alter_table_instruction: ADD `column_name` `cql_type` ( ',' `column_name` `cql_type` )*
-                          : | DROP `column_name` ( `column_name` )*
+   alter_table_statement: ALTER TABLE [ IF EXISTS ] `table_name` `alter_table_instruction`
+   alter_table_instruction: ADD [ IF NOT EXISTS ] `column_name` `cql_type` ( ',' `column_name` `cql_type` )*
+                          : | DROP [ IF EXISTS ] `column_name` ( `column_name` )*
+                          : | RENAME [ IF EXISTS ] `column_name` TO `column_name` ( AND `column_name` TO `column_name` )*
                           : | WITH `options`
 
 For instance::
@@ -737,16 +678,23 @@ The ``ALTER TABLE`` statement can:
 - Add new column(s) to the table (through the ``ADD`` instruction). Note that the primary key of a table cannot be
   changed and thus newly added column will, by extension, never be part of the primary key. Also note that :ref:`compact
   tables <compact-tables>` have restrictions regarding column addition. Note that this is constant (in the amount of
-  data the cluster contains) time operation.
+  data the cluster contains) time operation. If the column exists, the statement will return an error, unless
+  ``ADD IF NOT EXISTS`` is used in which case the operation is a no-op.
 - Remove column(s) from the table. This drops both the column and all its content, but note that while the column
   becomes immediately unavailable, its content is only removed lazily during compaction. Please also see the warnings
   below. Due to lazy removal, the altering itself is a constant (in the amount of data removed or contained in the
-  cluster) time operation.
+  cluster) time operation. If the column does not exists, the statement will return an error, unless
+  ``DROP IF NOT EXISTS`` is used in which case the operation is a no-op.
+- Rename column(s) in the table. If the column does not exists, the statement will return an error, unless
+  ``RENAME IF NOT EXISTS`` is used in which case the operation is a no-op.
 - Change some of the table options (through the ``WITH`` instruction). The :ref:`supported options
   <create-table-options>` are the same that when creating a table (outside of ``COMPACT STORAGE`` and ``CLUSTERING
   ORDER`` that cannot be changed after creation). Note that setting any ``compaction`` sub-options has the effect of
   erasing all previous ``compaction`` options, so you need to re-specify all the sub-options if you want to keep them.
   The same note applies to the set of ``compression`` sub-options.
+
+If the table does not exists, the statement will return an error, unless ``IF EXISTS`` is used in which case
+the operation is a no-op.
 
 .. warning:: Dropping a column assumes that the timestamps used for the value of this column are "real" timestamp in
    microseconds. Using "real" timestamps in microseconds is the default is and is **strongly** recommended but as

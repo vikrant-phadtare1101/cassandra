@@ -18,7 +18,6 @@
 
 package org.apache.cassandra.service.reads;
 
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -65,7 +64,8 @@ public class DigestResolverTest extends AbstractReadResponseTest
     {
         SinglePartitionReadCommand command = SinglePartitionReadCommand.fullPartitionRead(cfm, nowInSec, dk);
         EndpointsForToken targetReplicas = EndpointsForToken.of(dk.getToken(), full(EP1), full(EP2));
-        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), 0);
+        TestableReadRepair readRepair = new TestableReadRepair(command, ConsistencyLevel.QUORUM);
+        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), readRepair, 0);
 
         PartitionUpdate response = update(row(1000, 4, 4), row(1000, 5, 5)).build();
 
@@ -83,7 +83,7 @@ public class DigestResolverTest extends AbstractReadResponseTest
     {
         SinglePartitionReadCommand command = SinglePartitionReadCommand.fullPartitionRead(cfm, nowInSec, dk);
         EndpointsForToken targetReplicas = EndpointsForToken.of(dk.getToken(), full(EP1), full(EP2));
-        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), 0);
+        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), NoopReadRepair.instance,0);
 
         PartitionUpdate response1 = update(row(1000, 4, 4), row(1000, 5, 5)).build();
         PartitionUpdate response2 = update(row(2000, 4, 5)).build();
@@ -104,7 +104,8 @@ public class DigestResolverTest extends AbstractReadResponseTest
     {
         SinglePartitionReadCommand command = SinglePartitionReadCommand.fullPartitionRead(cfm, nowInSec, dk);
         EndpointsForToken targetReplicas = EndpointsForToken.of(dk.getToken(), full(EP1), trans(EP2));
-        DigestResolver<?, ?> resolver = new DigestResolver<>(command, plan(ConsistencyLevel.QUORUM, targetReplicas), 0);
+        TestableReadRepair readRepair = new TestableReadRepair(command, ConsistencyLevel.QUORUM);
+        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), readRepair, 0);
 
         PartitionUpdate response1 = update(row(1000, 4, 4), row(1000, 5, 5)).build();
         PartitionUpdate response2 = update(row(1000, 5, 5)).build();
@@ -115,6 +116,7 @@ public class DigestResolverTest extends AbstractReadResponseTest
         Assert.assertTrue(resolver.isDataPresent());
         Assert.assertTrue(resolver.responsesMatch());
         Assert.assertTrue(resolver.hasTransientResponse());
+        Assert.assertTrue(readRepair.sent.isEmpty());
     }
 
     /**
@@ -125,7 +127,7 @@ public class DigestResolverTest extends AbstractReadResponseTest
     {
         SinglePartitionReadCommand command = SinglePartitionReadCommand.fullPartitionRead(cfm, nowInSec, dk);
         EndpointsForToken targetReplicas = EndpointsForToken.of(dk.getToken(), full(EP1), trans(EP2));
-        DigestResolver<?, ?> resolver = new DigestResolver<>(command, plan(ConsistencyLevel.QUORUM, targetReplicas), 0);
+        DigestResolver resolver = new DigestResolver(command, plan(ConsistencyLevel.QUORUM, targetReplicas), NoopReadRepair.instance, 0);
 
         PartitionUpdate response2 = update(row(1000, 5, 5)).build();
         Assert.assertFalse(resolver.isDataPresent());
@@ -135,32 +137,8 @@ public class DigestResolverTest extends AbstractReadResponseTest
         Assert.assertTrue(resolver.hasTransientResponse());
     }
 
-    @Test
-    public void transientResponseData()
+    private ReplicaLayout.ForToken plan(ConsistencyLevel consistencyLevel, EndpointsForToken replicas)
     {
-        SinglePartitionReadCommand command = SinglePartitionReadCommand.fullPartitionRead(cfm, nowInSec, dk);
-        EndpointsForToken targetReplicas = EndpointsForToken.of(dk.getToken(), full(EP1), full(EP2), trans(EP3));
-        DigestResolver<?, ?> resolver = new DigestResolver<>(command, plan(ConsistencyLevel.QUORUM, targetReplicas), 0);
-
-        PartitionUpdate fullResponse = update(row(1000, 1, 1)).build();
-        PartitionUpdate digestResponse = update(row(1000, 1, 1)).build();
-        PartitionUpdate transientResponse = update(row(1000, 2, 2)).build();
-        Assert.assertFalse(resolver.isDataPresent());
-        Assert.assertFalse(resolver.hasTransientResponse());
-        resolver.preprocess(response(command, EP1, iter(fullResponse), false));
-        Assert.assertTrue(resolver.isDataPresent());
-        resolver.preprocess(response(command, EP2, iter(digestResponse), true));
-        resolver.preprocess(response(command, EP3, iter(transientResponse), false));
-        Assert.assertTrue(resolver.hasTransientResponse());
-
-        assertPartitionsEqual(filter(iter(dk,
-                                          row(1000, 1, 1),
-                                          row(1000, 2, 2))),
-                              resolver.getData());
-    }
-
-    private ReplicaPlan.SharedForTokenRead plan(ConsistencyLevel consistencyLevel, EndpointsForToken replicas)
-    {
-        return ReplicaPlan.shared(new ReplicaPlan.ForTokenRead(ks, consistencyLevel, replicas, replicas));
+        return new ReplicaLayout.ForToken(ks, consistencyLevel, replicas.token(), replicas, null, replicas);
     }
 }
