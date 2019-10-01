@@ -162,8 +162,7 @@ public class QueryProcessor implements QueryHandler
             SystemKeyspace.resetPreparedStatements();
     }
 
-    @VisibleForTesting
-    public static QueryState internalQueryState()
+    private static QueryState internalQueryState()
     {
         return new QueryState(InternalStateInstance.INSTANCE.clientState);
     }
@@ -266,8 +265,7 @@ public class QueryProcessor implements QueryHandler
             return null;
     }
 
-    @VisibleForTesting
-    public static QueryOptions makeInternalOptions(CQLStatement prepared, Object[] values)
+    private static QueryOptions makeInternalOptions(CQLStatement prepared, Object[] values)
     {
         return makeInternalOptions(prepared, values, ConsistencyLevel.ONE);
     }

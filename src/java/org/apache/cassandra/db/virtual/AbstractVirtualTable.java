@@ -42,7 +42,7 @@ import org.apache.cassandra.schema.TableMetadata;
  */
 public abstract class AbstractVirtualTable implements VirtualTable
 {
-    protected final TableMetadata metadata;
+    private final TableMetadata metadata;
 
     protected AbstractVirtualTable(TableMetadata metadata)
     {
