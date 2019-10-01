@@ -56,7 +56,6 @@ import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.util.ReferenceCountUtil;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
-import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
 
@@ -83,26 +82,6 @@ public final class SSLFactory
 
     @VisibleForTesting
     static volatile boolean checkedExpiry = false;
-
-    // Isolate calls to OpenSsl.isAvailable to allow in-jvm dtests to disable tcnative openssl
-    // support.  It creates a circular reference that prevents the instance class loader from being
-    // garbage collected.
-    static private final boolean openSslIsAvailable;
-    static
-    {
-        if (Boolean.getBoolean(Config.PROPERTY_PREFIX + "disable_tcactive_openssl"))
-        {
-            openSslIsAvailable = false;
-        }
-        else
-        {
-            openSslIsAvailable = OpenSsl.isAvailable();
-        }
-    }
-    public static boolean openSslIsAvailable()
-    {
-        return openSslIsAvailable;
-    }
 
     /**
      * Cached references of SSL Contexts
@@ -254,7 +233,7 @@ public final class SSLFactory
     public static SslContext getOrCreateSslContext(EncryptionOptions options, boolean buildTruststore,
                                                    SocketType socketType) throws IOException
     {
-        return getOrCreateSslContext(options, buildTruststore, socketType, openSslIsAvailable());
+        return getOrCreateSslContext(options, buildTruststore, socketType, OpenSsl.isAvailable());
     }
 
     /**
@@ -408,8 +387,8 @@ public final class SSLFactory
             // Ensure we're able to create both server & client SslContexts
             if (serverOpts != null && serverOpts.enabled)
             {
-                createNettySslContext(serverOpts, true, SocketType.SERVER, openSslIsAvailable());
-                createNettySslContext(serverOpts, true, SocketType.CLIENT, openSslIsAvailable());
+                createNettySslContext(serverOpts, true, SocketType.SERVER, OpenSsl.isAvailable());
+                createNettySslContext(serverOpts, true, SocketType.CLIENT, OpenSsl.isAvailable());
             }
         }
         catch (Exception e)
@@ -422,8 +401,8 @@ public final class SSLFactory
             // Ensure we're able to create both server & client SslContexts
             if (clientOpts != null && clientOpts.enabled)
             {
-                createNettySslContext(clientOpts, clientOpts.require_client_auth, SocketType.SERVER, openSslIsAvailable());
-                createNettySslContext(clientOpts, clientOpts.require_client_auth, SocketType.CLIENT, openSslIsAvailable());
+                createNettySslContext(clientOpts, clientOpts.require_client_auth, SocketType.SERVER, OpenSsl.isAvailable());
+                createNettySslContext(clientOpts, clientOpts.require_client_auth, SocketType.CLIENT, OpenSsl.isAvailable());
             }
         }
         catch (Exception e)

@@ -14,9 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
 import re
 from .saferscanner import SaferScanner
 
+try:
+    basestring
+except NameError:
+    basestring = str
 
 class LexingError(Exception):
 
@@ -146,7 +152,7 @@ class matcher:
         except KeyError:
             return False
         if debugging:
-            print "Trying completer %r with %r" % (completer, ctxt)
+            print("Trying completer %r with %r" % (completer, ctxt))
         try:
             new_compls = completer(ctxt)
         except Exception:
@@ -155,7 +161,7 @@ class matcher:
                 traceback.print_exc()
             return False
         if debugging:
-            print "got %r" % (new_compls,)
+            print("got %r" % (new_compls,))
         completions.update(new_compls)
         return True
 
@@ -284,7 +290,7 @@ class text_match(terminal_matcher):
         try:
             terminal_matcher.__init__(self, eval(text))
         except SyntaxError:
-            print "bad syntax %r" % (text,)
+            print("bad syntax %r" % (text,))
 
     def match(self, ctxt, completions):
         if ctxt.remainder:
@@ -382,7 +388,7 @@ class ParsingRuleSet:
         tokeniter = iter(tokens)
         for t in tokeniter:
             if isinstance(t, tuple) and t[0] in ('reference', 'junk'):
-                assign = tokeniter.next()
+                assign = next(tokeniter)
                 if assign != '::=':
                     raise ValueError('Unexpected token %r; expected "::="' % (assign,))
                 name = t[1]
@@ -441,7 +447,7 @@ class ParsingRuleSet:
             elif t == '*':
                 t = repeat(myrules.pop(-1))
             elif t == '@':
-                x = tokeniter.next()
+                x = next(tokeniter)
                 if not isinstance(x, tuple) or x[0] != 'litstring':
                     raise ValueError("Unexpected token %r following '@'" % (x,))
                 t = case_match(x[1])

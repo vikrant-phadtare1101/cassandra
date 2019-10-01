@@ -137,11 +137,6 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
             return config;
         }
 
-        public boolean isShutdown()
-        {
-            return isShutdown;
-        }
-
         @Override
         public synchronized void startup()
         {
@@ -155,16 +150,10 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
         @Override
         public synchronized Future<Void> shutdown()
         {
-            return shutdown(true);
-        }
-
-        @Override
-        public synchronized Future<Void> shutdown(boolean graceful)
-        {
             if (isShutdown)
                 throw new IllegalStateException();
             isShutdown = true;
-            Future<Void> future = delegate.shutdown(graceful);
+            Future<Void> future = delegate.shutdown();
             delegate = null;
             return future;
         }
@@ -270,12 +259,9 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
     {
         for (IInstance reportTo: instances)
         {
-            if (reportTo.isShutdown())
-                continue;
-
             for (IInstance reportFrom: instances)
             {
-                if (reportFrom == reportTo || reportFrom.isShutdown())
+                if (reportFrom == reportTo)
                     continue;
 
                 int minVersion = Math.min(reportFrom.getMessagingVersion(), reportTo.getMessagingVersion());
@@ -389,7 +375,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
             return this;
         }
 
-        public C createWithoutStarting() throws IOException
+        public C start() throws IOException
         {
             File root = this.root;
             Versions.Version version = this.version;
@@ -406,7 +392,7 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
 
             List<InstanceConfig> configs = new ArrayList<>();
             long token = Long.MIN_VALUE + 1, increment = 2 * (Long.MAX_VALUE / nodeCount);
-            for (int i = 0; i < nodeCount; ++i)
+            for (int i = 0 ; i < nodeCount ; ++i)
             {
                 InstanceConfig config = InstanceConfig.generate(i + 1, subnet, root, String.valueOf(token));
                 if (configUpdater != null)
@@ -416,17 +402,10 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
             }
 
             C cluster = factory.newCluster(root, version, configs, sharedClassLoader);
-            return cluster;
-        }
-
-        public C start() throws IOException
-        {
-            C cluster = createWithoutStarting();
             cluster.startup();
             return cluster;
         }
     }
-
 
     private static void setupLogging(File root)
     {
@@ -451,7 +430,6 @@ public abstract class AbstractCluster<I extends IInstance> implements ICluster, 
     public void close()
     {
         FBUtilities.waitOnFutures(instances.stream()
-                                           .filter(i -> !i.isShutdown())
                                            .map(IInstance::shutdown)
                                            .collect(Collectors.toList()),
                                   1L, TimeUnit.MINUTES);
