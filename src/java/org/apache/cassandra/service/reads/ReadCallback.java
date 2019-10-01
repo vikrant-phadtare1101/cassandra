@@ -17,43 +17,43 @@
  */
 package org.apache.cassandra.service.reads;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.PartitionRangeReadCommand;
 import org.apache.cassandra.db.ReadCommand;
 import org.apache.cassandra.db.ReadResponse;
 import org.apache.cassandra.exceptions.ReadFailureException;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
 import org.apache.cassandra.exceptions.RequestFailureReason;
+import org.apache.cassandra.exceptions.UnavailableException;
 import org.apache.cassandra.locator.Endpoints;
+import org.apache.cassandra.locator.ReplicaLayout;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.RequestCallback;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.Verb;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
-public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>> implements RequestCallback<ReadResponse>
+public class ReadCallback<E extends Endpoints<E>, L extends ReplicaLayout<E, L>> implements IAsyncCallbackWithFailure<ReadResponse>
 {
     protected static final Logger logger = LoggerFactory.getLogger( ReadCallback.class );
 
     public final ResponseResolver resolver;
     final SimpleCondition condition = new SimpleCondition();
     private final long queryStartNanoTime;
-    final int blockFor; // TODO: move to replica plan as well?
-    // this uses a plain reference, but is initialised before handoff to any other threads; the later updates
-    // may not be visible to the threads immediately, but ReplicaPlan only contains final fields, so they will never see an uninitialised object
-    final ReplicaPlan.Shared<E, P> replicaPlan;
+    // TODO: move to replica layout as well?
+    final int blockfor;
+    final L replicaLayout;
     private final ReadCommand command;
     private static final AtomicIntegerFieldUpdater<ReadCallback> recievedUpdater
             = AtomicIntegerFieldUpdater.newUpdater(ReadCallback.class, "received");
@@ -63,24 +63,19 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
     private volatile int failures = 0;
     private final Map<InetAddressAndPort, RequestFailureReason> failureReasonByEndpoint;
 
-    public ReadCallback(ResponseResolver resolver, ReadCommand command, ReplicaPlan.Shared<E, P> replicaPlan, long queryStartNanoTime)
+    public ReadCallback(ResponseResolver resolver, int blockfor, ReadCommand command, L replicaLayout, long queryStartNanoTime)
     {
         this.command = command;
+        this.blockfor = blockfor;
         this.resolver = resolver;
         this.queryStartNanoTime = queryStartNanoTime;
-        this.replicaPlan = replicaPlan;
-        this.blockFor = replicaPlan.get().blockFor();
+        this.replicaLayout = replicaLayout;
         this.failureReasonByEndpoint = new ConcurrentHashMap<>();
         // we don't support read repair (or rapid read protection) for range scans yet (CASSANDRA-6897)
-        assert !(command instanceof PartitionRangeReadCommand) || blockFor >= replicaPlan().contacts().size();
+        assert !(command instanceof PartitionRangeReadCommand) || blockfor >= replicaLayout.selected().size();
 
         if (logger.isTraceEnabled())
-            logger.trace("Blockfor is {}; setting up requests to {}", blockFor, this.replicaPlan);
-    }
-
-    protected P replicaPlan()
-    {
-        return replicaPlan.get();
+            logger.trace("Blockfor is {}; setting up requests to {}", blockfor, this.replicaLayout);
     }
 
     public boolean await(long timePastStart, TimeUnit unit)
@@ -98,62 +93,76 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
 
     public void awaitResults() throws ReadFailureException, ReadTimeoutException
     {
-        boolean signaled = await(command.getTimeout(MILLISECONDS), TimeUnit.MILLISECONDS);
-        boolean failed = failures > 0 && blockFor + failures > replicaPlan().contacts().size();
+        boolean signaled = await(command.getTimeout(), TimeUnit.MILLISECONDS);
+        boolean failed = failures > 0 && blockfor + failures > replicaLayout.selected().size();
         if (signaled && !failed)
             return;
 
         if (Tracing.isTracing())
         {
             String gotData = received > 0 ? (resolver.isDataPresent() ? " (including data)" : " (only digests)") : "";
-            Tracing.trace("{}; received {} of {} responses{}", new Object[]{ (failed ? "Failed" : "Timed out"), received, blockFor, gotData });
+            Tracing.trace("{}; received {} of {} responses{}", new Object[]{ (failed ? "Failed" : "Timed out"), received, blockfor, gotData });
         }
         else if (logger.isDebugEnabled())
         {
             String gotData = received > 0 ? (resolver.isDataPresent() ? " (including data)" : " (only digests)") : "";
-            logger.debug("{}; received {} of {} responses{}", new Object[]{ (failed ? "Failed" : "Timed out"), received, blockFor, gotData });
+            logger.debug("{}; received {} of {} responses{}", new Object[]{ (failed ? "Failed" : "Timed out"), received, blockfor, gotData });
         }
 
         // Same as for writes, see AbstractWriteResponseHandler
         throw failed
-            ? new ReadFailureException(replicaPlan().consistencyLevel(), received, blockFor, resolver.isDataPresent(), failureReasonByEndpoint)
-            : new ReadTimeoutException(replicaPlan().consistencyLevel(), received, blockFor, resolver.isDataPresent());
+            ? new ReadFailureException(replicaLayout.consistencyLevel(), received, blockfor, resolver.isDataPresent(), failureReasonByEndpoint)
+            : new ReadTimeoutException(replicaLayout.consistencyLevel(), received, blockfor, resolver.isDataPresent());
     }
 
     public int blockFor()
     {
-        return blockFor;
+        return blockfor;
     }
 
-    public void onResponse(Message<ReadResponse> message)
+    public void response(MessageIn<ReadResponse> message)
     {
         resolver.preprocess(message);
-        int n = waitingFor(message.from())
+        int n = waitingFor(message.from)
               ? recievedUpdater.incrementAndGet(this)
               : received;
 
-        if (n >= blockFor && resolver.isDataPresent())
+        if (n >= blockfor && resolver.isDataPresent())
             condition.signalAll();
     }
 
     /**
-     * @return true if the message counts towards the blockFor threshold
+     * @return true if the message counts towards the blockfor threshold
      */
     private boolean waitingFor(InetAddressAndPort from)
     {
-        return !replicaPlan().consistencyLevel().isDatacenterLocal() || DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(from));
+        return !replicaLayout.consistencyLevel().isDatacenterLocal() || DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(from));
+    }
+
+    /**
+     * @return the current number of received responses
+     */
+    public int getReceivedCount()
+    {
+        return received;
     }
 
     public void response(ReadResponse result)
     {
-        Verb kind = command.isRangeRequest() ? Verb.RANGE_RSP : Verb.READ_RSP;
-        Message<ReadResponse> message = Message.internalResponse(kind, result);
-        onResponse(message);
+        MessageIn<ReadResponse> message = MessageIn.create(FBUtilities.getBroadcastAddressAndPort(),
+                                                           result,
+                                                           Collections.emptyMap(),
+                                                           MessagingService.Verb.INTERNAL_RESPONSE,
+                                                           MessagingService.current_version);
+        response(message);
     }
 
+    public void assureSufficientLiveNodes() throws UnavailableException
+    {
+        replicaLayout.consistencyLevel().assureSufficientLiveNodesForRead(replicaLayout.keyspace(), replicaLayout.selected());
+    }
 
-    @Override
-    public boolean trackLatencyForSnitch()
+    public boolean isLatencyForSnitch()
     {
         return true;
     }
@@ -167,13 +176,7 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
 
         failureReasonByEndpoint.put(from, failureReason);
 
-        if (blockFor + n > replicaPlan().contacts().size())
+        if (blockfor + n > replicaLayout.selected().size())
             condition.signalAll();
-    }
-
-    @Override
-    public boolean invokeOnFailure()
-    {
-        return true;
     }
 }

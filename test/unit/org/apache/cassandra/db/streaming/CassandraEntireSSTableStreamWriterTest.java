@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -42,10 +43,10 @@ import org.apache.cassandra.db.RowUpdateBuilder;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.io.sstable.SSTableMultiWriter;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.SharedDefaultFileRegion;
-import org.apache.cassandra.net.AsyncStreamingOutputPlus;
+import org.apache.cassandra.net.async.ByteBufDataInputPlus;
+import org.apache.cassandra.net.async.ByteBufDataOutputStreamPlus;
+import org.apache.cassandra.net.async.NonClosingDefaultFileRegion;
 import org.apache.cassandra.schema.CachingParams;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.streaming.DefaultConnectionFactory;
@@ -114,7 +115,7 @@ public class CassandraEntireSSTableStreamWriterTest
         CassandraEntireSSTableStreamWriter writer = new CassandraEntireSSTableStreamWriter(sstable, session, CassandraOutgoingFile.getComponentManifest(sstable));
 
         EmbeddedChannel channel = new EmbeddedChannel();
-        AsyncStreamingOutputPlus out = new AsyncStreamingOutputPlus(channel);
+        ByteBufDataOutputStreamPlus out = ByteBufDataOutputStreamPlus.create(channel, 1024 * 1024, throwable -> {}, 30, TimeUnit.SECONDS);
         writer.write(out);
 
         Queue msgs = channel.outboundMessages();
@@ -133,7 +134,7 @@ public class CassandraEntireSSTableStreamWriterTest
         // This is needed as Netty releases the ByteBuffers as soon as the channel is flushed
         ByteBuf serializedFile = Unpooled.buffer(8192);
         EmbeddedChannel channel = createMockNettyChannel(serializedFile);
-        AsyncStreamingOutputPlus out = new AsyncStreamingOutputPlus(channel);
+        ByteBufDataOutputStreamPlus out = ByteBufDataOutputStreamPlus.create(channel, 1024 * 1024, throwable -> {}, 30, TimeUnit.SECONDS);
 
         writer.write(out);
 
@@ -155,7 +156,7 @@ public class CassandraEntireSSTableStreamWriterTest
 
         CassandraEntireSSTableStreamReader reader = new CassandraEntireSSTableStreamReader(new StreamMessageHeader(sstable.metadata().id, peer, session.planId(), 0, 0, 0, null), header, session);
 
-        SSTableMultiWriter sstableWriter = reader.read(new DataInputBuffer(serializedFile.nioBuffer(), false));
+        SSTableMultiWriter sstableWriter = reader.read(new ByteBufDataInputPlus(serializedFile));
         Collection<SSTableReader> newSstables = sstableWriter.finished();
 
         assertEquals(1, newSstables.size());
@@ -188,7 +189,7 @@ public class CassandraEntireSSTableStreamWriterTest
                 @Override
                 public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception
                 {
-                    ((SharedDefaultFileRegion) msg).transferTo(wbc, 0);
+                    ((NonClosingDefaultFileRegion) msg).transferTo(wbc, 0);
                     super.write(ctx, msg, promise);
                 }
             });

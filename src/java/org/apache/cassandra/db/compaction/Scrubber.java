@@ -23,7 +23,6 @@ import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.*;
@@ -476,8 +475,7 @@ public class Scrubber implements Closeable
                                           OperationType.SCRUB,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
-                                          scrubCompactionId,
-                                          ImmutableSet.of(sstable));
+                                          scrubCompactionId);
             }
             catch (Exception e)
             {
