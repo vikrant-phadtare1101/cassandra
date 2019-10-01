@@ -20,7 +20,6 @@ package org.apache.cassandra.distributed.impl;
 
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.distributed.api.Feature;
 import org.apache.cassandra.distributed.api.IInstanceConfig;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.SimpleSeedProvider;
@@ -31,13 +30,15 @@ import java.lang.reflect.Field;
 import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 
 public class InstanceConfig implements IInstanceConfig
 {
+    public static long NETWORK = 1;
+    public static long GOSSIP  = 1 << 1;
+
     private static final Object NULL = new Object();
 
     public final int num;
@@ -47,7 +48,7 @@ public class InstanceConfig implements IInstanceConfig
     public UUID hostId() { return hostId; }
     private final Map<String, Object> params = new TreeMap<>();
 
-    private EnumSet featureFlags;
+    private long featureFlags;
 
     private volatile InetAddressAndPort broadcastAddressAndPort;
 
@@ -109,7 +110,7 @@ public class InstanceConfig implements IInstanceConfig
                 .set("diagnostic_events_enabled", true)
                 // legacy parameters
                 .forceSet("commitlog_sync_batch_window_in_ms", 1.0);
-        this.featureFlags = EnumSet.noneOf(Feature.class);
+                //
     }
 
     private InstanceConfig(InstanceConfig copy)
@@ -117,18 +118,17 @@ public class InstanceConfig implements IInstanceConfig
         this.num = copy.num;
         this.params.putAll(copy.params);
         this.hostId = copy.hostId;
-        this.featureFlags = copy.featureFlags;
     }
 
-    public InstanceConfig with(Feature featureFlag)
+    public InstanceConfig with(long featureFlag)
     {
-        featureFlags.add(featureFlag);
+        featureFlags |= featureFlag;
         return this;
     }
 
-    public boolean has(Feature featureFlag)
+    public boolean has(long featureFlag)
     {
-        return featureFlags.contains(featureFlag);
+        return 0 != (featureFlags & featureFlag);
     }
 
     public InstanceConfig set(String fieldName, Object value)
