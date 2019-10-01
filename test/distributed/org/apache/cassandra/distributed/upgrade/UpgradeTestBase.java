@@ -28,8 +28,7 @@ import org.apache.cassandra.distributed.impl.Versions;
 import org.apache.cassandra.distributed.impl.Versions.Version;
 import org.apache.cassandra.distributed.test.DistributedTestBase;
 
-import static org.apache.cassandra.distributed.impl.Versions.Major;
-import static org.apache.cassandra.distributed.impl.Versions.find;
+import static org.apache.cassandra.distributed.impl.Versions.*;
 
 public class UpgradeTestBase extends DistributedTestBase
 {
@@ -130,13 +129,17 @@ public class UpgradeTestBase extends DistributedTestBase
             {
                 try (UpgradeableCluster cluster = init(UpgradeableCluster.create(nodeCount, upgrade.initial)))
                 {
-                    setup.run(cluster);
+                    cluster.schemaChange("CREATE TABLE " + KEYSPACE + ".tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
+
+                    cluster.get(1).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 1, 1)");
+                    cluster.get(2).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 2, 2)");
+                    cluster.get(3).executeInternal("INSERT INTO " + KEYSPACE + ".tbl (pk, ck, v) VALUES (1, 3, 3)");
 
                     for (Version version : upgrade.upgrade)
                     {
                         for (int n = 1 ; n <= nodeCount ; ++n)
                         {
-                            cluster.get(n).shutdown().get();
+                            cluster.get(n).shutdown();
                             cluster.get(n).setVersion(version);
                             cluster.get(n).startup();
                             runAfterNodeUpgrade.run(cluster, n);
