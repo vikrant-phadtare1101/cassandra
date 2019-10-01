@@ -126,12 +126,12 @@ public class SSTableLoader implements StreamEventHandler
                                               for (Map.Entry<InetAddressAndPort, Collection<Range<Token>>> entry : ranges.entrySet())
                                               {
                                                   InetAddressAndPort endpoint = entry.getKey();
-                                                  List<Range<Token>> tokenRanges = Range.normalize(entry.getValue());
+                                                  Collection<Range<Token>> tokenRanges = entry.getValue();
 
                                                   List<SSTableReader.PartitionPositionBounds> sstableSections = sstable.getPositionsForRanges(tokenRanges);
                                                   long estimatedKeys = sstable.estimatedKeysForRanges(tokenRanges);
                                                   Ref<SSTableReader> ref = sstable.ref();
-                                                  OutgoingStream stream = new CassandraOutgoingFile(StreamOperation.BULK_LOAD, ref, sstableSections, tokenRanges, estimatedKeys);
+                                                  OutgoingStream stream = new CassandraOutgoingFile(StreamOperation.BULK_LOAD, ref, sstableSections, estimatedKeys);
                                                   streamingDetails.put(endpoint, stream);
                                               }
 

@@ -28,7 +28,6 @@ import java.util.*;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -70,7 +69,6 @@ public class StorageServiceServerTest
     @BeforeClass
     public static void setUp() throws ConfigurationException
     {
-        System.setProperty(Gossiper.Props.DISABLE_THREAD_VALIDATION, "true");
         DatabaseDescriptor.daemonInitialization();
         IEndpointSnitch snitch = new PropertyFileSnitch();
         DatabaseDescriptor.setEndpointSnitch(snitch);
@@ -622,20 +620,12 @@ public class StorageServiceServerTest
         assertEquals("127.0.0.3:666", StorageService.instance.getNativeaddress(internalAddress, true));
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void testAuditLogEnableLoggerNotFound() throws Exception
     {
         StorageService.instance.enableAuditLog(null, null, null, null, null, null, null);
         assertTrue(AuditLogManager.getInstance().isAuditingEnabled());
-        try
-        {
-            StorageService.instance.enableAuditLog("foobar", null, null, null, null, null, null);
-            Assert.fail();
-        }
-        catch (IllegalStateException ex)
-        {
-            StorageService.instance.disableAuditLog();
-        }
+        StorageService.instance.enableAuditLog("foobar", null, null, null, null, null, null);
     }
 
     @Test
@@ -655,7 +645,5 @@ public class StorageServiceServerTest
 
         StorageService.instance.enableAuditLog(null, null, null, null, null, null, null);
         assertTrue(AuditLogManager.getInstance().isAuditingEnabled());
-
-        StorageService.instance.disableAuditLog();
     }
 }

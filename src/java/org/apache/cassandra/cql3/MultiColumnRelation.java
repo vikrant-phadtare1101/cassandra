@@ -19,7 +19,6 @@ package org.apache.cassandra.cql3;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.apache.cassandra.schema.ColumnMetadata;
@@ -240,27 +239,5 @@ public class MultiColumnRelation extends Relation
                       .append(" ")
                       .append(valuesOrMarker)
                       .toString();
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(relationType, entities, valuesOrMarker, inValues, inMarker);
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o)
-            return true;
-
-        if (!(o instanceof MultiColumnRelation))
-            return false;
-
-        MultiColumnRelation mcr = (MultiColumnRelation) o;
-        return Objects.equals(entities, mcr.entities)
-            && Objects.equals(valuesOrMarker, mcr.valuesOrMarker)
-            && Objects.equals(inValues, mcr.inValues)
-            && Objects.equals(inMarker, mcr.inMarker);
     }
 }

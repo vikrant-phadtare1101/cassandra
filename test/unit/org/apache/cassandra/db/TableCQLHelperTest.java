@@ -26,14 +26,13 @@ import java.util.*;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
-import org.apache.cassandra.service.reads.NeverSpeculativeRetryPolicy;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
 import org.apache.cassandra.*;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.cql3.statements.schema.IndexTarget;
+import org.apache.cassandra.cql3.statements.*;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.index.sasi.*;
@@ -256,7 +255,6 @@ public class TableCQLHelperTest extends CQLTester
                .maxIndexInterval(7)
                .memtableFlushPeriod(8)
                .speculativeRetry(AlwaysSpeculativeRetryPolicy.INSTANCE)
-               .additionalWritePolicy(NeverSpeculativeRetryPolicy.INSTANCE)
                .extensions(ImmutableMap.of("ext1", ByteBuffer.wrap("val1".getBytes())))
                .recordColumnDrop(ColumnMetadata.regularColumn(keyspace, table, "reg1", AsciiType.instance),
                                  FBUtilities.timestampMicros());
@@ -274,7 +272,6 @@ public class TableCQLHelperTest extends CQLTester
         "\tAND max_index_interval = 7\n" +
         "\tAND memtable_flush_period_in_ms = 8\n" +
         "\tAND speculative_retry = 'ALWAYS'\n" +
-        "\tAND additional_write_policy = 'NEVER'\n" +
         "\tAND comment = 'comment'\n" +
         "\tAND caching = { 'keys': 'ALL', 'rows_per_partition': 'NONE' }\n" +
         "\tAND compaction = { 'max_threshold': '32', 'min_threshold': '4', 'sstable_size_in_mb': '1', 'class': 'org.apache.cassandra.db.compaction.LeveledCompactionStrategy' }\n" +
@@ -409,7 +406,7 @@ public class TableCQLHelperTest extends CQLTester
         String tableName = createTable("CREATE TABLE IF NOT EXISTS %s (" +
                                        "pk1 varint," +
                                        "ck1 varint," +
-                                       "reg1 frozen<" + typeB + ">," +
+                                       "reg1 " + typeB + "," +
                                        "reg2 varint," +
                                        "PRIMARY KEY (pk1, ck1));");
 
