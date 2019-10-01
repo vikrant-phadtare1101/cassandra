@@ -18,7 +18,6 @@
 package org.apache.cassandra.db.virtual;
 
 import java.util.Collection;
-import java.util.concurrent.TimeUnit;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
@@ -77,9 +76,9 @@ public final class VirtualMutation implements IMutation
     }
 
     @Override
-    public long getTimeout(TimeUnit unit)
+    public long getTimeout()
     {
-        return DatabaseDescriptor.getWriteRpcTimeout(unit);
+        return DatabaseDescriptor.getWriteRpcTimeout();
     }
 
     @Override
