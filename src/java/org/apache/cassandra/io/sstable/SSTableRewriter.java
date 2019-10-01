@@ -32,6 +32,7 @@ import org.apache.cassandra.db.lifecycle.ILifecycleTransaction;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.utils.NativeLibrary;
 import org.apache.cassandra.utils.concurrent.Transactional;
 
@@ -116,7 +117,7 @@ public class SSTableRewriter extends Transactional.AbstractTransactional impleme
 
     private static long calculateOpenInterval(boolean shouldOpenEarly)
     {
-        long interval = DatabaseDescriptor.getSSTablePreemptiveOpenIntervalInMB() * (1L << 20);
+        long interval = DatabaseDescriptor.getSSTablePreempiveOpenIntervalInMB() * (1L << 20);
         if (disableEarlyOpeningForTests || !shouldOpenEarly || interval < 0)
             interval = Long.MAX_VALUE;
         return interval;
@@ -133,17 +134,14 @@ public class SSTableRewriter extends Transactional.AbstractTransactional impleme
         DecoratedKey key = partition.partitionKey();
         maybeReopenEarly(key);
         RowIndexEntry index = writer.append(partition);
-        if (DatabaseDescriptor.shouldMigrateKeycacheOnCompaction())
+        if (!transaction.isOffline() && index != null)
         {
-            if (!transaction.isOffline() && index != null)
+            for (SSTableReader reader : transaction.originals())
             {
-                for (SSTableReader reader : transaction.originals())
+                if (reader.getCachedPosition(key, false) != null)
                 {
-                    if (reader.getCachedPosition(key, false) != null)
-                    {
-                        cachedKeys.put(key, index);
-                        break;
-                    }
+                    cachedKeys.put(key, index);
+                    break;
                 }
             }
         }
@@ -225,7 +223,9 @@ public class SSTableRewriter extends Transactional.AbstractTransactional impleme
      */
     private void moveStarts(SSTableReader newReader, DecoratedKey lowerbound)
     {
-        if (transaction.isOffline() || preemptiveOpenInterval == Long.MAX_VALUE)
+        if (transaction.isOffline())
+            return;
+        if (preemptiveOpenInterval == Long.MAX_VALUE)
             return;
 
         newReader.setupOnline();

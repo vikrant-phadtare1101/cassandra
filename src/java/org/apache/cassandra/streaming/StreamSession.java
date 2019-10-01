@@ -21,6 +21,7 @@ import java.net.SocketTimeoutException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.*;
@@ -42,7 +43,8 @@ import org.apache.cassandra.gms.*;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.metrics.StreamingMetrics;
-import org.apache.cassandra.net.OutboundConnectionSettings;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.net.async.OutboundConnectionIdentifier;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.streaming.async.NettyStreamingMessageSender;
 import org.apache.cassandra.streaming.messages.*;
@@ -50,7 +52,6 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 import static com.google.common.collect.Iterables.all;
-import static org.apache.cassandra.net.MessagingService.current_version;
 
 /**
  * Handles the streaming a one or more streams to and from a specific remote node.
@@ -135,7 +136,11 @@ public class StreamSession implements IEndpointStateChangeSubscriber
      * Each {@code StreamSession} is identified by this InetAddressAndPort which is broadcast address of the node streaming.
      */
     public final InetAddressAndPort peer;
-    private final OutboundConnectionSettings template;
+
+    /**
+     * Preferred IP Address/Port of the peer; this is the address that will be connect to. Can be the same as {@linkplain #peer}.
+     */
+    private final InetAddressAndPort preferredPeerInetAddressAndPort;
 
     private final int index;
 
@@ -179,25 +184,30 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public StreamSession(StreamOperation streamOperation, InetAddressAndPort peer, StreamConnectionFactory factory,
                          int index, UUID pendingRepair, PreviewKind previewKind)
     {
-        this(streamOperation, new OutboundConnectionSettings(peer), factory, index, pendingRepair, previewKind);
+        this(streamOperation, peer, factory, index, pendingRepair, previewKind, MessagingService.instance()::getPreferredRemoteAddr);
     }
-    /**
-     * Create new streaming session with the peer.
-     */
-    public StreamSession(StreamOperation streamOperation, OutboundConnectionSettings template, StreamConnectionFactory factory,
-                         int index, UUID pendingRepair, PreviewKind previewKind)
+
+    @VisibleForTesting
+    public StreamSession(StreamOperation streamOperation, InetAddressAndPort peer, StreamConnectionFactory factory,
+                         int index, UUID pendingRepair, PreviewKind previewKind,
+                         Function<InetAddressAndPort, InetAddressAndPort> preferredIpMapper)
     {
         this.streamOperation = streamOperation;
-        this.peer = template.to;
-        this.template = template;
+        this.peer = peer;
         this.index = index;
+        InetAddressAndPort preferredPeerEndpoint = preferredIpMapper.apply(peer);
+        this.preferredPeerInetAddressAndPort = (preferredPeerEndpoint == null) ? peer : preferredPeerEndpoint;
 
-        this.messageSender = new NettyStreamingMessageSender(this, template, factory, current_version, previewKind.isPreview());
-        this.metrics = StreamingMetrics.get(peer);
+        OutboundConnectionIdentifier id = OutboundConnectionIdentifier.stream(InetAddressAndPort.getByAddressOverrideDefaults(FBUtilities.getJustLocalAddress(), 0),
+                                                                              preferredPeerInetAddressAndPort);
+
+        this.messageSender = new NettyStreamingMessageSender(this, id, factory, StreamMessage.CURRENT_VERSION, previewKind.isPreview());
+        this.metrics = StreamingMetrics.get(preferredPeerInetAddressAndPort);
         this.pendingRepair = pendingRepair;
         this.previewKind = previewKind;
 
-        logger.debug("Creating stream session to {}", template);
+        logger.debug("Creating stream session peer={} preferredPeerInetAddressAndPort={}", peer,
+                     preferredPeerInetAddressAndPort);
     }
 
     public UUID planId()
@@ -276,7 +286,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         {
             logger.info("[Stream #{}] Starting streaming to {}{}", planId(),
                                                                    peer,
-                                                                   template.connectTo == null ? "" : " through " + template.connectTo);
+                                                                   peer.equals(preferredPeerInetAddressAndPort) ? "" : " through " + preferredPeerInetAddressAndPort);
             messageSender.initialize();
             onInitializationComplete();
         }
@@ -535,7 +545,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             logger.error("[Stream #{}] Did not receive response from peer {}{} for {} secs. Is peer down? " +
                          "If not, maybe try increasing streaming_keep_alive_period_in_secs.", planId(),
                          peer.getHostAddress(true),
-                         template.connectTo == null ? "" : " through " + template.connectTo.getHostAddress(true),
+                         peer.equals(preferredPeerInetAddressAndPort) ? "" : " through " + preferredPeerInetAddressAndPort.getHostAddress(true),
                          2 * DatabaseDescriptor.getStreamingKeepAlivePeriod(),
                          e);
         }
@@ -543,7 +553,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         {
             logger.error("[Stream #{}] Streaming error occurred on session with peer {}{}", planId(),
                          peer.getHostAddress(true),
-                         template.connectTo == null ? "" : " through " + template.connectTo.getHostAddress(true),
+                         peer.equals(preferredPeerInetAddressAndPort) ? "" : " through " + preferredPeerInetAddressAndPort.getHostAddress(true),
                          e);
         }
     }
@@ -697,8 +707,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         List<StreamSummary> transferSummaries = Lists.newArrayList();
         for (StreamTask transfer : transfers.values())
             transferSummaries.add(transfer.getSummary());
-        // TODO: the connectTo treatment here is peculiar, and needs thinking about - since the connection factory can change it
-        return new SessionInfo(peer, index, template.connectTo == null ? peer : template.connectTo, receivingSummaries, transferSummaries, state);
+        return new SessionInfo(peer, index, preferredPeerInetAddressAndPort, receivingSummaries, transferSummaries, state);
     }
 
     public synchronized void taskCompleted(StreamReceiveTask completedTask)
