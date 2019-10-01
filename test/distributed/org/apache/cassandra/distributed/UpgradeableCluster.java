@@ -19,11 +19,12 @@
 package org.apache.cassandra.distributed;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
 
 import org.apache.cassandra.distributed.api.ICluster;
 import org.apache.cassandra.distributed.impl.AbstractCluster;
-import org.apache.cassandra.distributed.impl.IInvokableInstance;
 import org.apache.cassandra.distributed.impl.IUpgradeableInstance;
 import org.apache.cassandra.distributed.impl.InstanceConfig;
 import org.apache.cassandra.distributed.impl.Versions;
@@ -42,24 +43,28 @@ public class UpgradeableCluster extends AbstractCluster<IUpgradeableInstance> im
         super(root, version, configs, sharedClassLoader);
     }
 
-    protected IUpgradeableInstance newInstanceWrapper(int generation, Versions.Version version, InstanceConfig config)
+    protected IUpgradeableInstance newInstanceWrapper(Versions.Version version, InstanceConfig config)
     {
-        return new Wrapper(generation, version, config);
-    }
-
-    public static Builder<IUpgradeableInstance, UpgradeableCluster> build(int nodeCount)
-    {
-        return new Builder<>(nodeCount, UpgradeableCluster::new);
+        return new Wrapper(version, config);
     }
 
     public static UpgradeableCluster create(int nodeCount) throws Throwable
     {
-        return build(nodeCount).start();
+        return create(nodeCount, UpgradeableCluster::new);
+    }
+    public static UpgradeableCluster create(int nodeCount, File root)
+    {
+        return create(nodeCount, Versions.CURRENT, root, UpgradeableCluster::new);
     }
 
-    public static UpgradeableCluster create(int nodeCount, Versions.Version version) throws Throwable
+    public static UpgradeableCluster create(int nodeCount, Versions.Version version) throws IOException
     {
-        return build(nodeCount).withVersion(version).start();
+        return create(nodeCount, version, Files.createTempDirectory("dtests").toFile(), UpgradeableCluster::new);
     }
+    public static UpgradeableCluster create(int nodeCount, Versions.Version version, File root)
+    {
+        return create(nodeCount, version, root, UpgradeableCluster::new);
+    }
+
 }
 

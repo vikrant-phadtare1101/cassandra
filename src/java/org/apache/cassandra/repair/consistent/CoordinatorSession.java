@@ -40,9 +40,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.repair.RepairSessionResult;
 import org.apache.cassandra.repair.messages.FailSession;
 import org.apache.cassandra.repair.messages.FinalizeCommit;
@@ -139,10 +138,11 @@ public class CoordinatorSession extends ConsistentSession
         return getState() == State.FAILED || Iterables.any(participantStates.values(), v -> v == State.FAILED);
     }
 
-    protected void sendMessage(InetAddressAndPort destination, Message<RepairMessage> message)
+    protected void sendMessage(InetAddressAndPort destination, RepairMessage message)
     {
-        logger.trace("Sending {} to {}", message.payload, destination);
-        MessagingService.instance().send(message, destination);
+        logger.trace("Sending {} to {}", message, destination);
+        MessageOut<RepairMessage> messageOut = new MessageOut<RepairMessage>(MessagingService.Verb.REPAIR_MESSAGE, message, RepairMessage.serializer);
+        MessagingService.instance().sendOneWay(messageOut, destination);
     }
 
     public ListenableFuture<Boolean> prepare()
@@ -150,8 +150,7 @@ public class CoordinatorSession extends ConsistentSession
         Preconditions.checkArgument(allStates(State.PREPARING));
 
         logger.debug("Beginning prepare phase of incremental repair session {}", sessionID);
-        Message<RepairMessage> message =
-            Message.out(Verb.PREPARE_CONSISTENT_REQ, new PrepareConsistentRequest(sessionID, coordinator, participants));
+        PrepareConsistentRequest message = new PrepareConsistentRequest(sessionID, coordinator, participants);
         for (final InetAddressAndPort participant : participants)
         {
             sendMessage(participant, message);
@@ -198,7 +197,7 @@ public class CoordinatorSession extends ConsistentSession
     {
         Preconditions.checkArgument(allStates(State.REPAIRING));
         logger.debug("Proposing finalization of repair session {}", sessionID);
-        Message<RepairMessage> message = Message.out(Verb.FINALIZE_PROPOSE_MSG, new FinalizePropose(sessionID));
+        FinalizePropose message = new FinalizePropose(sessionID);
         for (final InetAddressAndPort participant : participants)
         {
             sendMessage(participant, message);
@@ -234,7 +233,7 @@ public class CoordinatorSession extends ConsistentSession
     {
         Preconditions.checkArgument(allStates(State.FINALIZE_PROMISED));
         logger.debug("Committing finalization of repair session {}", sessionID);
-        Message<RepairMessage> message = Message.out(Verb.FINALIZE_COMMIT_MSG, new FinalizeCommit(sessionID));
+        FinalizeCommit message = new FinalizeCommit(sessionID);
         for (final InetAddressAndPort participant : participants)
         {
             sendMessage(participant, message);
@@ -245,7 +244,7 @@ public class CoordinatorSession extends ConsistentSession
 
     private void sendFailureMessageToParticipants()
     {
-        Message<RepairMessage> message = Message.out(Verb.FAILED_SESSION_MSG, new FailSession(sessionID));
+        FailSession message = new FailSession(sessionID);
         for (final InetAddressAndPort participant : participants)
         {
             if (participantStates.get(participant) != State.FAILED)
