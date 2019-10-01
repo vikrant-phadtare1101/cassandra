@@ -19,12 +19,11 @@ package org.apache.cassandra.locator;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import org.apache.cassandra.locator.ReplicaCollection.Builder.Conflict;
+import org.apache.cassandra.locator.ReplicaCollection.Mutable.Conflict;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -133,19 +132,11 @@ public abstract class AbstractReplicationStrategy
     }
 
     /**
-     * Calculate the natural endpoints for the given token. Endpoints are returned in the order
-     * they occur in the ring following the searchToken, as defined by the replication strategy.
-     *
-     * Note that the order of the replicas is _implicitly relied upon_ by the definition of
-     * "primary" range in
-     * {@link org.apache.cassandra.service.StorageService#getPrimaryRangesForEndpoint(String, InetAddressAndPort)}
-     * which is in turn relied on by various components like repair and size estimate calculations.
+     * calculate the natural endpoints for the given token
      *
      * @see #getNaturalReplicasForToken(org.apache.cassandra.dht.RingPosition)
      *
-     * @param tokenMetadata the token metadata used to find the searchToken, e.g. contains token to endpoint
-     *                      mapping information
-     * @param searchToken the token to find the natural endpoints for
+     * @param searchToken the token the natural endpoints are requested for
      * @return a copy of the natural endpoints for the given token
      */
     public abstract EndpointsForRange calculateNaturalReplicas(Token searchToken, TokenMetadata tokenMetadata);
@@ -232,7 +223,7 @@ public abstract class AbstractReplicationStrategy
      */
     public RangesByEndpoint getAddressReplicas(TokenMetadata metadata)
     {
-        RangesByEndpoint.Builder map = new RangesByEndpoint.Builder();
+        RangesByEndpoint.Mutable map = new RangesByEndpoint.Mutable();
 
         for (Token token : metadata.sortedTokens())
         {
@@ -245,7 +236,7 @@ public abstract class AbstractReplicationStrategy
             }
         }
 
-        return map.build();
+        return map.asImmutableView();
     }
 
     public RangesAtEndpoint getAddressReplicas(TokenMetadata metadata, InetAddressAndPort endpoint)
@@ -269,7 +260,7 @@ public abstract class AbstractReplicationStrategy
 
     public EndpointsByRange getRangeAddresses(TokenMetadata metadata)
     {
-        EndpointsByRange.Builder map = new EndpointsByRange.Builder();
+        EndpointsByRange.Mutable map = new EndpointsByRange.Mutable();
 
         for (Token token : metadata.sortedTokens())
         {
@@ -282,7 +273,7 @@ public abstract class AbstractReplicationStrategy
             }
         }
 
-        return map.build();
+        return map.asImmutableView();
     }
 
     public RangesByEndpoint getAddressReplicas()
@@ -366,39 +357,6 @@ public abstract class AbstractReplicationStrategy
 
         strategy.validateOptions();
         return strategy;
-    }
-
-    /**
-     * Before constructing the ARS we first give it a chance to prepare the options map in any way it
-     * would like to. For example datacenter auto-expansion or other templating to make the user interface
-     * more usable. Note that this may mutate the passed strategyOptions Map.
-     *
-     * We do this prior to the construction of the strategyClass itself because at that point the option
-     * map is already immutable and comes from {@link org.apache.cassandra.schema.ReplicationParams}
-     * (and should probably stay that way so we don't start having bugs related to ReplicationParams being mutable).
-     * Instead ARS classes get a static hook here via the prepareOptions(Map, Map) method to mutate the user input
-     * before it becomes an immutable part of the ReplicationParams.
-     *
-     * @param strategyClass The class to call prepareOptions on
-     * @param strategyOptions The proposed strategy options that will be potentially mutated by the prepareOptions
-     *                        method.
-     * @param previousStrategyOptions In the case of an ALTER statement, the previous strategy options of this class.
-     *                                This map cannot be mutated.
-     */
-    public static void prepareReplicationStrategyOptions(Class<? extends AbstractReplicationStrategy> strategyClass,
-                                                         Map<String, String> strategyOptions,
-                                                         Map<String, String> previousStrategyOptions)
-    {
-        try
-        {
-            Method method = strategyClass.getDeclaredMethod("prepareOptions", Map.class, Map.class);
-            method.invoke(null, strategyOptions, previousStrategyOptions);
-        }
-        catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ign)
-        {
-            // If the subclass doesn't specify a prepareOptions method, then that means that it
-            // doesn't want to do anything to the options. So do nothing on reflection related exceptions.
-        }
     }
 
     public static void validateReplicationStrategy(String keyspaceName,

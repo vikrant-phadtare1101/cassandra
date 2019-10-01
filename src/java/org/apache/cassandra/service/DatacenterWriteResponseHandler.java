@@ -21,7 +21,7 @@ import org.apache.cassandra.db.WriteType;
 import org.apache.cassandra.locator.InOurDcTester;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.ReplicaPlan;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 
 import java.util.function.Predicate;
 
@@ -42,11 +42,11 @@ public class DatacenterWriteResponseHandler<T> extends WriteResponseHandler<T>
     }
 
     @Override
-    public void onResponse(Message<T> message)
+    public void response(MessageIn<T> message)
     {
-        if (message == null || waitingFor(message.from()))
+        if (message == null || waitingFor(message.from))
         {
-            super.onResponse(message);
+            super.response(message);
         }
         else
         {

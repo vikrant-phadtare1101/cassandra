@@ -22,8 +22,13 @@ import com.google.common.base.Preconditions;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static com.google.common.collect.Iterables.all;
 
@@ -35,9 +40,13 @@ import static com.google.common.collect.Iterables.all;
 public class EndpointsForRange extends Endpoints<EndpointsForRange>
 {
     private final Range<Token> range;
-    private EndpointsForRange(Range<Token> range, ReplicaList list, ReplicaMap<InetAddressAndPort> byEndpoint)
+    private EndpointsForRange(Range<Token> range, List<Replica> list, boolean isSnapshot)
     {
-        super(list, byEndpoint);
+        this(range, list, isSnapshot, null);
+    }
+    private EndpointsForRange(Range<Token> range, List<Replica> list, boolean isSnapshot, Map<InetAddressAndPort, Replica> byEndpoint)
+    {
+        super(list, isSnapshot, byEndpoint);
         this.range = range;
         assert range != null;
     }
@@ -48,77 +57,95 @@ public class EndpointsForRange extends Endpoints<EndpointsForRange>
     }
 
     @Override
-    public Builder newBuilder(int initialCapacity)
+    public Mutable newMutable(int initialCapacity)
     {
-        return new Builder(range, initialCapacity);
+        return new Mutable(range, initialCapacity);
     }
 
     public EndpointsForToken forToken(Token token)
     {
         if (!range.contains(token))
             throw new IllegalArgumentException(token + " is not contained within " + range);
-        return new EndpointsForToken(token, list, byEndpoint);
+        return new EndpointsForToken(token, list, isSnapshot, byEndpoint);
     }
 
     @Override
-    public EndpointsForRange snapshot()
+    public EndpointsForRange self()
     {
         return this;
     }
 
     @Override
-    EndpointsForRange snapshot(ReplicaList newList)
+    protected EndpointsForRange snapshot(List<Replica> snapshot)
     {
-        if (newList.isEmpty()) return empty(range);
-        ReplicaMap<InetAddressAndPort> byEndpoint = null;
-        if (this.byEndpoint != null && list.isSubList(newList))
-            byEndpoint = this.byEndpoint.forSubList(newList);
-        return new EndpointsForRange(range, newList, byEndpoint);
+        if (snapshot.isEmpty()) return empty(range);
+        return new EndpointsForRange(range, snapshot, true);
     }
 
-    public static class Builder extends EndpointsForRange implements ReplicaCollection.Builder<EndpointsForRange>
+    public static class Mutable extends EndpointsForRange implements ReplicaCollection.Mutable<EndpointsForRange>
     {
-        boolean built;
-        public Builder(Range<Token> range) { this(range, 0); }
-        public Builder(Range<Token> range, int capacity) { this(range, new ReplicaList(capacity)); }
-        private Builder(Range<Token> range, ReplicaList list) { super(range, list, endpointMap(list)); }
+        boolean hasSnapshot;
+        public Mutable(Range<Token> range) { this(range, 0); }
+        public Mutable(Range<Token> range, int capacity) { super(range, new ArrayList<>(capacity), false, new LinkedHashMap<>(capacity)); }
 
-        public EndpointsForRange.Builder add(Replica replica, Conflict ignoreConflict)
+        public void add(Replica replica, Conflict ignoreConflict)
         {
-            if (built) throw new IllegalStateException();
+            if (hasSnapshot) throw new IllegalStateException();
             Preconditions.checkNotNull(replica);
             if (!replica.range().contains(super.range))
                 throw new IllegalArgumentException("Replica " + replica + " does not contain " + super.range);
 
-            if (!super.byEndpoint.internalPutIfAbsent(replica, list.size()))
+            Replica prev = super.byEndpoint.put(replica.endpoint(), replica);
+            if (prev != null)
             {
+                super.byEndpoint.put(replica.endpoint(), prev); // restore prev
                 switch (ignoreConflict)
                 {
                     case DUPLICATE:
-                        if (byEndpoint().get(replica.endpoint()).equals(replica))
+                        if (prev.equals(replica))
                             break;
                     case NONE:
-                        throw new IllegalArgumentException("Conflicting replica added (expected unique endpoints): "
-                                + replica + "; existing: " + byEndpoint().get(replica.endpoint()));
+                        throw new IllegalArgumentException("Conflicting replica added (expected unique endpoints): " + replica + "; existing: " + prev);
                     case ALL:
                 }
-                return this;
+                return;
             }
 
             list.add(replica);
-            return this;
         }
 
         @Override
-        public EndpointsForRange snapshot()
+        public Map<InetAddressAndPort, Replica> byEndpoint()
         {
-            return snapshot(list.subList(0, list.size()));
+            // our internal map is modifiable, but it is unsafe to modify the map externally
+            // it would be possible to implement a safe modifiable map, but it is probably not valuable
+            return Collections.unmodifiableMap(super.byEndpoint());
         }
 
-        public EndpointsForRange build()
+        private EndpointsForRange get(boolean isSnapshot)
         {
-            built = true;
-            return new EndpointsForRange(super.range, super.list, super.byEndpoint);
+            return new EndpointsForRange(super.range, super.list, isSnapshot, Collections.unmodifiableMap(super.byEndpoint));
+        }
+
+        public EndpointsForRange asImmutableView()
+        {
+            return get(false);
+        }
+
+        public EndpointsForRange asSnapshot()
+        {
+            hasSnapshot = true;
+            return get(true);
+        }
+    }
+
+    public static class Builder extends ReplicaCollection.Builder<EndpointsForRange, Mutable, EndpointsForRange.Builder>
+    {
+        public Builder(Range<Token> range) { this(range, 0); }
+        public Builder(Range<Token> range, int capacity) { super (new Mutable(range, capacity)); }
+        public boolean containsEndpoint(InetAddressAndPort endpoint)
+        {
+            return mutable.asImmutableView().byEndpoint.containsKey(endpoint);
         }
     }
 
@@ -133,16 +160,16 @@ public class EndpointsForRange extends Endpoints<EndpointsForRange>
 
     public static EndpointsForRange empty(Range<Token> range)
     {
-        return new EndpointsForRange(range, EMPTY_LIST, EMPTY_MAP);
+        return new EndpointsForRange(range, EMPTY_LIST, true, EMPTY_MAP);
     }
 
     public static EndpointsForRange of(Replica replica)
     {
         // we only use ArrayList or ArrayList.SubList, to ensure callsites are bimorphic
-        ReplicaList one = new ReplicaList(1);
+        ArrayList<Replica> one = new ArrayList<>(1);
         one.add(replica);
         // we can safely use singletonMap, as we only otherwise use LinkedHashMap
-        return new EndpointsForRange(replica.range(), one, endpointMap(one));
+        return new EndpointsForRange(replica.range(), one, true, Collections.unmodifiableMap(Collections.singletonMap(replica.endpoint(), replica)));
     }
 
     public static EndpointsForRange of(Replica ... replicas)

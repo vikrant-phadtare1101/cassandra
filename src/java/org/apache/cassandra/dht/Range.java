@@ -257,14 +257,6 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
     }
 
     /**
-     * Tells if the given range covers the entire ring
-     */
-    private static <T extends RingPosition<T>> boolean isFull(T left, T right)
-    {
-        return left.equals(right);
-    }
-
-    /**
      * Note: this class has a natural ordering that is inconsistent with equals
      */
     public int compareTo(Range<T> rhs)
@@ -283,24 +275,13 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
      * Subtracts a portion of this range.
      * @param contained The range to subtract from this. It must be totally
      * contained by this range.
-     * @return A List of the Ranges left after subtracting contained
+     * @return An ArrayList of the Ranges left after subtracting contained
      * from this.
      */
-    private List<Range<T>> subtractContained(Range<T> contained)
+    private ArrayList<Range<T>> subtractContained(Range<T> contained)
     {
-        // both ranges cover the entire ring, their difference is an empty set
-        if(isFull(left, right) && isFull(contained.left, contained.right))
-        {
-            return Collections.emptyList();
-        }
+        ArrayList<Range<T>> difference = new ArrayList<Range<T>>(2);
 
-        // a range is subtracted from another range that covers the entire ring
-        if(isFull(left, right))
-        {
-            return Collections.singletonList(new Range<>(contained.right, contained.left));
-        }
-
-        List<Range<T>> difference = new ArrayList<>(2);
         if (!left.equals(contained.left))
             difference.add(new Range<T>(left, contained.left));
         if (!right.equals(contained.right))
@@ -366,7 +347,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
                 // intersections.length must be 2
                 Range<T> first = intersections[0];
                 Range<T> second = intersections[1];
-                List<Range<T>> temp = rhs.subtractContained(first);
+                ArrayList<Range<T>> temp = rhs.subtractContained(first);
 
                 // Because there are two intersections, subtracting only one of them
                 // will yield a single Range.

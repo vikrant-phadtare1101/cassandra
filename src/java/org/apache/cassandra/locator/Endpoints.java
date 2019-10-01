@@ -18,17 +18,16 @@
 
 package org.apache.cassandra.locator;
 
-import org.apache.cassandra.locator.ReplicaCollection.Builder.Conflict;
+import org.apache.cassandra.locator.ReplicaCollection.Mutable.Conflict;
 import org.apache.cassandra.utils.FBUtilities;
 
-import java.util.AbstractList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-
-import com.google.common.collect.Lists;
 
 /**
  * A collection of Endpoints for a given ring position.  This will typically reside in a ReplicaLayout,
@@ -37,16 +36,13 @@ import com.google.common.collect.Lists;
  */
 public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaCollection<E>
 {
-    static ReplicaMap<InetAddressAndPort> endpointMap(ReplicaList list) { return new ReplicaMap<>(list, Replica::endpoint); }
-    static final ReplicaMap<InetAddressAndPort> EMPTY_MAP = endpointMap(EMPTY_LIST);
+    static final Map<InetAddressAndPort, Replica> EMPTY_MAP = Collections.unmodifiableMap(new LinkedHashMap<>());
 
-    // volatile not needed, as has only final members,
-    // besides (transitively) those that cache objects that themselves have only final members
-    ReplicaMap<InetAddressAndPort> byEndpoint;
+    volatile Map<InetAddressAndPort, Replica> byEndpoint;
 
-    Endpoints(ReplicaList list, ReplicaMap<InetAddressAndPort> byEndpoint)
+    Endpoints(List<Replica> list, boolean isSnapshot, Map<InetAddressAndPort, Replica> byEndpoint)
     {
-        super(list);
+        super(list, isSnapshot);
         this.byEndpoint = byEndpoint;
     }
 
@@ -56,27 +52,11 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
         return byEndpoint().keySet();
     }
 
-    public List<InetAddressAndPort> endpointList()
-    {
-        return new AbstractList<InetAddressAndPort>()
-        {
-            public InetAddressAndPort get(int index)
-            {
-                return list.get(index).endpoint();
-            }
-
-            public int size()
-            {
-                return list.size;
-            }
-        };
-    }
-
     public Map<InetAddressAndPort, Replica> byEndpoint()
     {
-        ReplicaMap<InetAddressAndPort> map = byEndpoint;
+        Map<InetAddressAndPort, Replica> map = byEndpoint;
         if (map == null)
-            byEndpoint = map = endpointMap(list);
+            byEndpoint = map = buildByEndpoint(list);
         return map;
     }
 
@@ -87,6 +67,19 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
                 && Objects.equals(
                         byEndpoint().get(replica.endpoint()),
                         replica);
+    }
+
+    private static Map<InetAddressAndPort, Replica> buildByEndpoint(List<Replica> list)
+    {
+        // TODO: implement a delegating map that uses our superclass' list, and is immutable
+        Map<InetAddressAndPort, Replica> byEndpoint = new LinkedHashMap<>(list.size());
+        for (Replica replica : list)
+        {
+            Replica prev = byEndpoint.put(replica.endpoint(), replica);
+            assert prev == null : "duplicate endpoint in EndpointsForRange: " + prev + " and " + replica;
+        }
+
+        return Collections.unmodifiableMap(byEndpoint);
     }
 
     public E withoutSelf()
@@ -122,7 +115,7 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
      */
     public E select(Iterable<InetAddressAndPort> endpoints, boolean ignoreMissing)
     {
-        Builder<E> copy = newBuilder(
+        ReplicaCollection.Mutable<E> copy = newMutable(
                 endpoints instanceof Collection<?>
                         ? ((Collection<InetAddressAndPort>) endpoints).size()
                         : size()
@@ -137,9 +130,9 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
                     throw new IllegalArgumentException(endpoint + " is not present in " + this);
                 continue;
             }
-            copy.add(select, Builder.Conflict.DUPLICATE);
+            copy.add(select, ReplicaCollection.Mutable.Conflict.DUPLICATE);
         }
-        return copy.build();
+        return copy.asSnapshot();
     }
 
     /**
@@ -158,10 +151,10 @@ public abstract class Endpoints<E extends Endpoints<E>> extends AbstractReplicaC
 
     public static <E extends Endpoints<E>> E append(E replicas, Replica extraReplica)
     {
-        Builder<E> builder = replicas.newBuilder(replicas.size() + 1);
-        builder.addAll(replicas);
-        builder.add(extraReplica, Conflict.NONE);
-        return builder.build();
+        Mutable<E> mutable = replicas.newMutable(replicas.size() + 1);
+        mutable.addAll(replicas);
+        mutable.add(extraReplica, Conflict.NONE);
+        return mutable.asSnapshot();
     }
 
 }

@@ -19,6 +19,7 @@ package org.apache.cassandra.repair;
 
 import java.util.List;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +28,6 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.RepairException;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.messages.RepairMessage;
 import org.apache.cassandra.repair.messages.SyncRequest;
@@ -35,8 +35,7 @@ import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.streaming.SessionSummary;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.FBUtilities;
-
-import static org.apache.cassandra.net.Verb.SYNC_REQ;
+import org.apache.cassandra.utils.MerkleTrees;
 
 /**
  * SymmetricRemoteSyncTask sends {@link SyncRequest} to remote(non-coordinator) node
@@ -48,14 +47,21 @@ public class SymmetricRemoteSyncTask extends SyncTask implements CompletableRemo
 {
     private static final Logger logger = LoggerFactory.getLogger(SymmetricRemoteSyncTask.class);
 
-    public SymmetricRemoteSyncTask(RepairJobDesc desc, InetAddressAndPort r1, InetAddressAndPort r2, List<Range<Token>> differences, PreviewKind previewKind)
+    public SymmetricRemoteSyncTask(RepairJobDesc desc, TreeResponse r1, TreeResponse r2, PreviewKind previewKind)
     {
-        super(desc, r1, r2, differences, previewKind);
+        super(desc, r1.endpoint, r2.endpoint, MerkleTrees.difference(r1.trees, r2.trees), previewKind);
     }
 
-    void sendRequest(SyncRequest request, InetAddressAndPort to)
+    @VisibleForTesting
+    SymmetricRemoteSyncTask(RepairJobDesc desc, InetAddressAndPort e1, InetAddressAndPort e2,
+                            List<Range<Token>> differences, PreviewKind previewKind)
     {
-        MessagingService.instance().send(Message.out(SYNC_REQ, request), to);
+        super(desc, e1, e2, differences, previewKind);
+    }
+
+    void sendRequest(RepairMessage request, InetAddressAndPort to)
+    {
+        MessagingService.instance().sendOneWay(request.createMessage(), to);
     }
 
     @Override
@@ -82,14 +88,5 @@ public class SymmetricRemoteSyncTask extends SyncTask implements CompletableRemo
             setException(new RepairException(desc, previewKind, String.format("Sync failed between %s and %s", nodePair.coordinator, nodePair.peer)));
         }
         finished();
-    }
-
-    @Override
-    public String toString()
-    {
-        return "SymmetricRemoteSyncTask{" +
-               "rangesToSync=" + rangesToSync +
-               ", nodePair=" + nodePair +
-               '}';
     }
 }

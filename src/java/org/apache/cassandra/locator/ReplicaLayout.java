@@ -194,7 +194,6 @@ public abstract class ReplicaLayout<E extends Endpoints<E>>
      */
     public static ReplicaLayout.ForTokenWrite forTokenWriteLiveAndDown(Keyspace keyspace, Token token)
     {
-        // TODO: these should be cached, not the natural replicas
         // TODO: race condition to fetch these. implications??
         EndpointsForToken natural = keyspace.getReplicationStrategy().getNaturalReplicasForToken(token);
         EndpointsForToken pending = StorageService.instance.getTokenMetadata().pendingEndpointsForToken(token, keyspace.getName());
@@ -278,7 +277,7 @@ public abstract class ReplicaLayout<E extends Endpoints<E>>
     @VisibleForTesting
     static EndpointsForToken resolveWriteConflictsInNatural(EndpointsForToken natural, EndpointsForToken pending)
     {
-        EndpointsForToken.Builder resolved = natural.newBuilder(natural.size());
+        EndpointsForToken.Mutable resolved = natural.newMutable(natural.size());
         for (Replica replica : natural)
         {
             // always prefer the full natural replica, if there is a conflict
@@ -297,7 +296,7 @@ public abstract class ReplicaLayout<E extends Endpoints<E>>
             }
             resolved.add(replica);
         }
-        return resolved.build();
+        return resolved.asSnapshot();
     }
 
     /**

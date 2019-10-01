@@ -23,11 +23,13 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+import com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,8 +41,9 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.ParamType;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.net.ParameterType;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.UUIDGen;
@@ -243,11 +246,12 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
     /**
      * Determines the tracing context from a message.  Does NOT set the threadlocal state.
      *
-     * @param header The internode message header
+     * @param message The internode message
      */
-    public TraceState initializeFromMessage(final Message.Header header)
+    public TraceState initializeFromMessage(final MessageIn<?> message)
     {
-        final UUID sessionId = header.traceSession();
+        final UUID sessionId = (UUID)message.parameters.get(ParameterType.TRACE_SESSION);
+
         if (sessionId == null)
             return null;
 
@@ -255,60 +259,31 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
         if (ts != null && ts.acquireReference())
             return ts;
 
-        TraceType traceType = header.traceType();
+        TraceType tmpType;
+        TraceType traceType = TraceType.QUERY;
+        if ((tmpType = (TraceType)message.parameters.get(ParameterType.TRACE_TYPE)) != null)
+            traceType = tmpType;
 
-        if (header.verb.isResponse())
+        if (message.verb == MessagingService.Verb.REQUEST_RESPONSE)
         {
             // received a message for a session we've already closed out.  see CASSANDRA-5668
-            return new ExpiredTraceState(newTraceState(header.from, sessionId, traceType));
+            return new ExpiredTraceState(newTraceState(message.from, sessionId, traceType));
         }
         else
         {
-            ts = newTraceState(header.from, sessionId, traceType);
+            ts = newTraceState(message.from, sessionId, traceType);
             sessions.put(sessionId, ts);
             return ts;
         }
     }
 
-    /**
-     * Record any tracing data, if enabled on this message.
-     */
-    public void traceOutgoingMessage(Message<?> message, InetAddressAndPort sendTo)
-    {
-        try
-        {
-            final UUID sessionId = message.traceSession();
-            if (sessionId == null)
-                return;
-
-            String logMessage = String.format("Sending %s message to %s", message.verb(), sendTo);
-
-            TraceState state = get(sessionId);
-            if (state == null) // session may have already finished; see CASSANDRA-5668
-            {
-                TraceType traceType = message.traceType();
-                trace(ByteBuffer.wrap(UUIDGen.decompose(sessionId)), logMessage, traceType.getTTL());
-            }
-            else
-            {
-                state.trace(logMessage);
-                if (message.verb().isResponse())
-                    doneWithNonLocalSession(state);
-            }
-        }
-        catch (Exception e)
-        {
-            logger.warn("failed to capture the tracing info for an outbound message to {}, ignoring", sendTo, e);
-        }
-    }
-
-    public Map<ParamType, Object> addTraceHeaders(Map<ParamType, Object> addToMutable)
+    public List<Object> getTraceHeaders()
     {
         assert isTracing();
 
-        addToMutable.put(ParamType.TRACE_SESSION, Tracing.instance.getSessionId());
-        addToMutable.put(ParamType.TRACE_TYPE, Tracing.instance.getTraceType());
-        return addToMutable;
+        return ImmutableList.of(
+        ParameterType.TRACE_SESSION, Tracing.instance.getSessionId(),
+        ParameterType.TRACE_TYPE, Tracing.instance.getTraceType());
     }
 
     protected abstract TraceState newTraceState(InetAddressAndPort coordinator, UUID sessionId, Tracing.TraceType traceType);

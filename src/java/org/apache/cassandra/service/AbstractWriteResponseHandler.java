@@ -20,6 +20,7 @@ package org.apache.cassandra.service;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.stream.Collectors;
@@ -39,15 +40,13 @@ import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.exceptions.WriteFailureException;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.RequestCallback;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
-
-public abstract class AbstractWriteResponseHandler<T> implements RequestCallback<T>
+public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackWithFailure<T>
 {
     protected static final Logger logger = LoggerFactory.getLogger(AbstractWriteResponseHandler.class);
 
@@ -91,12 +90,12 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
 
     public void get() throws WriteTimeoutException, WriteFailureException
     {
-        long timeoutNanos = currentTimeoutNanos();
+        long timeout = currentTimeout();
 
         boolean success;
         try
         {
-            success = condition.await(timeoutNanos, NANOSECONDS);
+            success = condition.await(timeout, TimeUnit.NANOSECONDS);
         }
         catch (InterruptedException ex)
         {
@@ -121,12 +120,12 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
         }
     }
 
-    public final long currentTimeoutNanos()
+    public final long currentTimeout()
     {
         long requestTimeout = writeType == WriteType.COUNTER
-                              ? DatabaseDescriptor.getCounterWriteRpcTimeout(NANOSECONDS)
-                              : DatabaseDescriptor.getWriteRpcTimeout(NANOSECONDS);
-        return requestTimeout - (System.nanoTime() - queryStartNanoTime);
+                              ? DatabaseDescriptor.getCounterWriteRpcTimeout()
+                              : DatabaseDescriptor.getWriteRpcTimeout();
+        return TimeUnit.MILLISECONDS.toNanos(requestTimeout) - (System.nanoTime() - queryStartNanoTime);
     }
 
     /**
@@ -144,7 +143,7 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
      * on whether the CL was achieved. Only call this after the subclass has completed all it's processing
      * since the subclass instance may be queried to find out if the CL was achieved.
      */
-    protected final void logResponseToIdealCLDelegate(Message<T> m)
+    protected final void logResponseToIdealCLDelegate(MessageIn<T> m)
     {
         //Tracking ideal CL was not configured
         if (idealCLDelegate == null)
@@ -163,7 +162,7 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
             //Let the delegate do full processing, this will loop back into the branch above
             //with idealCLDelegate == this, because the ideal write handler idealCLDelegate will always
             //be set to this in the delegate.
-            idealCLDelegate.onResponse(m);
+            idealCLDelegate.response(m);
         }
     }
 
@@ -188,7 +187,7 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
     }
 
     /**
-     * @return the minimum number of endpoints that must respond.
+     * @return the minimum number of endpoints that must reply.
      */
     protected int blockFor()
     {
@@ -228,7 +227,7 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
     /**
      * null message means "response from local write"
      */
-    public abstract void onResponse(Message<T> msg);
+    public abstract void response(MessageIn<T> msg);
 
     protected void signal()
     {
@@ -250,12 +249,6 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
 
         if (blockFor() + n > candidateReplicaCount())
             signal();
-    }
-
-    @Override
-    public boolean invokeOnFailure()
-    {
-        return true;
     }
 
     @Override
@@ -305,18 +298,18 @@ public abstract class AbstractWriteResponseHandler<T> implements RequestCallback
                                               .map(Schema.instance::getColumnFamilyStoreInstance)
                                               .collect(Collectors.toList());
         for (ColumnFamilyStore cf : cfs)
-            timeout = Math.min(timeout, cf.additionalWriteLatencyNanos);
+            timeout = Math.min(timeout, cf.transientWriteLatencyNanos);
 
         // no latency information, or we're overloaded
-        if (timeout > mutation.getTimeout(NANOSECONDS))
+        if (timeout > TimeUnit.MILLISECONDS.toNanos(mutation.getTimeout()))
             return;
 
         try
         {
-            if (!condition.await(timeout, NANOSECONDS))
+            if (!condition.await(timeout, TimeUnit.NANOSECONDS))
             {
                 for (ColumnFamilyStore cf : cfs)
-                    cf.metric.additionalWrites.inc();
+                    cf.metric.speculativeWrites.inc();
 
                 writePerformer.apply(mutation, replicaPlan.withContact(uncontacted),
                                      (AbstractWriteResponseHandler<IMutation>) this,
