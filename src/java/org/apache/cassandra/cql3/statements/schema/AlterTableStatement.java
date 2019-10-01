@@ -28,7 +28,6 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.schema.*;
 import org.apache.cassandra.schema.Keyspaces.KeyspacesDiff;
 import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.service.reads.repair.ReadRepairStrategy;
 import org.apache.cassandra.transport.Event.SchemaChange;
 import org.apache.cassandra.transport.Event.SchemaChange.Change;
 import org.apache.cassandra.transport.Event.SchemaChange.Target;
@@ -80,11 +79,6 @@ public abstract class AlterTableStatement extends AlterSchemaStatement
     public AuditLogContext getAuditLogContext()
     {
         return new AuditLogContext(AuditLogEntryType.ALTER_TABLE, keyspaceName, tableName);
-    }
-
-    public String toString()
-    {
-        return String.format("%s (%s, %s)", getClass().getSimpleName(), keyspaceName, tableName);
     }
 
     abstract KeyspaceMetadata apply(KeyspaceMetadata keyspace, TableMetadata table);
@@ -166,20 +160,12 @@ public abstract class AlterTableStatement extends AlterSchemaStatement
             {
                 // After #8099, not safe to re-add columns of incompatible types - until *maybe* deser logic with dropped
                 // columns is pushed deeper down the line. The latter would still be problematic in cases of schema races.
-                if (!type.isValueCompatibleWith(droppedColumn.type))
+                if (!droppedColumn.type.isValueCompatibleWith(type))
                 {
-                    throw ire("Cannot re-add previously dropped column '%s' of type %s, incompatible with previous type %s",
+                    throw ire("Cannot re-add a previously dropped column '%s' of type %s, incompatible with previous type %s",
                               name,
                               type.asCQL3Type(),
                               droppedColumn.type.asCQL3Type());
-                }
-
-                if (droppedColumn.isStatic() != isStatic)
-                {
-                    throw ire("Cannot re-add previously dropped column '%s' of kind %s, incompatible with previous kind %s",
-                              name,
-                              isStatic ? ColumnMetadata.Kind.STATIC : ColumnMetadata.Kind.REGULAR,
-                              droppedColumn.kind);
                 }
 
                 // Cannot re-add a dropped counter column. See #7831.
@@ -367,12 +353,6 @@ public abstract class AlterTableStatement extends AlterSchemaStatement
                           "undelivered updates. Setting gc_grace_seconds too low might " +
                           "cause undelivered updates to expire " +
                           "before being replayed.");
-            }
-
-            if (keyspace.createReplicationStrategy().hasTransientReplicas()
-                && params.readRepair != ReadRepairStrategy.NONE)
-            {
-                throw ire("read_repair must be set to 'NONE' for transiently replicated keyspaces");
             }
 
             return keyspace.withSwapped(keyspace.tables.withSwapped(table.withSwapped(params)));

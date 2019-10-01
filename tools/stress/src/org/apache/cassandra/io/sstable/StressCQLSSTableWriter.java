@@ -22,7 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -46,6 +45,7 @@ import org.apache.cassandra.cql3.functions.UDHelper;
 import org.apache.cassandra.cql3.statements.UpdateStatement;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.UserType;
+import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.exceptions.InvalidRequestException;
@@ -246,16 +246,15 @@ public class StressCQLSSTableWriter implements Closeable
         List<ByteBuffer> keys = insert.buildPartitionKeyNames(options);
         SortedSet<Clustering> clusterings = insert.createClustering(options);
 
-        long now = System.currentTimeMillis();
+        long now = System.currentTimeMillis() * 1000;
         // Note that we asks indexes to not validate values (the last 'false' arg below) because that triggers a 'Keyspace.open'
         // and that forces a lot of initialization that we don't want.
         UpdateParameters params = new UpdateParameters(insert.metadata(),
                                                        insert.updatedColumns(),
                                                        options,
-                                                       insert.getTimestamp(TimeUnit.MILLISECONDS.toMicros(now), options),
-                                                       (int) TimeUnit.MILLISECONDS.toSeconds(now),
+                                                       insert.getTimestamp(now, options),
                                                        insert.getTimeToLive(options),
-                                                       Collections.emptyMap());
+                                                       Collections.<DecoratedKey, Partition>emptyMap());
 
         try
         {
