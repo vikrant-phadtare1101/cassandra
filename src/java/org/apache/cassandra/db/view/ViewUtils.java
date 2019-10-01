@@ -63,11 +63,11 @@ public final class ViewUtils
     {
         AbstractReplicationStrategy replicationStrategy = Keyspace.open(keyspaceName).getReplicationStrategy();
 
-        String localDataCenter = DatabaseDescriptor.getEndpointSnitch().getLocalDatacenter();
+        String localDataCenter = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddressAndPort());
         EndpointsForToken naturalBaseReplicas = replicationStrategy.getNaturalReplicasForToken(baseToken);
         EndpointsForToken naturalViewReplicas = replicationStrategy.getNaturalReplicasForToken(viewToken);
 
-        Optional<Replica> localReplica = Iterables.tryFind(naturalViewReplicas, Replica::isSelf).toJavaUtil();
+        Optional<Replica> localReplica = Iterables.tryFind(naturalViewReplicas, Replica::isLocal).toJavaUtil();
         if (localReplica.isPresent())
             return localReplica;
 
@@ -93,7 +93,7 @@ public final class ViewUtils
         int baseIdx = -1;
         for (int i=0; i<baseReplicas.size(); i++)
         {
-            if (baseReplicas.get(i).isSelf())
+            if (baseReplicas.get(i).isLocal())
             {
                 baseIdx = i;
                 break;

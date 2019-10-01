@@ -21,11 +21,12 @@ import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.base.Predicate;
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.index.Index;
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTableMultiWriter;
 import org.apache.cassandra.io.sstable.SimpleSSTableMultiWriter;
@@ -214,15 +215,15 @@ public abstract class AbstractCompactionStrategy
      * @param originalCandidates The collection to check for blacklisted SSTables
      * @return list of the SSTables with blacklisted ones filtered out
      */
-    public static List<SSTableReader> filterSuspectSSTables(Iterable<SSTableReader> originalCandidates)
+    public static Iterable<SSTableReader> filterSuspectSSTables(Iterable<SSTableReader> originalCandidates)
     {
-        List<SSTableReader> filtered = new ArrayList<>();
-        for (SSTableReader sstable : originalCandidates)
+        return Iterables.filter(originalCandidates, new Predicate<SSTableReader>()
         {
-            if (!sstable.isMarkedSuspect())
-                filtered.add(sstable);
-        }
-        return filtered;
+            public boolean apply(SSTableReader sstable)
+            {
+                return !sstable.isMarkedSuspect();
+            }
+        });
     }
 
 
@@ -410,8 +411,8 @@ public abstract class AbstractCompactionStrategy
                 ranges.add(new Range<>(overlap.first.getToken(), overlap.last.getToken()));
             long remainingKeys = keys - sstable.estimatedKeysForRanges(ranges);
             // next, calculate what percentage of columns we have within those keys
-            long columns = sstable.getEstimatedCellPerPartitionCount().mean() * remainingKeys;
-            double remainingColumnsRatio = ((double) columns) / (sstable.getEstimatedCellPerPartitionCount().count() * sstable.getEstimatedCellPerPartitionCount().mean());
+            long columns = sstable.getEstimatedColumnCount().mean() * remainingKeys;
+            double remainingColumnsRatio = ((double) columns) / (sstable.getEstimatedColumnCount().count() * sstable.getEstimatedColumnCount().mean());
 
             // return if we still expect to have droppable tombstones in rest of columns
             return remainingColumnsRatio * droppableRatio > tombstoneThreshold;
@@ -533,9 +534,9 @@ public abstract class AbstractCompactionStrategy
                                                        MetadataCollector meta,
                                                        SerializationHeader header,
                                                        Collection<Index> indexes,
-                                                       LifecycleNewTracker lifecycleNewTracker)
+                                                       LifecycleTransaction txn)
     {
-        return SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, pendingRepair, isTransient, cfs.metadata, meta, header, indexes, lifecycleNewTracker);
+        return SimpleSSTableMultiWriter.create(descriptor, keyCount, repairedAt, pendingRepair, isTransient, cfs.metadata, meta, header, indexes, txn);
     }
 
     public boolean supportsEarlyOpen()

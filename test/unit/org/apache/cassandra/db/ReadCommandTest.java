@@ -52,12 +52,9 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.WrappedDataOutputStreamPlus;
-import org.apache.cassandra.locator.EndpointsForToken;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.ReplicaUtils;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.repair.consistent.LocalSessionAccessor;
 import org.apache.cassandra.schema.CachingParams;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -397,9 +394,9 @@ public class ReadCommandTest
         int messagingVersion = MessagingService.current_version;
         FakeOutputStream out = new FakeOutputStream();
         Tracing.instance.newSession(Tracing.TraceType.QUERY);
-        Message<ReadCommand> messageOut = Message.out(Verb.READ_REQ, readCommand);
+        MessageOut<ReadCommand> messageOut = new MessageOut(MessagingService.Verb.READ, readCommand, ReadCommand.serializer);
         long size = messageOut.serializedSize(messagingVersion);
-        Message.serializer.serialize(messageOut, new WrappedDataOutputStreamPlus(out), messagingVersion);
+        messageOut.serialize(new WrappedDataOutputStreamPlus(out), messagingVersion);
         Assert.assertEquals(size, out.count);
     }
 
@@ -629,7 +626,7 @@ public class ReadCommandTest
         cfs.forceBlockingFlush();
         List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
         assertEquals(2, sstables.size());
-        Collections.sort(sstables, SSTableReader.maxTimestampDescending);
+        Collections.sort(sstables, SSTableReader.maxTimestampComparator);
 
         ReadCommand readCommand = Util.cmd(cfs, Util.dk("key")).includeRow("dd").columns("a").build();
 
@@ -682,50 +679,6 @@ public class ReadCommandTest
         withRepairedInfo.trackRepairedStatus();
         Util.getAll(withRepairedInfo);
         assertEquals(cacheHits, cfs.metric.rowCacheHit.getCount());
-    }
-
-    @Test (expected = IllegalArgumentException.class)
-    public void copyFullAsTransientTest()
-    {
-        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(CF6);
-        ReadCommand readCommand = Util.cmd(cfs, Util.dk("key")).build();
-        readCommand.copyAsTransientQuery(ReplicaUtils.full(FBUtilities.getBroadcastAddressAndPort()));
-    }
-
-    @Test (expected = IllegalArgumentException.class)
-    public void copyTransientAsDigestQuery()
-    {
-        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(CF6);
-        ReadCommand readCommand = Util.cmd(cfs, Util.dk("key")).build();
-        readCommand.copyAsDigestQuery(ReplicaUtils.trans(FBUtilities.getBroadcastAddressAndPort()));
-    }
-
-    @Test (expected = IllegalArgumentException.class)
-    public void copyMultipleFullAsTransientTest()
-    {
-        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(CF6);
-        DecoratedKey key = Util.dk("key");
-        Token token = key.getToken();
-        // Address is unimportant for this test
-        InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
-        ReadCommand readCommand = Util.cmd(cfs, key).build();
-        readCommand.copyAsTransientQuery(EndpointsForToken.of(token,
-                                                              ReplicaUtils.trans(addr, token),
-                                                              ReplicaUtils.full(addr, token)));
-    }
-
-    @Test (expected = IllegalArgumentException.class)
-    public void copyMultipleTransientAsDigestQuery()
-    {
-        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(CF6);
-        DecoratedKey key = Util.dk("key");
-        Token token = key.getToken();
-        // Address is unimportant for this test
-        InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
-        ReadCommand readCommand = Util.cmd(cfs, key).build();
-        readCommand.copyAsDigestQuery(EndpointsForToken.of(token,
-                                                           ReplicaUtils.trans(addr, token),
-                                                           ReplicaUtils.full(addr, token)));
     }
 
     private void testRepairedDataTracking(ColumnFamilyStore cfs, ReadCommand readCommand) throws IOException
