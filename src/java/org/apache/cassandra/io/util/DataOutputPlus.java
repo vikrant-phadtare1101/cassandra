@@ -20,6 +20,7 @@ package org.apache.cassandra.io.util;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 
 import org.apache.cassandra.utils.vint.VIntCoding;
 
@@ -32,11 +33,13 @@ public interface DataOutputPlus extends DataOutput
     // write the buffer without modifying its position
     void write(ByteBuffer buffer) throws IOException;
 
-    default void write(Memory memory, long offset, long length) throws IOException
-    {
-        for (ByteBuffer buffer : memory.asByteBuffers(offset, length))
-            write(buffer);
-    }
+    void write(Memory memory, long offset, long length) throws IOException;
+
+    /**
+     * Safe way to operate against the underlying channel. Impossible to stash a reference to the channel
+     * and forget to flush
+     */
+    <R> R applyToChannel(CheckedFunction<WritableByteChannel, R, IOException> c) throws IOException;
 
     default void writeVInt(long i) throws IOException
     {
