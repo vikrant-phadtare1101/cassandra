@@ -273,11 +273,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     public void refreshSizeEstimates() throws ExecutionException;
 
     /**
-     * Removes extraneous entries in system.size_estimates.
-     */
-    public void cleanupSizeEstimates();
-
-    /**
      * Forces major compaction of a single keyspace
      */
     public void forceKeyspaceCompaction(boolean splitOutput, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException;
@@ -358,10 +353,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int repairAsync(String keyspace, Map<String, String> options);
 
     public void forceTerminateAllRepairSessions();
-
-    public void setRepairSessionMaxTreeDepth(int depth);
-
-    public int getRepairSessionMaxTreeDepth();
 
     /**
      * Get the status of a given parent repair session.
@@ -525,12 +516,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     public boolean isJoined();
     public boolean isDrained();
     public boolean isDraining();
-    /** Check if currently bootstrapping.
-     * Note this becomes false before {@link org.apache.cassandra.db.SystemKeyspace#bootstrapComplete()} is called,
-     * as setting bootstrap to complete is called only when the node joins the ring.
-     * @return True prior to bootstrap streaming completing. False prior to start of bootstrap and post streaming.
-     */
-    public boolean isBootstrapMode();
 
     public void setRpcTimeout(long value);
     public long getRpcTimeout();
@@ -576,12 +561,6 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public int getConcurrentValidators();
     public void setConcurrentValidators(int value);
-
-    public int getSSTablePreemptiveOpenIntervalInMB();
-    public void setSSTablePreemptiveOpenIntervalInMB(int intervalInMB);
-
-    public boolean getMigrateKeycacheOnCompaction();
-    public void setMigrateKeycacheOnCompaction(boolean invalidateKeyCacheOnCompaction);
 
     public int getConcurrentViewBuilders();
     public void setConcurrentViewBuilders(int value);
@@ -715,4 +694,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     public boolean isAuditLogEnabled();
     public String getCorruptedTombstoneStrategy();
     public void setCorruptedTombstoneStrategy(String strategy);
+    public void refreshBlacklistedPartitionsCache();
+    public void setBlacklistedPartitionsCacheSizeLimit(int sizeInMB);
 }

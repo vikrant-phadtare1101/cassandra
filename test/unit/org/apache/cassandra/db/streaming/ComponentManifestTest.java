@@ -20,15 +20,18 @@ package org.apache.cassandra.db.streaming;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 
 import org.junit.Test;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.apache.cassandra.io.sstable.Component;
-import org.apache.cassandra.io.util.DataInputBuffer;
-import org.apache.cassandra.io.util.DataOutputBufferFixed;
+import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.net.async.ByteBufDataInputPlus;
+import org.apache.cassandra.net.async.ByteBufDataOutputPlus;
 import org.apache.cassandra.serializers.SerializationUtils;
 
 import static org.junit.Assert.assertNotEquals;
@@ -45,17 +48,17 @@ public class ComponentManifestTest
     @Test(expected = EOFException.class)
     public void testSerialization_FailsOnBadBytes() throws IOException
     {
-        ByteBuffer buf = ByteBuffer.allocate(512);
+        ByteBuf buf = Unpooled.buffer(512);
         ComponentManifest expected = new ComponentManifest(new LinkedHashMap<Component, Long>() {{ put(Component.DATA, 100L); }});
 
-        DataOutputBufferFixed out = new DataOutputBufferFixed(buf);
+        DataOutputPlus output = new ByteBufDataOutputPlus(buf);
+        ComponentManifest.serializer.serialize(expected, output, MessagingService.VERSION_40);
 
-        ComponentManifest.serializer.serialize(expected, out, MessagingService.VERSION_40);
+        buf.setInt(0, -100);
 
-        buf.putInt(0, -100);
+        DataInputPlus input = new ByteBufDataInputPlus(buf);
+        ComponentManifest actual = ComponentManifest.serializer.deserialize(input, MessagingService.VERSION_40);
 
-        DataInputBuffer in = new DataInputBuffer(out.buffer(), false);
-        ComponentManifest actual = ComponentManifest.serializer.deserialize(in, MessagingService.VERSION_40);
         assertNotEquals(expected, actual);
     }
 }
