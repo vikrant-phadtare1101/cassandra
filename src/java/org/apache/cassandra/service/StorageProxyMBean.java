@@ -63,9 +63,7 @@ public interface StorageProxyMBean
     public long getReadRepairRepairedBlocking();
     public long getReadRepairRepairedBackground();
 
-    @Deprecated
     public int getOtcBacklogExpirationInterval();
-    @Deprecated
     public void setOtcBacklogExpirationInterval(int intervalInMillis);
 
     /** Returns each live node's schema version */

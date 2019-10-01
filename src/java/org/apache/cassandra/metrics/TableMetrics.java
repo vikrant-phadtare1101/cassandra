@@ -202,7 +202,7 @@ public class TableMetrics
     /** Time spent waiting for free memtable space, either on- or off-heap */
     public final Histogram waitingOnFreeMemtableSpace;
 
-    @Deprecated
+    /** Dropped Mutations Count */
     public final Counter droppedMutations;
 
     private final MetricNameFactory factory;
@@ -523,7 +523,7 @@ public class TableMetrics
                                                                  {
                                                                      public EstimatedHistogram getHistogram(SSTableReader reader)
                                                                      {
-                                                                         return reader.getEstimatedCellPerPartitionCount();
+                                                                         return reader.getEstimatedColumnCount();
                                                                      }
                                                                  });
             }

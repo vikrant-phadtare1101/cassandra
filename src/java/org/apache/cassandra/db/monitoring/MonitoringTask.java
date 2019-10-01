@@ -39,8 +39,6 @@ import org.apache.cassandra.config.Config;
 import org.apache.cassandra.utils.NoSpamLogger;
 
 import static java.lang.System.getProperty;
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * A task for monitoring in progress operations, currently only read queries, and aborting them if they time out.
@@ -70,7 +68,7 @@ class MonitoringTask
     private final ScheduledFuture<?> reportingTask;
     private final OperationsQueue failedOperationsQueue;
     private final OperationsQueue slowOperationsQueue;
-    private long approxLastLogTimeNanos;
+    private long lastLogTime;
 
 
     @VisibleForTesting
@@ -90,10 +88,10 @@ class MonitoringTask
         this.failedOperationsQueue = new OperationsQueue(maxOperations);
         this.slowOperationsQueue = new OperationsQueue(maxOperations);
 
-        this.approxLastLogTimeNanos = approxTime.now();
+        this.lastLogTime = ApproximateTime.currentTimeMillis();
 
         logger.info("Scheduling monitoring task with report interval of {} ms, max operations {}", reportIntervalMillis, maxOperations);
-        this.reportingTask = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(() -> logOperations(approxTime.now()),
+        this.reportingTask = ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(() -> logOperations(ApproximateTime.currentTimeMillis()),
                                                                                      reportIntervalMillis,
                                                                                      reportIntervalMillis,
                                                                                      TimeUnit.MILLISECONDS);
@@ -104,14 +102,14 @@ class MonitoringTask
         reportingTask.cancel(false);
     }
 
-    static void addFailedOperation(Monitorable operation, long nowNanos)
+    static void addFailedOperation(Monitorable operation, long now)
     {
-        instance.failedOperationsQueue.offer(new FailedOperation(operation, nowNanos));
+        instance.failedOperationsQueue.offer(new FailedOperation(operation, now));
     }
 
-    static void addSlowOperation(Monitorable operation, long nowNanos)
+    static void addSlowOperation(Monitorable operation, long now)
     {
-        instance.slowOperationsQueue.offer(new SlowOperation(operation, nowNanos));
+        instance.slowOperationsQueue.offer(new SlowOperation(operation, now));
     }
 
     @VisibleForTesting
@@ -133,27 +131,27 @@ class MonitoringTask
     }
 
     @VisibleForTesting
-    private void logOperations(long approxCurrentTimeNanos)
+    private void logOperations(long now)
     {
-        logSlowOperations(approxCurrentTimeNanos);
-        logFailedOperations(approxCurrentTimeNanos);
+        logSlowOperations(now);
+        logFailedOperations(now);
 
-        approxLastLogTimeNanos = approxCurrentTimeNanos;
+        lastLogTime = now;
     }
 
     @VisibleForTesting
-    boolean logFailedOperations(long nowNanos)
+    boolean logFailedOperations(long now)
     {
         AggregatedOperations failedOperations = failedOperationsQueue.popOperations();
         if (!failedOperations.isEmpty())
         {
-            long elapsedNanos = nowNanos - approxLastLogTimeNanos;
+            long elapsed = now - lastLogTime;
             noSpamLogger.warn("Some operations timed out, details available at debug level (debug.log)");
 
             if (logger.isDebugEnabled())
                 logger.debug("{} operations timed out in the last {} msecs:{}{}",
                             failedOperations.num(),
-                             NANOSECONDS.toMillis(elapsedNanos),
+                            elapsed,
                             LINE_SEPARATOR,
                             failedOperations.getLogMessage());
             return true;
@@ -163,18 +161,18 @@ class MonitoringTask
     }
 
     @VisibleForTesting
-    boolean logSlowOperations(long approxCurrentTimeNanos)
+    boolean logSlowOperations(long now)
     {
         AggregatedOperations slowOperations = slowOperationsQueue.popOperations();
         if (!slowOperations.isEmpty())
         {
-            long approxElapsedNanos = approxCurrentTimeNanos - approxLastLogTimeNanos;
+            long elapsed = now - lastLogTime;
             noSpamLogger.info("Some operations were slow, details available at debug level (debug.log)");
 
             if (logger.isDebugEnabled())
                 logger.debug("{} operations were slow in the last {} msecs:{}{}",
                              slowOperations.num(),
-                             NANOSECONDS.toMillis(approxElapsedNanos),
+                             elapsed,
                              LINE_SEPARATOR,
                              slowOperations.getLogMessage());
             return true;
@@ -316,7 +314,7 @@ class MonitoringTask
         int numTimesReported;
 
         /** The total time spent by this operation */
-        long totalTimeNanos;
+        long totalTime;
 
         /** The maximum time spent by this operation */
         long maxTime;
@@ -328,13 +326,13 @@ class MonitoringTask
          * this is set lazily as it takes time to build the query CQL */
         private String name;
 
-        Operation(Monitorable operation, long failedAtNanos)
+        Operation(Monitorable operation, long failedAt)
         {
             this.operation = operation;
             numTimesReported = 1;
-            totalTimeNanos = failedAtNanos - operation.creationTimeNanos();
-            minTime = totalTimeNanos;
-            maxTime = totalTimeNanos;
+            totalTime = failedAt - operation.constructionTime();
+            minTime = totalTime;
+            maxTime = totalTime;
         }
 
         public String name()
@@ -347,7 +345,7 @@ class MonitoringTask
         void add(Operation operation)
         {
             numTimesReported++;
-            totalTimeNanos += operation.totalTimeNanos;
+            totalTime += operation.totalTime;
             maxTime = Math.max(maxTime, operation.maxTime);
             minTime = Math.min(minTime, operation.minTime);
         }
@@ -360,9 +358,9 @@ class MonitoringTask
      */
     private final static class FailedOperation extends Operation
     {
-        FailedOperation(Monitorable operation, long failedAtNanos)
+        FailedOperation(Monitorable operation, long failedAt)
         {
-            super(operation, failedAtNanos);
+            super(operation, failedAt);
         }
 
         public String getLogMessage()
@@ -370,17 +368,17 @@ class MonitoringTask
             if (numTimesReported == 1)
                 return String.format("<%s>, total time %d msec, timeout %d %s",
                                      name(),
-                                     NANOSECONDS.toMillis(totalTimeNanos),
-                                     NANOSECONDS.toMillis(operation.timeoutNanos()),
+                                     totalTime,
+                                     operation.timeout(),
                                      operation.isCrossNode() ? "msec/cross-node" : "msec");
             else
                 return String.format("<%s> timed out %d times, avg/min/max %d/%d/%d msec, timeout %d %s",
                                      name(),
                                      numTimesReported,
-                                     NANOSECONDS.toMillis(totalTimeNanos / numTimesReported),
-                                     NANOSECONDS.toMillis(minTime),
-                                     NANOSECONDS.toMillis(maxTime),
-                                     NANOSECONDS.toMillis(operation.timeoutNanos()),
+                                     totalTime / numTimesReported,
+                                     minTime,
+                                     maxTime,
+                                     operation.timeout(),
                                      operation.isCrossNode() ? "msec/cross-node" : "msec");
         }
     }
@@ -400,17 +398,17 @@ class MonitoringTask
             if (numTimesReported == 1)
                 return String.format("<%s>, time %d msec - slow timeout %d %s",
                                      name(),
-                                     NANOSECONDS.toMillis(totalTimeNanos),
-                                     NANOSECONDS.toMillis(operation.slowTimeoutNanos()),
+                                     totalTime,
+                                     operation.slowTimeout(),
                                      operation.isCrossNode() ? "msec/cross-node" : "msec");
             else
                 return String.format("<%s>, was slow %d times: avg/min/max %d/%d/%d msec - slow timeout %d %s",
                                      name(),
                                      numTimesReported,
-                                     NANOSECONDS.toMillis(totalTimeNanos/ numTimesReported),
-                                     NANOSECONDS.toMillis(minTime),
-                                     NANOSECONDS.toMillis(maxTime),
-                                     NANOSECONDS.toMillis(operation.slowTimeoutNanos()),
+                                     totalTime / numTimesReported,
+                                     minTime,
+                                     maxTime,
+                                     operation.slowTimeout(),
                                      operation.isCrossNode() ? "msec/cross-node" : "msec");
         }
     }

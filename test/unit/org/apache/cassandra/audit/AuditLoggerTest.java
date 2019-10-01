@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.audit;
 
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -64,12 +63,6 @@ public class AuditLoggerTest extends CQLTester
         enableAuditLogOptions(options);
     }
 
-    @After
-    public void afterTestMethod()
-    {
-        disableAuditLogOptions();
-    }
-
     private void enableAuditLogOptions(AuditLogOptions options)
     {
         String loggerName = "InMemoryAuditLogger";
@@ -96,7 +89,7 @@ public class AuditLoggerTest extends CQLTester
         execute("INSERT INTO %s (id, v1, v2) VALUES (?, ?, ?)", 2, "trace", "test");
 
         AuditLogOptions options = new AuditLogOptions();
-        options.excluded_keyspaces += ',' + KEYSPACE;
+        options.excluded_keyspaces = KEYSPACE;
         enableAuditLogOptions(options);
 
         String cql = "SELECT id, v1, v2 FROM " + KEYSPACE + '.' + currentTable() + " WHERE id = ?";
@@ -113,7 +106,7 @@ public class AuditLoggerTest extends CQLTester
 
         options = new AuditLogOptions();
         options.included_keyspaces = KEYSPACE;
-        options.excluded_keyspaces += ',' + KEYSPACE;
+        options.excluded_keyspaces = KEYSPACE;
         enableAuditLogOptions(options);
 
         cql = "SELECT id, v1, v2 FROM " + KEYSPACE + '.' + currentTable() + " WHERE id = ?";
@@ -136,7 +129,7 @@ public class AuditLoggerTest extends CQLTester
         execute("INSERT INTO %s (id, v1, v2) VALUES (?, ?, ?)", 2, "trace", "test");
 
         AuditLogOptions options = new AuditLogOptions();
-        options.excluded_keyspaces += ',' + KEYSPACE;
+        options.excluded_keyspaces = KEYSPACE;
         enableAuditLogOptions(options);
 
         String cql = "SELECT id, v1, v2 FROM " + KEYSPACE + '.' + currentTable() + " WHERE id = ?";
@@ -151,7 +144,7 @@ public class AuditLoggerTest extends CQLTester
 
         options = new AuditLogOptions();
         options.included_keyspaces = KEYSPACE;
-        options.excluded_keyspaces += ',' + KEYSPACE;
+        options.excluded_keyspaces = KEYSPACE;
         enableAuditLogOptions(options);
 
         cql = "SELECT id, v1, v2 FROM " + KEYSPACE + '.' + currentTable() + " WHERE id = ?";
@@ -169,9 +162,11 @@ public class AuditLoggerTest extends CQLTester
     public void testAuditLogExceptions()
     {
         AuditLogOptions options = new AuditLogOptions();
-        options.excluded_keyspaces += ',' + KEYSPACE;
+        options.excluded_keyspaces = KEYSPACE;
         enableAuditLogOptions(options);
         Assert.assertTrue(AuditLogManager.getInstance().isAuditingEnabled());
+
+        disableAuditLogOptions();
     }
 
     @Test
@@ -607,7 +602,7 @@ public class AuditLoggerTest extends CQLTester
     {
         AuditLogOptions options = new AuditLogOptions();
         options.included_categories = "QUERY,DML,PREPARE";
-        options.excluded_keyspaces = "system_schema,system_virtual_schema";
+        options.excluded_keyspaces = "system_schema";
         enableAuditLogOptions(options);
 
         Session session = sessionNet();
@@ -625,7 +620,7 @@ public class AuditLoggerTest extends CQLTester
     {
         AuditLogOptions options = new AuditLogOptions();
         options.included_categories = "QUERY,DML,PREPARE";
-        options.excluded_keyspaces = "system,system_schema,system_virtual_schema";
+        options.excluded_keyspaces = "system";
         enableAuditLogOptions(options);
 
         Session session = sessionNet();
