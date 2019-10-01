@@ -20,7 +20,6 @@ package org.apache.cassandra.io.sstable.metadata;
 import java.io.IOException;
 import java.util.EnumSet;
 import java.util.Map;
-import java.util.UUID;
 
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.format.Version;
@@ -71,7 +70,12 @@ public interface IMetadataSerializer
     void mutateLevel(Descriptor descriptor, int newLevel) throws IOException;
 
     /**
-     * Mutate the repairedAt time, pendingRepair ID, and transient status
+     * Mutate repairedAt time
      */
-    public void mutateRepairMetadata(Descriptor descriptor, long newRepairedAt, UUID newPendingRepair, boolean isTransient) throws IOException;
+    void mutateRepairedAt(Descriptor descriptor, long newRepairedAt) throws IOException;
+
+    /**
+     * Replace the sstable metadata file ({@code -Statistics.db}) with the given components.
+     */
+    void rewriteSSTableMetadata(Descriptor descriptor, Map<MetadataType, MetadataComponent> currentComponents) throws IOException;
 }

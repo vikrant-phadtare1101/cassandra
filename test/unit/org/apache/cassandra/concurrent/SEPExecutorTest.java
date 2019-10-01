@@ -22,14 +22,11 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
 
 import org.junit.Assert;
 import org.junit.Test;
 
 import org.apache.cassandra.utils.FBUtilities;
-
-import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class SEPExecutorTest
 {
@@ -59,7 +56,7 @@ public class SEPExecutorTest
         }
 
         // shutdown does not guarantee that threads are actually dead once it exits, only that they will stop promptly afterwards
-        sharedPool.shutdownAndWait(1L, TimeUnit.MINUTES);
+        sharedPool.shutdown();
         for (Thread thread : Thread.getAllStackTraces().keySet())
         {
             if (thread.getName().contains(MAGIC))

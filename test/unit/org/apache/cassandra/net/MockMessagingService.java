@@ -17,16 +17,15 @@
  */
 package org.apache.cassandra.net;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.function.Predicate;
-
-import org.apache.cassandra.locator.InetAddressAndPort;
 
 /**
  * Starting point for mocking {@link MessagingService} interactions. Outgoing messages can be
  * intercepted by first creating a {@link MatcherResponse} by calling {@link MockMessagingService#when(Matcher)}.
- * Alternatively {@link Matcher}s can be created by using helper methods such as {@link #to(InetAddressAndPort)},
- * {@link #verb(Verb)} or {@link #payload(Predicate)} and may also be
+ * Alternatively {@link Matcher}s can be created by using helper methods such as {@link #to(InetAddress)},
+ * {@link #verb(MessagingService.Verb)} or {@link #payload(Predicate)} and may also be
  * nested using {@link MockMessagingService#all(Matcher[])} or {@link MockMessagingService#any(Matcher[])}.
  * After each test, {@link MockMessagingService#cleanup()} must be called for free listeners registered
  * in {@link MessagingService}.
@@ -47,24 +46,23 @@ public class MockMessagingService
     }
 
     /**
-     * Unsubscribes any handlers.
+     * Unsubscribes any handlers added by calling {@link MessagingService#addMessageSink(IMessageSink)}.
      * This should be called after each test.
      */
     public static void cleanup()
     {
-        MessagingService.instance().outboundSink.clear();
-        MessagingService.instance().inboundSink.clear();
+        MessagingService.instance().clearMessageSinks();
     }
 
     /**
      * Creates a matcher that will indicate if the target address of the outgoing message equals the
      * provided address.
      */
-    public static Matcher<InetAddressAndPort> to(String address)
+    public static Matcher<InetAddress> to(String address)
     {
         try
         {
-            return to(InetAddressAndPort.getByName(address));
+            return to(InetAddress.getByName(address));
         }
         catch (UnknownHostException e)
         {
@@ -76,32 +74,24 @@ public class MockMessagingService
      * Creates a matcher that will indicate if the target address of the outgoing message equals the
      * provided address.
      */
-    public static Matcher<InetAddressAndPort> to(InetAddressAndPort address)
+    public static Matcher<InetAddress> to(InetAddress address)
     {
         return (in, to) -> to == address || to.equals(address);
-    }
-
-    /**
-     * Creates a matcher that will indicate if the target address of the outgoing message matches the provided predicate.
-     */
-    public static Matcher<InetAddressAndPort> to(Predicate<InetAddressAndPort> predicate)
-    {
-        return (in, to) -> predicate.test(to);
     }
 
     /**
      * Creates a matcher that will indicate if the verb of the outgoing message equals the
      * provided value.
      */
-    public static Matcher<Verb> verb(Verb verb)
+    public static Matcher<MessagingService.Verb> verb(MessagingService.Verb verb)
     {
-        return (in, to) -> in.verb() == verb;
+        return (in, to) -> in.verb == verb;
     }
 
     /**
      * Creates a matcher based on the result of the provided predicate called with the outgoing message.
      */
-    public static <T> Matcher<T> message(Predicate<Message<T>> fn)
+    public static <T> Matcher<T> message(Predicate<MessageOut<T>> fn)
     {
         return (msg, to) -> fn.test(msg);
     }
@@ -127,7 +117,7 @@ public class MockMessagingService
      */
     public static <T> Matcher<?> all(Matcher<?>... matchers)
     {
-        return (Message<T> out, InetAddressAndPort to) -> {
+        return (MessageOut<T> out, InetAddress to) -> {
             for (Matcher matcher : matchers)
             {
                 if (!matcher.matches(out, to))
@@ -142,7 +132,7 @@ public class MockMessagingService
      */
     public static <T> Matcher<?> any(Matcher<?>... matchers)
     {
-        return (Message<T> out, InetAddressAndPort to) -> {
+        return (MessageOut<T> out, InetAddress to) -> {
             for (Matcher matcher : matchers)
             {
                 if (matcher.matches(out, to))

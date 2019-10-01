@@ -30,8 +30,8 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.SchemaChangeListener;
+import org.apache.cassandra.service.MigrationListener;
+import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
@@ -40,13 +40,14 @@ import org.apache.cassandra.utils.concurrent.Refs;
 /**
  * A very simplistic/crude partition count/size estimator.
  *
- * Exposing per-primary-range estimated partitions count and size in CQL form.
+ * Exposing per-primary-range estimated partitions count and size in CQL form,
+ * as a direct CQL alternative to Thrift's describe_splits_ex().
  *
  * Estimates (per primary range) are calculated and dumped into a system table (system.size_estimates) every 5 minutes.
  *
  * See CASSANDRA-7688.
  */
-public class SizeEstimatesRecorder extends SchemaChangeListener implements Runnable
+public class SizeEstimatesRecorder extends MigrationListener implements Runnable
 {
     private static final Logger logger = LoggerFactory.getLogger(SizeEstimatesRecorder.class);
 
@@ -54,13 +55,13 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
 
     private SizeEstimatesRecorder()
     {
-        Schema.instance.registerListener(this);
+        MigrationManager.instance.register(this);
     }
 
     public void run()
     {
         TokenMetadata metadata = StorageService.instance.getTokenMetadata().cloneOnlyTokenMap();
-        if (!metadata.isMember(FBUtilities.getBroadcastAddressAndPort()))
+        if (!metadata.isMember(FBUtilities.getBroadcastAddress()))
         {
             logger.debug("Node is not part of the ring; not recording size estimates");
             return;
@@ -71,17 +72,16 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
         for (Keyspace keyspace : Keyspace.nonLocalStrategy())
         {
             Collection<Range<Token>> localRanges = StorageService.instance.getPrimaryRangesForEndpoint(keyspace.getName(),
-                    FBUtilities.getBroadcastAddressAndPort());
+                    FBUtilities.getBroadcastAddress());
             for (ColumnFamilyStore table : keyspace.getColumnFamilyStores())
             {
                 long start = System.nanoTime();
                 recordSizeEstimates(table, localRanges);
                 long passed = System.nanoTime() - start;
-                if (logger.isTraceEnabled())
-                    logger.trace("Spent {} milliseconds on estimating {}.{} size",
-                                 TimeUnit.NANOSECONDS.toMillis(passed),
-                                 table.metadata.keyspace,
-                                 table.metadata.name);
+                logger.trace("Spent {} milliseconds on estimating {}.{} size",
+                             TimeUnit.NANOSECONDS.toMillis(passed),
+                             table.metadata.ksName,
+                             table.metadata.cfName);
             }
         }
     }
@@ -125,7 +125,7 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
         }
 
         // atomically update the estimates.
-        SystemKeyspace.updateSizeEstimates(table.metadata.keyspace, table.metadata.name, estimates);
+        SystemKeyspace.updateSizeEstimates(table.metadata.ksName, table.metadata.cfName, estimates);
     }
 
     private long estimatePartitionsCount(Collection<SSTableReader> sstables, Range<Token> range)
@@ -149,7 +149,7 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
     }
 
     @Override
-    public void onDropTable(String keyspace, String table)
+    public void onDropColumnFamily(String keyspace, String table)
     {
         SystemKeyspace.clearSizeEstimates(keyspace, table);
     }

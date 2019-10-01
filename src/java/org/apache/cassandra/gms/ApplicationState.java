@@ -19,15 +19,15 @@ package org.apache.cassandra.gms;
 
 public enum ApplicationState
 {
-    @Deprecated STATUS, //Deprecated and unsued in 4.0, stop publishing in 5.0, reclaim in 6.0
+    STATUS,
     LOAD,
     SCHEMA,
     DC,
     RACK,
     RELEASE_VERSION,
     REMOVAL_COORDINATOR,
-    @Deprecated INTERNAL_IP, //Deprecated and unused in 4.0, stop publishing in 5.0, reclaim in 6.0
-    @Deprecated RPC_ADDRESS, // ^ Same
+    INTERNAL_IP,
+    RPC_ADDRESS,
     X_11_PADDING, // padding specifically for 1.1
     SEVERITY,
     NET_VERSION,
@@ -35,9 +35,8 @@ public enum ApplicationState
     TOKENS,
     RPC_READY,
     // pad to allow adding new states to existing cluster
-    INTERNAL_ADDRESS_AND_PORT, //Replacement for INTERNAL_IP with up to two ports
-    NATIVE_ADDRESS_AND_PORT, //Replacement for RPC_ADDRESS
-    STATUS_WITH_PORT, //Replacement for STATUS
+    X1,
+    X2,
     X3,
     X4,
     X5,

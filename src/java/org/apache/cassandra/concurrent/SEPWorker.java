@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.concurrent;
 
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -125,7 +124,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
                 assigned.returnWorkPermit();
                 if (shutdown)
                 {
-                    if (assigned.getActiveTaskCount() == 0)
+                    if (assigned.getActiveCount() == 0)
                         assigned.shutdown.signalAll();
                     return;
                 }
@@ -152,9 +151,9 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
             if (assigned != null)
                 assigned.returnWorkPermit();
             if (task != null)
-                logger.error("Failed to execute task, unexpected exception killed worker", t);
+                logger.error("Failed to execute task, unexpected exception killed worker: {}", t);
             else
-                logger.error("Unexpected exception killed worker", t);
+                logger.error("Unexpected exception killed worker: {}", t);
         }
     }
 
@@ -244,7 +243,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
         // we should always have a thread about to wake up, but most threads are sleeping
         long sleep = 10000L * pool.spinningCount.get();
         sleep = Math.min(1000000, sleep);
-        sleep *= ThreadLocalRandom.current().nextDouble();
+        sleep *= Math.random();
         sleep = Math.max(10000, sleep);
 
         long start = System.nanoTime();

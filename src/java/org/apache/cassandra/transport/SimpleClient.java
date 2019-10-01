@@ -28,6 +28,8 @@ import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,17 +40,12 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.handler.ssl.SslContext;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.util.internal.logging.Slf4JLoggerFactory;
-import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.security.SSLFactory;
-import org.apache.cassandra.transport.frame.checksum.ChecksummingTransformer;
-import org.apache.cassandra.transport.frame.compress.CompressingTransformer;
-import org.apache.cassandra.transport.frame.compress.Compressor;
-import org.apache.cassandra.transport.frame.compress.LZ4Compressor;
+import org.apache.cassandra.transport.messages.CredentialsMessage;
 import org.apache.cassandra.transport.messages.ErrorMessage;
 import org.apache.cassandra.transport.messages.EventMessage;
 import org.apache.cassandra.transport.messages.ExecuteMessage;
@@ -56,11 +53,13 @@ import org.apache.cassandra.transport.messages.PrepareMessage;
 import org.apache.cassandra.transport.messages.QueryMessage;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.transport.messages.StartupMessage;
+import org.apache.cassandra.utils.MD5Digest;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
-import org.apache.cassandra.utils.ChecksumType;
+import io.netty.handler.ssl.SslHandler;
+import static org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 
 public class SimpleClient implements Closeable
 {
@@ -72,7 +71,7 @@ public class SimpleClient implements Closeable
     private static final Logger logger = LoggerFactory.getLogger(SimpleClient.class);
     public final String host;
     public final int port;
-    private final EncryptionOptions encryptionOptions;
+    private final ClientEncryptionOptions encryptionOptions;
 
     protected final ResponseHandler responseHandler = new ResponseHandler();
     protected final Connection.Tracker tracker = new ConnectionTracker();
@@ -91,22 +90,22 @@ public class SimpleClient implements Closeable
         }
     };
 
-    public SimpleClient(String host, int port, ProtocolVersion version, EncryptionOptions encryptionOptions)
+    public SimpleClient(String host, int port, ProtocolVersion version, ClientEncryptionOptions encryptionOptions)
     {
         this(host, port, version, false, encryptionOptions);
     }
 
-    public SimpleClient(String host, int port, EncryptionOptions encryptionOptions)
+    public SimpleClient(String host, int port, ClientEncryptionOptions encryptionOptions)
     {
         this(host, port, ProtocolVersion.CURRENT, encryptionOptions);
     }
 
     public SimpleClient(String host, int port, ProtocolVersion version)
     {
-        this(host, port, version, new EncryptionOptions());
+        this(host, port, version, new ClientEncryptionOptions());
     }
 
-    public SimpleClient(String host, int port, ProtocolVersion version, boolean useBeta, EncryptionOptions encryptionOptions)
+    public SimpleClient(String host, int port, ProtocolVersion version, boolean useBeta, ClientEncryptionOptions encryptionOptions)
     {
         this.host = host;
         this.port = port;
@@ -119,39 +118,21 @@ public class SimpleClient implements Closeable
 
     public SimpleClient(String host, int port)
     {
-        this(host, port, new EncryptionOptions());
+        this(host, port, new ClientEncryptionOptions());
     }
 
-    public SimpleClient connect(boolean useCompression, boolean useChecksums) throws IOException
-    {
-        return connect(useCompression, useChecksums, false);
-    }
-
-    public SimpleClient connect(boolean useCompression, boolean useChecksums, boolean throwOnOverload) throws IOException
+    public void connect(boolean useCompression) throws IOException
     {
         establishConnection();
 
         Map<String, String> options = new HashMap<>();
         options.put(StartupMessage.CQL_VERSION, "3.0.0");
-        if (throwOnOverload)
-            options.put(StartupMessage.THROW_ON_OVERLOAD, "1");
-        connection.setThrowOnOverload(throwOnOverload);
-
-        if (useChecksums)
+        if (useCompression)
         {
-            Compressor compressor = useCompression ? LZ4Compressor.INSTANCE : null;
-            connection.setTransformer(ChecksummingTransformer.getTransformer(ChecksumType.CRC32, compressor));
-            options.put(StartupMessage.CHECKSUM, "crc32");
-            options.put(StartupMessage.COMPRESSION, "lz4");
+            options.put(StartupMessage.COMPRESSION, "snappy");
+            connection.setCompressor(FrameCompressor.SnappyCompressor.instance);
         }
-        else if (useCompression)
-        {
-            connection.setTransformer(CompressingTransformer.getTransformer(LZ4Compressor.INSTANCE));
-            options.put(StartupMessage.COMPRESSION, "lz4");
-        }
-
         execute(new StartupMessage(options));
-        return this;
     }
 
     public void setEventHandler(EventHandler eventHandler)
@@ -187,6 +168,13 @@ public class SimpleClient implements Closeable
         }
     }
 
+    public void login(Map<String, String> credentials)
+    {
+        CredentialsMessage msg = new CredentialsMessage();
+        msg.credentials.putAll(credentials);
+        execute(msg);
+    }
+
     public ResultMessage execute(String query, ConsistencyLevel consistency)
     {
         return execute(query, Collections.<ByteBuffer>emptyList(), consistency);
@@ -201,14 +189,14 @@ public class SimpleClient implements Closeable
 
     public ResultMessage.Prepared prepare(String query)
     {
-        Message.Response msg = execute(new PrepareMessage(query, null));
+        Message.Response msg = execute(new PrepareMessage(query));
         assert msg instanceof ResultMessage.Prepared;
         return (ResultMessage.Prepared)msg;
     }
 
-    public ResultMessage executePrepared(ResultMessage.Prepared prepared, List<ByteBuffer> values, ConsistencyLevel consistency)
+    public ResultMessage executePrepared(byte[] statementId, List<ByteBuffer> values, ConsistencyLevel consistency)
     {
-        Message.Response msg = execute(new ExecuteMessage(prepared.statementId, prepared.resultMetadataId, QueryOptions.forInternalCalls(consistency, values)));
+        Message.Response msg = execute(new ExecuteMessage(MD5Digest.wrap(statementId), QueryOptions.forInternalCalls(consistency, values)));
         assert msg instanceof ResultMessage;
         return (ResultMessage)msg;
     }
@@ -262,8 +250,8 @@ public class SimpleClient implements Closeable
     // Stateless handlers
     private static final Message.ProtocolDecoder messageDecoder = new Message.ProtocolDecoder();
     private static final Message.ProtocolEncoder messageEncoder = new Message.ProtocolEncoder();
-    private static final Frame.InboundBodyTransformer inboundFrameTransformer = new Frame.InboundBodyTransformer();
-    private static final Frame.OutboundBodyTransformer outboundFrameTransformer = new Frame.OutboundBodyTransformer();
+    private static final Frame.Decompressor frameDecompressor = new Frame.Decompressor();
+    private static final Frame.Compressor frameCompressor = new Frame.Compressor();
     private static final Frame.Encoder frameEncoder = new Frame.Encoder();
 
     private static class ConnectionTracker implements Connection.Tracker
@@ -287,8 +275,8 @@ public class SimpleClient implements Closeable
             pipeline.addLast("frameDecoder", new Frame.Decoder(connectionFactory));
             pipeline.addLast("frameEncoder", frameEncoder);
 
-            pipeline.addLast("inboundFrameTransformer", inboundFrameTransformer);
-            pipeline.addLast("outboundFrameTransformer", outboundFrameTransformer);
+            pipeline.addLast("frameDecompressor", frameDecompressor);
+            pipeline.addLast("frameCompressor", frameCompressor);
 
             pipeline.addLast("messageDecoder", messageDecoder);
             pipeline.addLast("messageEncoder", messageEncoder);
@@ -299,12 +287,21 @@ public class SimpleClient implements Closeable
 
     private class SecureInitializer extends Initializer
     {
+        private final SSLContext sslContext;
+
+        public SecureInitializer() throws IOException
+        {
+            this.sslContext = SSLFactory.createSSLContext(encryptionOptions, true);
+        }
+
         protected void initChannel(Channel channel) throws Exception
         {
             super.initChannel(channel);
-            SslContext sslContext = SSLFactory.getOrCreateSslContext(encryptionOptions, encryptionOptions.require_client_auth,
-                                                                     SSLFactory.SocketType.CLIENT);
-            channel.pipeline().addFirst("ssl", sslContext.newHandler(channel.alloc()));
+            SSLEngine sslEngine = sslContext.createSSLEngine();
+            sslEngine.setUseClientMode(true);
+            String[] suites = SSLFactory.filterCipherSuites(sslEngine.getSupportedCipherSuites(), encryptionOptions.cipher_suites);
+            sslEngine.setEnabledCipherSuites(suites);
+            channel.pipeline().addFirst("ssl", new SslHandler(sslEngine));
         }
     }
 

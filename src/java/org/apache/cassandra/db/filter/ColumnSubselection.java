@@ -21,16 +21,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Comparator;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.db.rows.CellPath;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.db.rows.CellPath;
-import org.apache.cassandra.exceptions.UnknownColumnException;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -45,28 +44,28 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
 
     private enum Kind { SLICE, ELEMENT }
 
-    protected final ColumnMetadata column;
+    protected final ColumnDefinition column;
 
-    protected ColumnSubselection(ColumnMetadata column)
+    protected ColumnSubselection(ColumnDefinition column)
     {
         this.column = column;
     }
 
-    public static ColumnSubselection slice(ColumnMetadata column, CellPath from, CellPath to)
+    public static ColumnSubselection slice(ColumnDefinition column, CellPath from, CellPath to)
     {
         assert column.isComplex() && column.type instanceof CollectionType;
         assert from.size() <= 1 && to.size() <= 1;
         return new Slice(column, from, to);
     }
 
-    public static ColumnSubselection element(ColumnMetadata column, CellPath elt)
+    public static ColumnSubselection element(ColumnDefinition column, CellPath elt)
     {
         assert column.isComplex() && column.type instanceof CollectionType;
         assert elt.size() == 1;
         return new Element(column, elt);
     }
 
-    public ColumnMetadata column()
+    public ColumnDefinition column()
     {
         return column;
     }
@@ -92,7 +91,7 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
         private final CellPath from;
         private final CellPath to;
 
-        private Slice(ColumnMetadata column, CellPath from, CellPath to)
+        private Slice(ColumnDefinition column, CellPath from, CellPath to)
         {
             super(column);
             this.from = from;
@@ -133,7 +132,7 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
     {
         private final CellPath element;
 
-        private Element(ColumnMetadata column, CellPath elt)
+        private Element(ColumnDefinition column, CellPath elt)
         {
             super(column);
             this.element = elt;
@@ -167,7 +166,7 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
     {
         public void serialize(ColumnSubselection subSel, DataOutputPlus out, int version) throws IOException
         {
-            ColumnMetadata column = subSel.column();
+            ColumnDefinition column = subSel.column();
             ByteBufferUtil.writeWithShortLength(column.name.bytes, out);
             out.writeByte(subSel.kind().ordinal());
             switch (subSel.kind())
@@ -186,18 +185,18 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
             }
         }
 
-        public ColumnSubselection deserialize(DataInputPlus in, int version, TableMetadata metadata) throws IOException
+        public ColumnSubselection deserialize(DataInputPlus in, int version, CFMetaData metadata) throws IOException
         {
             ByteBuffer name = ByteBufferUtil.readWithShortLength(in);
-            ColumnMetadata column = metadata.getColumn(name);
+            ColumnDefinition column = metadata.getColumnDefinition(name);
             if (column == null)
             {
                 // If we don't find the definition, it could be we have data for a dropped column, and we shouldn't
-                // fail deserialization because of that. So we grab a "fake" ColumnMetadata that ensure proper
+                // fail deserialization because of that. So we grab a "fake" ColumnDefinition that ensure proper
                 // deserialization. The column will be ignore later on anyway.
-                column = metadata.getDroppedColumn(name);
+                column = metadata.getDroppedColumnDefinition(name);
                 if (column == null)
-                    throw new UnknownColumnException("Unknown column " + UTF8Type.instance.getString(name) + " during deserialization");
+                    throw new RuntimeException("Unknown column " + UTF8Type.instance.getString(name) + " during deserialization");
             }
 
             Kind kind = Kind.values()[in.readUnsignedByte()];
@@ -218,7 +217,7 @@ public abstract class ColumnSubselection implements Comparable<ColumnSubselectio
         {
             long size = 0;
 
-            ColumnMetadata column = subSel.column();
+            ColumnDefinition column = subSel.column();
             size += TypeSizes.sizeofWithShortLength(column.name.bytes);
             size += 1; // kind
             switch (subSel.kind())

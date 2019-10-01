@@ -398,7 +398,7 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
     /**
      * The length of values for this type if all values are of fixed length, -1 otherwise.
      */
-    public int valueLengthIfFixed()
+    protected int valueLengthIfFixed()
     {
         return -1;
     }
@@ -456,57 +456,14 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
             ByteBufferUtil.skipWithVIntLength(in);
     }
 
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean referencesUserType(String userTypeName)
     {
         return false;
-    }
-
-    /**
-     * Returns an instance of this type with all references to the provided user type recursively replaced with its new
-     * definition.
-     */
-    public AbstractType<?> withUpdatedUserType(UserType udt)
-    {
-        return this;
-    }
-
-    /**
-     * Replace any instances of UserType with equivalent TupleType-s.
-     *
-     * We need it for dropped_columns, to allow safely dropping unused user types later without retaining any references
-     * to them in system_schema.dropped_columns.
-     */
-    public AbstractType<?> expandUserTypes()
-    {
-        return this;
     }
 
     public boolean referencesDuration()
     {
         return false;
-    }
-
-    /**
-     * Tests whether a CQL value having this type can be assigned to the provided receiver.
-     */
-    public AssignmentTestable.TestResult testAssignment(AbstractType<?> receiverType)
-    {
-        // testAssignement is for CQL literals and native protocol values, none of which make a meaningful
-        // difference between frozen or not and reversed or not.
-
-        if (isFreezable() && !isMultiCell())
-            receiverType = receiverType.freeze();
-
-        if (isReversed() && !receiverType.isReversed())
-            receiverType = ReversedType.getInstance(receiverType);
-
-        if (equals(receiverType))
-            return AssignmentTestable.TestResult.EXACT_MATCH;
-
-        if (receiverType.isValueCompatibleWith(this))
-            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-
-        return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
     }
 
     /**
@@ -522,6 +479,17 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
         return getClass().getName();
     }
 
+    /**
+     * Checks to see if two types are equal when ignoring or not ignoring differences in being frozen, depending on
+     * the value of the ignoreFreezing parameter.
+     * @param other type to compare
+     * @param ignoreFreezing if true, differences in the types being frozen will be ignored
+     */
+    public boolean equals(Object other, boolean ignoreFreezing)
+    {
+        return this.equals(other);
+    }
+
     public void checkComparable()
     {
         switch (comparisonType)
@@ -533,6 +501,21 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>, Assignm
 
     public final AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
     {
-        return testAssignment(receiver.type);
+        // We should ignore the fact that the output type is frozen in our comparison as functions do not support
+        // frozen types for arguments
+        AbstractType<?> receiverType = receiver.type;
+        if (isFreezable() && !isMultiCell())
+            receiverType = receiverType.freeze();
+
+        if (isReversed())
+            receiverType = ReversedType.getInstance(receiverType);
+
+        if (equals(receiverType))
+            return AssignmentTestable.TestResult.EXACT_MATCH;
+
+        if (receiverType.isValueCompatibleWith(this))
+            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+        return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
     }
 }

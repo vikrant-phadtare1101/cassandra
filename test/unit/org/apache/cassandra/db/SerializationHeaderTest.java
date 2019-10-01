@@ -19,6 +19,8 @@
 package org.apache.cassandra.db;
 
 import com.google.common.io.Files;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.compaction.OperationType;
@@ -39,9 +41,6 @@ import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.io.sstable.format.big.BigTableWriter;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -66,36 +65,28 @@ public class SerializationHeaderTest
     public void testWrittenAsDifferentKind() throws Exception
     {
         final String tableName = "testWrittenAsDifferentKind";
-//        final String schemaCqlWithStatic = String.format("CREATE TABLE %s (k int, c int, v int static, PRIMARY KEY(k, c))", tableName);
-//        final String schemaCqlWithRegular = String.format("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY(k, c))", tableName);
+        final String schemaCqlWithStatic = String.format("CREATE TABLE %s (k int, c int, v int static, PRIMARY KEY(k, c))", tableName);
+        final String schemaCqlWithRegular = String.format("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY(k, c))", tableName);
         ColumnIdentifier v = ColumnIdentifier.getInterned("v", false);
-        TableMetadata schemaWithStatic = TableMetadata.builder(KEYSPACE, tableName)
-                .addPartitionKeyColumn("k", Int32Type.instance)
-                .addClusteringColumn("c", Int32Type.instance)
-                .addStaticColumn("v", Int32Type.instance)
-                .build();
-        TableMetadata schemaWithRegular = TableMetadata.builder(KEYSPACE, tableName)
-                .addPartitionKeyColumn("k", Int32Type.instance)
-                .addClusteringColumn("c", Int32Type.instance)
-                .addRegularColumn("v", Int32Type.instance)
-                .build();
-        ColumnMetadata columnStatic = schemaWithStatic.getColumn(v);
-        ColumnMetadata columnRegular = schemaWithRegular.getColumn(v);
-        schemaWithStatic = schemaWithStatic.unbuild().recordColumnDrop(columnRegular, 0L).build();
-        schemaWithRegular = schemaWithRegular.unbuild().recordColumnDrop(columnStatic, 0L).build();
+        CFMetaData schemaWithStatic = CFMetaData.compile(schemaCqlWithStatic, KEYSPACE);
+        CFMetaData schemaWithRegular = CFMetaData.compile(schemaCqlWithRegular, KEYSPACE);
+        ColumnDefinition columnStatic = schemaWithStatic.getColumnDefinition(v);
+        ColumnDefinition columnRegular = schemaWithRegular.getColumnDefinition(v);
+        schemaWithStatic.recordColumnDrop(columnRegular, 0L);
+        schemaWithRegular.recordColumnDrop(columnStatic, 0L);
 
         final AtomicInteger generation = new AtomicInteger();
         File dir = Files.createTempDir();
         try
         {
-            BiFunction<TableMetadata, Function<ByteBuffer, Clustering>, Callable<Descriptor>> writer = (schema, clusteringFunction) -> () -> {
-                Descriptor descriptor = new Descriptor(BigFormat.latestVersion, dir, schema.keyspace, schema.name, generation.incrementAndGet(), SSTableFormat.Type.BIG);
+            BiFunction<CFMetaData, Function<ByteBuffer, Clustering>, Callable<Descriptor>> writer = (schema, clusteringFunction) -> () -> {
+                Descriptor descriptor = new Descriptor(BigFormat.latestVersion, dir, schema.ksName, schema.cfName, generation.incrementAndGet(), SSTableFormat.Type.BIG, Component.DIGEST_CRC32);
 
                 SerializationHeader header = SerializationHeader.makeWithoutStats(schema);
                 try (LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
-                     SSTableWriter sstableWriter = BigTableWriter.create(TableMetadataRef.forOfflineTools(schema), descriptor, 1, 0L, null, false, 0, header, Collections.emptyList(),  txn))
+                     SSTableWriter sstableWriter = BigTableWriter.create(schema, descriptor, 1, 0L, 0, header, Collections.emptyList(),  txn))
                 {
-                    ColumnMetadata cd = schema.getColumn(v);
+                    ColumnDefinition cd = schema.getColumnDefinition(v);
                     for (int i = 0 ; i < 5 ; ++i) {
                         final ByteBuffer value = Int32Type.instance.decompose(i);
                         Cell cell = BufferCell.live(cd, 1L, value);
@@ -111,8 +102,8 @@ public class SerializationHeaderTest
 
             Descriptor sstableWithRegular = writer.apply(schemaWithRegular, BufferClustering::new).call();
             Descriptor sstableWithStatic = writer.apply(schemaWithStatic, value -> Clustering.STATIC_CLUSTERING).call();
-            SSTableReader readerWithStatic = SSTableReader.openNoValidation(sstableWithStatic, TableMetadataRef.forOfflineTools(schemaWithRegular));
-            SSTableReader readerWithRegular = SSTableReader.openNoValidation(sstableWithRegular, TableMetadataRef.forOfflineTools(schemaWithStatic));
+            SSTableReader readerWithStatic = SSTableReader.openNoValidation(sstableWithStatic, schemaWithRegular);
+            SSTableReader readerWithRegular = SSTableReader.openNoValidation(sstableWithRegular, schemaWithStatic);
 
             try (ISSTableScanner partitions = readerWithStatic.getScanner()) {
                 for (int i = 0 ; i < 5 ; ++i)
