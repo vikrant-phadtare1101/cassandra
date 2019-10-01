@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import org.apache.cassandra.audit.AuditLogContext;
 import org.apache.cassandra.audit.AuditLogEntryType;
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.auth.IRoleManager.Option;
@@ -59,13 +58,13 @@ public class AlterRoleStatement extends AuthenticationStatement
         if (opts.isEmpty() && dcPermissions == null)
             throw new InvalidRequestException("ALTER [ROLE|USER] can't be empty");
 
-        // validate login here before authorize to avoid leaking user existence to anonymous users.
+        // validate login here before checkAccess to avoid leaking user existence to anonymous users.
         state.ensureNotAnonymous();
         if (!DatabaseDescriptor.getRoleManager().isExistingRole(role))
             throw new InvalidRequestException(String.format("%s doesn't exist", role.getRoleName()));
     }
 
-    public void authorize(ClientState state) throws UnauthorizedException
+    public void checkAccess(ClientState state) throws UnauthorizedException
     {
         AuthenticatedUser user = state.getUser();
         boolean isSuper = user.isSuper();

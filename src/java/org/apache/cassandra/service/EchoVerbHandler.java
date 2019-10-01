@@ -19,23 +19,28 @@ package org.apache.cassandra.service;
  * under the License.
  *
  */
+
+
+import org.apache.cassandra.gms.EchoMessage;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.NoPayload;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class EchoVerbHandler implements IVerbHandler<NoPayload>
-{
-    public static final EchoVerbHandler instance = new EchoVerbHandler();
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType;
 
+public class EchoVerbHandler implements IVerbHandler<EchoMessage>
+{
     private static final Logger logger = LoggerFactory.getLogger(EchoVerbHandler.class);
 
-    public void doVerb(Message<NoPayload> message)
+    public void doVerb(MessageIn<EchoMessage> message, int id)
     {
-        logger.trace("Sending ECHO_RSP to {}", message.from());
-        MessagingService.instance().send(message.emptyResponse(), message.from());
+        MessageOut<EchoMessage> echoMessage = new MessageOut<EchoMessage>(MessagingService.Verb.REQUEST_RESPONSE, EchoMessage.instance,
+                                                                          EchoMessage.serializer, ConnectionType.GOSSIP);
+        logger.trace("Sending a EchoMessage reply {}", message.from);
+        MessagingService.instance().sendReply(echoMessage, id, message.from);
     }
 }

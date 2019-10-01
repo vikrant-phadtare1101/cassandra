@@ -44,7 +44,6 @@ import static java.lang.String.format;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toSet;
 
-import static com.google.common.collect.Iterables.any;
 import static com.google.common.collect.Iterables.transform;
 import static org.apache.cassandra.schema.IndexMetadata.isNameValid;
 
@@ -203,21 +202,6 @@ public final class TableMetadata
     public boolean isIndex()
     {
         return kind == Kind.INDEX;
-    }
-
-    public TableMetadata withSwapped(TableParams params)
-    {
-        return unbuild().params(params).build();
-    }
-
-    public TableMetadata withSwapped(Triggers triggers)
-    {
-        return unbuild().triggers(triggers).build();
-    }
-
-    public TableMetadata withSwapped(Indexes indexes)
-    {
-        return unbuild().indexes(indexes).build();
     }
 
     public boolean isView()
@@ -434,62 +418,42 @@ public final class TableMetadata
         indexes.validate(this);
     }
 
-    void validateCompatibility(TableMetadata previous)
+    void validateCompatibility(TableMetadata other)
     {
         if (isIndex())
             return;
 
-        if (!previous.keyspace.equals(keyspace))
-            except("Keyspace mismatch (found %s; expected %s)", keyspace, previous.keyspace);
+        if (!other.keyspace.equals(keyspace))
+            except("Keyspace mismatch (found %s; expected %s)", other.keyspace, keyspace);
 
-        if (!previous.name.equals(name))
-            except("Table mismatch (found %s; expected %s)", name, previous.name);
+        if (!other.name.equals(name))
+            except("Table mismatch (found %s; expected %s)", other.name, name);
 
-        if (!previous.id.equals(id))
-            except("Table ID mismatch (found %s; expected %s)", id, previous.id);
+        if (!other.id.equals(id))
+            except("Table ID mismatch (found %s; expected %s)", other.id, id);
 
-        if (!previous.flags.equals(flags))
-            except("Table type mismatch (found %s; expected %s)", flags, previous.flags);
+        if (!other.flags.equals(flags))
+            except("Table type mismatch (found %s; expected %s)", other.flags, flags);
 
-        if (previous.partitionKeyColumns.size() != partitionKeyColumns.size())
-        {
-            except("Partition keys of different length (found %s; expected %s)",
-                   partitionKeyColumns.size(),
-                   previous.partitionKeyColumns.size());
-        }
+        if (other.partitionKeyColumns.size() != partitionKeyColumns.size())
+            except("Partition keys of different length (found %s; expected %s)", other.partitionKeyColumns.size(), partitionKeyColumns.size());
 
         for (int i = 0; i < partitionKeyColumns.size(); i++)
-        {
-            if (!partitionKeyColumns.get(i).type.isCompatibleWith(previous.partitionKeyColumns.get(i).type))
-            {
-                except("Partition key column mismatch (found %s; expected %s)",
-                       partitionKeyColumns.get(i).type,
-                       previous.partitionKeyColumns.get(i).type);
-            }
-        }
+            if (!other.partitionKeyColumns.get(i).type.isCompatibleWith(partitionKeyColumns.get(i).type))
+                except("Partition key column mismatch (found %s; expected %s)", other.partitionKeyColumns.get(i).type, partitionKeyColumns.get(i).type);
 
-        if (previous.clusteringColumns.size() != clusteringColumns.size())
-        {
-            except("Clustering columns of different length (found %s; expected %s)",
-                   clusteringColumns.size(),
-                   previous.clusteringColumns.size());
-        }
+        if (other.clusteringColumns.size() != clusteringColumns.size())
+            except("Clustering columns of different length (found %s; expected %s)", other.clusteringColumns.size(), clusteringColumns.size());
 
         for (int i = 0; i < clusteringColumns.size(); i++)
-        {
-            if (!clusteringColumns.get(i).type.isCompatibleWith(previous.clusteringColumns.get(i).type))
-            {
-                except("Clustering column mismatch (found %s; expected %s)",
-                       clusteringColumns.get(i).type,
-                       previous.clusteringColumns.get(i).type);
-            }
-        }
+            if (!other.clusteringColumns.get(i).type.isCompatibleWith(clusteringColumns.get(i).type))
+                except("Clustering column mismatch (found %s; expected %s)", other.clusteringColumns.get(i).type, clusteringColumns.get(i).type);
 
-        for (ColumnMetadata previousColumn : previous.regularAndStaticColumns)
+        for (ColumnMetadata otherColumn : other.regularAndStaticColumns)
         {
-            ColumnMetadata column = getColumn(previousColumn.name);
-            if (column != null && !column.type.isCompatibleWith(previousColumn.type))
-                except("Column mismatch (found %s; expected %s)", column, previousColumn);
+            ColumnMetadata column = getColumn(otherColumn.name);
+            if (column != null && !otherColumn.type.isCompatibleWith(column.type))
+                except("Column mismatch (found %s; expected %s", otherColumn, column);
         }
     }
 
@@ -508,7 +472,7 @@ public final class TableMetadata
      * This method should only be called for superColumn tables and "static
      * compact" ones. For any other table, all column names are UTF8.
      */
-    AbstractType<?> staticCompactOrSuperTableColumnNameType()
+    public AbstractType<?> staticCompactOrSuperTableColumnNameType()
     {
         if (isSuper())
         {
@@ -579,22 +543,6 @@ public final class TableMetadata
         return unbuild().params(builder.build()).build();
     }
 
-    boolean referencesUserType(ByteBuffer name)
-    {
-        return any(columns(), c -> c.type.referencesUserType(name));
-    }
-
-    public TableMetadata withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        Builder builder = unbuild();
-        columns().forEach(c -> builder.alterColumnType(c.name, c.type.withUpdatedUserType(udt)));
-
-        return builder.build();
-    }
-
     private void except(String format, Object... args)
     {
         throw new ConfigurationException(keyspace + "." + name + ": " + format(format, args));
@@ -611,11 +559,6 @@ public final class TableMetadata
 
         TableMetadata tm = (TableMetadata) o;
 
-        return equalsWithoutColumns(tm) && columns.equals(tm.columns);
-    }
-
-    private boolean equalsWithoutColumns(TableMetadata tm)
-    {
         return keyspace.equals(tm.keyspace)
             && name.equals(tm.name)
             && id.equals(tm.id)
@@ -623,44 +566,10 @@ public final class TableMetadata
             && kind == tm.kind
             && params.equals(tm.params)
             && flags.equals(tm.flags)
+            && columns.equals(tm.columns)
             && droppedColumns.equals(tm.droppedColumns)
             && indexes.equals(tm.indexes)
             && triggers.equals(tm.triggers);
-    }
-
-    Optional<Difference> compare(TableMetadata other)
-    {
-        return equalsWithoutColumns(other)
-             ? compareColumns(other.columns)
-             : Optional.of(Difference.SHALLOW);
-    }
-
-    private Optional<Difference> compareColumns(Map<ByteBuffer, ColumnMetadata> other)
-    {
-        if (!columns.keySet().equals(other.keySet()))
-            return Optional.of(Difference.SHALLOW);
-
-        boolean differsDeeply = false;
-
-        for (Map.Entry<ByteBuffer, ColumnMetadata> entry : columns.entrySet())
-        {
-            ColumnMetadata thisColumn = entry.getValue();
-            ColumnMetadata thatColumn = other.get(entry.getKey());
-
-            Optional<Difference> difference = thisColumn.compare(thatColumn);
-            if (difference.isPresent())
-            {
-                switch (difference.get())
-                {
-                    case SHALLOW:
-                        return difference;
-                    case DEEP:
-                        differsDeeply = true;
-                }
-            }
-        }
-
-        return differsDeeply ? Optional.of(Difference.DEEP) : Optional.empty();
     }
 
     @Override
@@ -834,12 +743,6 @@ public final class TableMetadata
             return this;
         }
 
-        public Builder additionalWritePolicy(SpeculativeRetryPolicy val)
-        {
-            params.additionalWritePolicy(val);
-            return this;
-        }
-
         public Builder extensions(Map<String, ByteBuffer> val)
         {
             params.extensions(val);
@@ -955,7 +858,7 @@ public final class TableMetadata
             return this;
         }
 
-        Builder addColumns(Iterable<ColumnMetadata> columns)
+        public Builder addColumns(Iterable<ColumnMetadata> columns)
         {
             columns.forEach(this::addColumn);
             return this;
@@ -981,7 +884,7 @@ public final class TableMetadata
 
         public Builder recordColumnDrop(ColumnMetadata column, long timeMicros)
         {
-            droppedColumns.put(column.name.bytes, new DroppedColumn(column.withNewType(column.type.expandUserTypes()), timeMicros));
+            droppedColumns.put(column.name.bytes, new DroppedColumn(column, timeMicros));
             return this;
         }
 
@@ -1047,7 +950,7 @@ public final class TableMetadata
             return this;
         }
 
-        Builder alterColumnType(ColumnIdentifier name, AbstractType<?> type)
+        public Builder alterColumnType(ColumnIdentifier name, AbstractType<?> type)
         {
             ColumnMetadata column = columns.get(name.bytes);
             if (column == null)
@@ -1083,8 +986,6 @@ public final class TableMetadata
      * Currently this is only used by views with normal base column as PK column
      * so updates to other columns do not make the row live when the base column
      * is not live. See CASSANDRA-11500.
-     *
-     * TODO: does not belong here, should be gone
      */
     public boolean enforceStrictLiveness()
     {

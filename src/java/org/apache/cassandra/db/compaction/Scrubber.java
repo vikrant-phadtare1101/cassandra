@@ -23,7 +23,6 @@ import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.*;
@@ -171,7 +170,7 @@ public class Scrubber implements Closeable
             }
 
             StatsMetadata metadata = sstable.getSSTableMetadata();
-            writer.switchWriter(CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, metadata.repairedAt, metadata.pendingRepair, metadata.isTransient, sstable, transaction));
+            writer.switchWriter(CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, metadata.repairedAt, metadata.pendingRepair, sstable, transaction));
 
             DecoratedKey prevKey = null;
 
@@ -278,7 +277,7 @@ public class Scrubber implements Closeable
                 // out of order rows, but no bad rows found - we can keep our repairedAt time
                 long repairedAt = badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : metadata.repairedAt;
                 SSTableReader newInOrderSstable;
-                try (SSTableWriter inOrderWriter = CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, repairedAt, metadata.pendingRepair, metadata.isTransient, sstable, transaction))
+                try (SSTableWriter inOrderWriter = CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, repairedAt, metadata.pendingRepair, sstable, transaction))
                 {
                     for (Partition partition : outOfOrder)
                         inOrderWriter.append(partition.unfilteredIterator());
@@ -356,7 +355,6 @@ public class Scrubber implements Closeable
      * Only wrap with {@link FixNegativeLocalDeletionTimeIterator} if {@link #reinsertOverflowedTTLRows} option
      * is specified
      */
-    @SuppressWarnings("resource")
     private UnfilteredRowIterator getIterator(DecoratedKey key)
     {
         RowMergingSSTableIterator rowMergingIterator = new RowMergingSSTableIterator(SSTableIdentityIterator.create(sstable, dataFile, key));
@@ -476,8 +474,7 @@ public class Scrubber implements Closeable
                                           OperationType.SCRUB,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
-                                          scrubCompactionId,
-                                          ImmutableSet.of(sstable));
+                                          scrubCompactionId);
             }
             catch (Exception e)
             {
@@ -550,7 +547,7 @@ public class Scrubber implements Closeable
                     }
 
                     // Duplicate row, merge it.
-                    next = Rows.merge((Row) next, (Row) peek);
+                    next = Rows.merge((Row) next, (Row) peek, FBUtilities.nowInSeconds());
                 }
             }
 
