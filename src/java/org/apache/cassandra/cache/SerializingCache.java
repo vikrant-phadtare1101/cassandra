@@ -76,7 +76,6 @@ public class SerializingCache<K, V> implements ICache<K, V>
         }, serializer);
     }
 
-    @SuppressWarnings("resource")
     private V deserialize(RefCountedMemory mem)
     {
         try
@@ -90,7 +89,6 @@ public class SerializingCache<K, V> implements ICache<K, V>
         }
     }
 
-    @SuppressWarnings("resource")
     private RefCountedMemory serialize(V value)
     {
         long serializedSize = serializer.serializedSize(value);

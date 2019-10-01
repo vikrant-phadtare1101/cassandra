@@ -18,13 +18,14 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.transport.ProtocolVersion;
@@ -32,11 +33,11 @@ import org.apache.cassandra.transport.ProtocolVersion;
 public class ReversedType<T> extends AbstractType<T>
 {
     // interning instances
-    private static final Map<AbstractType<?>, ReversedType> instances = new ConcurrentHashMap<>();
+    private static final Map<AbstractType<?>, ReversedType> instances = new HashMap<AbstractType<?>, ReversedType>();
 
     public final AbstractType<T> baseType;
 
-    public static <T> ReversedType<T> getInstance(TypeParser parser)
+    public static <T> ReversedType<T> getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
         List<AbstractType<?>> types = parser.getTypeParameters();
         if (types.size() != 1)
@@ -44,12 +45,15 @@ public class ReversedType<T> extends AbstractType<T>
         return getInstance((AbstractType<T>) types.get(0));
     }
 
-    public static <T> ReversedType<T> getInstance(AbstractType<T> baseType)
+    public static synchronized <T> ReversedType<T> getInstance(AbstractType<T> baseType)
     {
-        ReversedType<T> t = instances.get(baseType);
-        return null == t
-             ? instances.computeIfAbsent(baseType, ReversedType::new)
-             : t;
+        ReversedType<T> type = instances.get(baseType);
+        if (type == null)
+        {
+            type = new ReversedType<T>(baseType);
+            instances.put(baseType, type);
+        }
+        return type;
     }
 
     private ReversedType(AbstractType<T> baseType)
@@ -122,27 +126,9 @@ public class ReversedType<T> extends AbstractType<T>
         return baseType.getSerializer();
     }
 
-    @Override
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean referencesUserType(String userTypeName)
     {
-        return baseType.referencesUserType(name);
-    }
-
-    @Override
-    public AbstractType<?> expandUserTypes()
-    {
-        return getInstance(baseType.expandUserTypes());
-    }
-
-    @Override
-    public ReversedType<?> withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        instances.remove(baseType);
-
-        return getInstance(baseType.withUpdatedUserType(udt));
+        return baseType.referencesUserType(userTypeName);
     }
 
     @Override

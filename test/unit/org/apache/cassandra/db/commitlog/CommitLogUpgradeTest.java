@@ -25,7 +25,7 @@ import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.Properties;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 
 import com.google.common.base.Predicate;
 
