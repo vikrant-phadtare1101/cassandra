@@ -105,6 +105,7 @@ public class BootStrapperTest
         InetAddressAndPort myEndpoint = InetAddressAndPort.getByName("127.0.0.1");
 
         assertEquals(numOldNodes, tmd.sortedTokens().size());
+        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, StreamOperation.BOOTSTRAP, true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), false, 1);
         IFailureDetector mockFailureDetector = new IFailureDetector()
         {
             public boolean isAlive(InetAddressAndPort ep)
@@ -119,20 +120,26 @@ public class BootStrapperTest
             public void remove(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
             public void forceConviction(InetAddressAndPort ep) { throw new UnsupportedOperationException(); }
         };
-        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, StreamOperation.BOOTSTRAP, true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), mockFailureDetector, false, 1);
+        s.addSourceFilter(new RangeStreamer.FailureDetectorSourceFilter(mockFailureDetector));
         assertNotNull(Keyspace.open(keyspaceName));
         s.addRanges(keyspaceName, Keyspace.open(keyspaceName).getReplicationStrategy().getPendingAddressRanges(tmd, myToken, myEndpoint));
 
 
-        Multimap<InetAddressAndPort, FetchReplica> toFetch = s.toFetch().get(keyspaceName);
+        Collection<Multimap<InetAddressAndPort, FetchReplica>> toFetch = s.toFetch().get(keyspaceName);
 
         // Check we get get RF new ranges in total
-        assertEquals(replicationFactor, toFetch.size());
+        long rangesCount = toFetch.stream()
+               .map(Multimap::values)
+               .flatMap(Collection::stream)
+               .map(f -> f.remote)
+               .map(Replica::range)
+               .count();
+        assertEquals(replicationFactor, rangesCount);
 
         // there isn't any point in testing the size of these collections for any specific size.  When a random partitioner
         // is used, they will vary.
-        assert toFetch.values().size() > 0;
-        assert toFetch.keys().stream().noneMatch(myEndpoint::equals);
+        assert toFetch.stream().map(Multimap::values).flatMap(Collection::stream).count() > 0;
+        assert toFetch.stream().map(Multimap::keySet).map(Collection::stream).noneMatch(myEndpoint::equals);
         return s;
     }
 
@@ -172,17 +179,6 @@ public class BootStrapperTest
         generateFakeEndpoints(tm, 10, vn);
         InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
         allocateTokensForNode(vn, ks, tm, addr);
-    }
-
-    @Test
-    public void testAllocateTokensLocalRf() throws UnknownHostException
-    {
-        int vn = 16;
-        int allocateTokensForLocalRf = 3;
-        TokenMetadata tm = new TokenMetadata();
-        generateFakeEndpoints(tm, 10, vn);
-        InetAddressAndPort addr = FBUtilities.getBroadcastAddressAndPort();
-        allocateTokensForNode(vn, allocateTokensForLocalRf, tm, addr);
     }
 
     public void testAllocateTokensNetworkStrategy(int rackCount, int replicas) throws UnknownHostException
@@ -252,14 +248,6 @@ public class BootStrapperTest
         tm.updateNormalTokens(tokens, addr);
         SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         verifyImprovement(os, ns);
-    }
-
-    private void allocateTokensForNode(int vn, int rf, TokenMetadata tm, InetAddressAndPort addr)
-    {
-        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, rf, vn, 0);
-        assertEquals(vn, tokens.size());
-        tm.updateNormalTokens(tokens, addr);
-        // SummaryStatistics is not implemented for `allocate_tokens_for_local_replication_factor` so can't be verified
     }
 
     private void verifyImprovement(SummaryStatistics os, SummaryStatistics ns)

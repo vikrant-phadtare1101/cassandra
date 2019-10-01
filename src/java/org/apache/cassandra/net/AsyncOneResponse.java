@@ -17,31 +17,54 @@
  */
 package org.apache.cassandra.net;
 
-import com.google.common.annotations.VisibleForTesting;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import io.netty.util.concurrent.ImmediateEventExecutor;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.AbstractFuture;
 
 /**
  * A callback specialized for returning a value from a single target; that is, this is for messages
  * that we only send to one recipient.
  */
-public class AsyncOneResponse<T> extends AsyncPromise<T> implements RequestCallback<T>
+public class AsyncOneResponse<T> extends AbstractFuture<T> implements IAsyncCallback<T>
 {
-    public AsyncOneResponse()
+    private final long start = System.nanoTime();
+
+    public void response(MessageIn<T> response)
     {
-        super(ImmediateEventExecutor.INSTANCE);
+        set(response.payload);
     }
 
-    public void onResponse(Message<T> response)
+    public boolean isLatencyForSnitch()
     {
-        setSuccess(response.payload);
+        return false;
+    }
+
+    @Override
+    public T get(long timeout, TimeUnit unit) throws TimeoutException
+    {
+        long adjustedTimeout = unit.toNanos(timeout) - (System.nanoTime() - start);
+        if (adjustedTimeout <= 0)
+        {
+            throw new TimeoutException("Operation timed out.");
+        }
+        try
+        {
+            return super.get(adjustedTimeout, TimeUnit.NANOSECONDS);
+        }
+        catch (InterruptedException | ExecutionException e)
+        {
+            throw new AssertionError(e);
+        }
     }
 
     @VisibleForTesting
     public static <T> AsyncOneResponse<T> immediate(T value)
     {
         AsyncOneResponse<T> response = new AsyncOneResponse<>();
-        response.setSuccess(value);
+        response.set(value);
         return response;
     }
 }

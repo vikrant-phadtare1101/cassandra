@@ -109,7 +109,17 @@ public class DiskBoundaryManager
         if (localRanges == null || localRanges.isEmpty())
             return new DiskBoundaries(dirs, null, ringVersion, directoriesVersion);
 
-        List<PartitionPosition> positions = getDiskBoundaries(localRanges, cfs.getPartitioner(), dirs);
+        // note that Range.sort unwraps any wraparound ranges, so we need to sort them here
+        List<Range<Token>> fullLocalRanges = Range.sort(localRanges.stream()
+                                                                   .filter(Replica::isFull)
+                                                                   .map(Replica::range)
+                                                                   .collect(Collectors.toList()));
+        List<Range<Token>> transientLocalRanges = Range.sort(localRanges.stream()
+                                                                        .filter(Replica::isTransient)
+                                                                        .map(Replica::range)
+                                                                        .collect(Collectors.toList()));
+
+        List<PartitionPosition> positions = getDiskBoundaries(fullLocalRanges, transientLocalRanges, cfs.getPartitioner(), dirs);
 
         return new DiskBoundaries(dirs, positions, ringVersion, directoriesVersion);
     }
@@ -123,19 +133,18 @@ public class DiskBoundaryManager
      *
      * The final entry in the returned list will always be the partitioner maximum tokens upper key bound
      */
-    private static List<PartitionPosition> getDiskBoundaries(RangesAtEndpoint replicas, IPartitioner partitioner, Directories.DataDirectory[] dataDirectories)
+    private static List<PartitionPosition> getDiskBoundaries(List<Range<Token>> fullRanges, List<Range<Token>> transientRanges, IPartitioner partitioner, Directories.DataDirectory[] dataDirectories)
     {
         assert partitioner.splitter().isPresent();
 
         Splitter splitter = partitioner.splitter().get();
         boolean dontSplitRanges = DatabaseDescriptor.getNumTokens() > 1;
 
-        List<Splitter.WeightedRange> weightedRanges = new ArrayList<>(replicas.size());
-        // note that Range.sort unwraps any wraparound ranges, so we need to sort them here
-        for (Range<Token> r : Range.sort(replicas.onlyFull().ranges()))
+        List<Splitter.WeightedRange> weightedRanges = new ArrayList<>(fullRanges.size() + transientRanges.size());
+        for (Range<Token> r : fullRanges)
             weightedRanges.add(new Splitter.WeightedRange(1.0, r));
 
-        for (Range<Token> r : Range.sort(replicas.onlyTransient().ranges()))
+        for (Range<Token> r : transientRanges)
             weightedRanges.add(new Splitter.WeightedRange(0.1, r));
 
         weightedRanges.sort(Comparator.comparing(Splitter.WeightedRange::left));
