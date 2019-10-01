@@ -26,7 +26,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.OperationType;
@@ -123,7 +123,7 @@ import org.apache.cassandra.utils.concurrent.OpOrder;
  *
  * The input is the map of index options supplied in the WITH clause of a CREATE INDEX statement.
  *
- * <pre>{@code public static Map<String, String> validateOptions(Map<String, String> options, TableMetadata metadata);}</pre>
+ * <pre>{@code public static Map<String, String> validateOptions(Map<String, String> options, CFMetaData cfm);}</pre>
  *
  * In this version, the base table's metadata is also supplied as an argument.
  * If both overloaded methods are provided, only the one including the base table's metadata will be invoked.
@@ -156,10 +156,9 @@ public interface Index
      */
     public static class CollatedViewIndexBuildingSupport implements IndexBuildingSupport
     {
-        @SuppressWarnings("resource")
         public SecondaryIndexBuilder getIndexBuildTask(ColumnFamilyStore cfs, Set<Index> indexes, Collection<SSTableReader> sstables)
         {
-            return new CollatedViewIndexBuilder(cfs, indexes, new ReducingKeyIterator(sstables), sstables);
+            return new CollatedViewIndexBuilder(cfs, indexes, new ReducingKeyIterator(sstables));
         }
     }
 
@@ -304,7 +303,7 @@ public interface Index
      * @return true if the index depends on the supplied column being present; false if the column may be
      *              safely dropped or modified without adversely affecting the index
      */
-    public boolean dependsOn(ColumnMetadata column);
+    public boolean dependsOn(ColumnDefinition column);
 
     /**
      * Called to determine whether this index can provide a searcher to execute a query on the
@@ -314,7 +313,7 @@ public interface Index
      * @param operator the operator of a search query predicate
      * @return true if this index is capable of supporting such expressions, false otherwise
      */
-    public boolean supportsExpression(ColumnMetadata column, Operator operator);
+    public boolean supportsExpression(ColumnDefinition column, Operator operator);
 
     /**
      * If the index supports custom search expressions using the
@@ -378,7 +377,7 @@ public interface Index
      * This can be empty as an update might only contain partition, range and row deletions, but
      * the indexer is guaranteed to not get any cells for a column that is not part of {@code columns}.
      * @param nowInSec current time of the update operation
-     * @param ctx WriteContext spanning the update operation
+     * @param opGroup operation group spanning the update operation
      * @param transactionType indicates what kind of update is being performed on the base data
      *                        i.e. a write time insert/update/delete or the result of compaction
      * @return the newly created indexer or {@code null} if the index is not interested by the update
@@ -386,9 +385,9 @@ public interface Index
      * that type of transaction, ...).
      */
     public Indexer indexerFor(DecoratedKey key,
-                              RegularAndStaticColumns columns,
+                              PartitionColumns columns,
                               int nowInSec,
-                              WriteContext ctx,
+                              OpOrder.Group opGroup,
                               IndexTransaction.Type transactionType);
 
     /**

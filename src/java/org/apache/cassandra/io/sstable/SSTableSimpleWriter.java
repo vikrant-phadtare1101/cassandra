@@ -22,9 +22,9 @@ import java.io.IOException;
 
 import com.google.common.base.Throwables;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.schema.TableMetadataRef;
 
 /**
  * A SSTable writer that assumes rows are in (partitioner) sorted order.
@@ -39,11 +39,11 @@ import org.apache.cassandra.schema.TableMetadataRef;
 class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
 {
     protected DecoratedKey currentKey;
-    protected PartitionUpdate.Builder update;
+    protected PartitionUpdate update;
 
     private SSTableTxnWriter writer;
 
-    protected SSTableSimpleWriter(File directory, TableMetadataRef metadata, RegularAndStaticColumns columns)
+    protected SSTableSimpleWriter(File directory, CFMetaData metadata, PartitionColumns columns)
     {
         super(directory, metadata, columns);
     }
@@ -56,7 +56,7 @@ class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
         return writer;
     }
 
-    PartitionUpdate.Builder getUpdateFor(DecoratedKey key) throws IOException
+    PartitionUpdate getUpdateFor(DecoratedKey key) throws IOException
     {
         assert key != null;
 
@@ -65,9 +65,9 @@ class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
         if (!key.equals(currentKey))
         {
             if (update != null)
-                writePartition(update.build());
+                writePartition(update);
             currentKey = key;
-            update = new PartitionUpdate.Builder(metadata.get(), currentKey, columns, 4);
+            update = new PartitionUpdate(metadata, currentKey, columns, 4);
         }
 
         assert update != null;
@@ -79,7 +79,7 @@ class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
         try
         {
             if (update != null)
-                writePartition(update.build());
+                writePartition(update);
             if (writer != null)
                 writer.finish(false);
         }

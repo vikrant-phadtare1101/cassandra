@@ -18,11 +18,10 @@
 package org.apache.cassandra.db;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.Objects;
 
-import com.google.common.hash.Hasher;
-
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
 
 public abstract class AbstractClusteringPrefix implements ClusteringPrefix
 {
@@ -42,15 +41,15 @@ public abstract class AbstractClusteringPrefix implements ClusteringPrefix
         return size;
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
         for (int i = 0; i < size(); i++)
         {
             ByteBuffer bb = get(i);
             if (bb != null)
-                HashingUtils.updateBytes(hasher, bb.duplicate());
+                digest.update(bb.duplicate());
         }
-        HashingUtils.updateWithByte(hasher, kind().ordinal());
+        FBUtilities.updateWithByte(digest, kind().ordinal());
     }
 
     @Override

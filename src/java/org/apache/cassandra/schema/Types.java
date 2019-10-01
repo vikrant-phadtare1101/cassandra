@@ -19,7 +19,6 @@ package org.apache.cassandra.schema;
 
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.function.Predicate;
 
 import javax.annotation.Nullable;
 
@@ -32,11 +31,8 @@ import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.exceptions.ConfigurationException;
 
 import static java.lang.String.format;
+import static com.google.common.collect.Iterables.filter;
 import static java.util.stream.Collectors.toList;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
-
 import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
 
 /**
@@ -86,11 +82,6 @@ public final class Types implements Iterable<UserType>
         return types.values().iterator();
     }
 
-    public Iterable<UserType> referencingUserType(ByteBuffer name)
-    {
-        return Iterables.filter(types.values(), t -> t.referencesUserType(name) && !t.name.equals(name));
-    }
-
     /**
      * Get the type with the specified name
      *
@@ -114,18 +105,6 @@ public final class Types implements Iterable<UserType>
         return types.get(name);
     }
 
-    boolean containsType(ByteBuffer name)
-    {
-        return types.containsKey(name);
-    }
-
-    Types filter(Predicate<UserType> predicate)
-    {
-        Builder builder = builder();
-        types.values().stream().filter(predicate).forEach(builder::add);
-        return builder.build();
-    }
-
     /**
      * Create a Types instance with the provided type added
      */
@@ -145,19 +124,12 @@ public final class Types implements Iterable<UserType>
         UserType type =
             get(name).orElseThrow(() -> new IllegalStateException(format("Type %s doesn't exists", name)));
 
-        return without(type);
+        return builder().add(filter(this, t -> t != type)).build();
     }
 
-    public Types without(UserType type)
+    MapDifference<ByteBuffer, UserType> diff(Types other)
     {
-        return filter(t -> t != type);
-    }
-
-    public Types withUpdatedUserType(UserType udt)
-    {
-        return any(this, t -> t.referencesUserType(udt.name))
-             ? builder().add(transform(this, t -> t.withUpdatedUserType(udt))).build()
-             : this;
+        return Maps.difference(types, other.types);
     }
 
     @Override
@@ -183,7 +155,7 @@ public final class Types implements Iterable<UserType>
             if (!thisNext.getKey().equals(otherNext.getKey()))
                 return false;
 
-            if (!thisNext.getValue().equals(otherNext.getValue()))
+            if (!thisNext.getValue().equals(otherNext.getValue(), true))  // ignore freezing
                 return false;
         }
         return true;
@@ -259,7 +231,7 @@ public final class Types implements Iterable<UserType>
             /*
              * build a DAG of UDT dependencies
              */
-            Map<RawUDT, Integer> vertices = Maps.newHashMapWithExpectedSize(definitions.size()); // map values are numbers of referenced types
+            Map<RawUDT, Integer> vertices = new HashMap<>(); // map values are numbers of referenced types
             for (RawUDT udt : definitions)
                 vertices.put(udt, 0);
 
@@ -333,7 +305,7 @@ public final class Types implements Iterable<UserType>
             {
                 List<FieldIdentifier> preparedFieldNames =
                     fieldNames.stream()
-                              .map(FieldIdentifier::forInternalString)
+                              .map(t -> FieldIdentifier.forInternalString(t))
                               .collect(toList());
 
                 List<AbstractType<?>> preparedFieldTypes =
@@ -355,40 +327,6 @@ public final class Types implements Iterable<UserType>
             {
                 return name.equals(((RawUDT) other).name);
             }
-        }
-    }
-
-    static TypesDiff diff(Types before, Types after)
-    {
-        return TypesDiff.diff(before, after);
-    }
-
-    static final class TypesDiff extends Diff<Types, UserType>
-    {
-        private static final TypesDiff NONE = new TypesDiff(Types.none(), Types.none(), ImmutableList.of());
-
-        private TypesDiff(Types created, Types dropped, ImmutableCollection<Altered<UserType>> altered)
-        {
-            super(created, dropped, altered);
-        }
-
-        private static TypesDiff diff(Types before, Types after)
-        {
-            if (before == after)
-                return NONE;
-
-            Types created = after.filter(t -> !before.containsType(t.name));
-            Types dropped = before.filter(t -> !after.containsType(t.name));
-
-            ImmutableList.Builder<Altered<UserType>> altered = ImmutableList.builder();
-            before.forEach(typeBefore ->
-            {
-                UserType typeAfter = after.getNullable(typeBefore.name);
-                if (null != typeAfter)
-                    typeBefore.compare(typeAfter).ifPresent(kind -> altered.add(new Altered<>(typeBefore, typeAfter, kind)));
-            });
-
-            return new TypesDiff(created, dropped, altered.build());
         }
     }
 }

@@ -23,9 +23,9 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import com.google.common.base.Objects;
-import com.google.common.collect.Lists;
 
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -34,9 +34,6 @@ import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.*;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
 
 /**
  * This is essentially like a CompositeType, but it's not primarily meant for comparison, just
@@ -65,9 +62,8 @@ public class TupleType extends AbstractType<ByteBuffer>
     protected TupleType(List<AbstractType<?>> types, boolean freezeInner)
     {
         super(ComparisonType.CUSTOM);
-
         if (freezeInner)
-            this.types = Lists.newArrayList(transform(types, AbstractType::freeze));
+            this.types = types.stream().map(AbstractType::freeze).collect(Collectors.toList());
         else
             this.types = types;
         this.serializer = new TupleSerializer(fieldSerializers(types));
@@ -91,23 +87,9 @@ public class TupleType extends AbstractType<ByteBuffer>
     }
 
     @Override
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean referencesUserType(String name)
     {
-        return any(types, t -> t.referencesUserType(name));
-    }
-
-    @Override
-    public TupleType withUpdatedUserType(UserType udt)
-    {
-        return referencesUserType(udt.name)
-             ? new TupleType(Lists.newArrayList(transform(types, t -> t.withUpdatedUserType(udt))))
-             : this;
-    }
-
-    @Override
-    public AbstractType<?> expandUserTypes()
-    {
-        return new TupleType(Lists.newArrayList(transform(types, AbstractType::expandUserTypes)));
+        return allTypes().stream().anyMatch(f -> f.referencesUserType(name));
     }
 
     @Override
@@ -129,11 +111,6 @@ public class TupleType extends AbstractType<ByteBuffer>
     public List<AbstractType<?>> allTypes()
     {
         return types;
-    }
-
-    public boolean isTuple()
-    {
-        return true;
     }
 
     public int compareCustom(ByteBuffer o1, ByteBuffer o2)
@@ -414,6 +391,12 @@ public class TupleType extends AbstractType<ByteBuffer>
 
         TupleType that = (TupleType)o;
         return types.equals(that.types);
+    }
+
+    @Override
+    public boolean isTuple()
+    {
+        return true;
     }
 
     @Override

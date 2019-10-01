@@ -28,7 +28,7 @@ import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.io.util.RebufferingInputStream;
-import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.utils.Pair;
 import org.caffinitas.ohc.OHCache;
 import org.caffinitas.ohc.OHCacheBuilder;
 
@@ -125,10 +125,12 @@ public class OHCProvider implements CacheProvider<RowCacheKey, IRowCacheEntry>
         private static KeySerializer instance = new KeySerializer();
         public void serialize(RowCacheKey rowCacheKey, ByteBuffer buf)
         {
-            try (DataOutputBuffer dataOutput = new DataOutputBufferFixed(buf))
+            @SuppressWarnings("resource")
+            DataOutputBuffer dataOutput = new DataOutputBufferFixed(buf);
+            try
             {
-                rowCacheKey.tableId.serialize(dataOutput);
-                dataOutput.writeUTF(rowCacheKey.indexName != null ? rowCacheKey.indexName : "");
+                dataOutput.writeUTF(rowCacheKey.ksAndCFName.left);
+                dataOutput.writeUTF(rowCacheKey.ksAndCFName.right);
             }
             catch (IOException e)
             {
@@ -140,14 +142,14 @@ public class OHCProvider implements CacheProvider<RowCacheKey, IRowCacheEntry>
 
         public RowCacheKey deserialize(ByteBuffer buf)
         {
-            TableId tableId = null;
-            String indexName = null;
-            try (DataInputBuffer dataInput = new DataInputBuffer(buf, false))
+            @SuppressWarnings("resource")
+            DataInputBuffer dataInput = new DataInputBuffer(buf, false);
+            String ksName = null;
+            String cfName = null;
+            try
             {
-                tableId = TableId.deserialize(dataInput);
-                indexName = dataInput.readUTF();
-                if (indexName.isEmpty())
-                    indexName = null;
+                ksName = dataInput.readUTF();
+                cfName = dataInput.readUTF();
             }
             catch (IOException e)
             {
@@ -155,15 +157,15 @@ public class OHCProvider implements CacheProvider<RowCacheKey, IRowCacheEntry>
             }
             byte[] key = new byte[buf.getInt()];
             buf.get(key);
-            return new RowCacheKey(tableId, indexName, key);
+            return new RowCacheKey(Pair.create(ksName, cfName), key);
         }
 
         public int serializedSize(RowCacheKey rowCacheKey)
         {
-            return rowCacheKey.tableId.serializedSize()
-                   + TypeSizes.sizeof(rowCacheKey.indexName != null ? rowCacheKey.indexName : "")
-                   + 4
-                   + rowCacheKey.key.length;
+            return TypeSizes.sizeof(rowCacheKey.ksAndCFName.left)
+                    + TypeSizes.sizeof(rowCacheKey.ksAndCFName.right)
+                    + 4
+                    + rowCacheKey.key.length;
         }
     }
 

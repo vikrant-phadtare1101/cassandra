@@ -41,6 +41,7 @@ import org.apache.cassandra.utils.ByteBufferUtil;
  */
 public class SettingsColumn implements Serializable
 {
+
     public final int maxColumnsPerKey;
     public transient List<ByteBuffer> names;
     public final List<String> namestrs;

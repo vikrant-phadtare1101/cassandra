@@ -17,7 +17,7 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 
 public enum Bound
 {
@@ -33,12 +33,12 @@ public enum Bound
     /**
      * Reverses the bound if the column type is a reversed one.
      *
-     * @param columnMetadata the column definition
+     * @param columnDefinition the column definition
      * @return the bound reversed if the column type was a reversed one or the original bound
      */
-    public Bound reverseIfNeeded(ColumnMetadata columnMetadata)
+    public Bound reverseIfNeeded(ColumnDefinition columnDefinition)
     {
-        return columnMetadata.isReversedType() ? reverse() : this;
+        return columnDefinition.isReversedType() ? reverse() : this;
     }
 
     public Bound reverse()

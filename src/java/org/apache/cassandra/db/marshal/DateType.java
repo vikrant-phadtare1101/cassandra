@@ -119,7 +119,7 @@ public class DateType extends AbstractType<Date>
     }
 
     @Override
-    public int valueLengthIfFixed()
+    protected int valueLengthIfFixed()
     {
         return 8;
     }

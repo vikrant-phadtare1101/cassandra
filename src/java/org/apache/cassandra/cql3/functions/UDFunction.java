@@ -27,7 +27,6 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -38,17 +37,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import com.google.common.base.Objects;
-import com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.TypeCodec;
+import com.datastax.driver.core.UserType;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.marshal.UserType;
-import org.apache.cassandra.schema.Difference;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
@@ -56,12 +53,11 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.schema.Functions;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.service.ClientWarn;
+import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
 
 /**
  * Base class for User Defined Functions.
@@ -216,27 +212,9 @@ public abstract class UDFunction extends AbstractFunction implements ScalarFunct
         this.argCodecs = UDHelper.codecsFor(argDataTypes);
         this.returnCodec = UDHelper.codecFor(returnDataType);
         this.calledOnNullInput = calledOnNullInput;
-        KeyspaceMetadata keyspaceMetadata = Schema.instance.getKeyspaceMetadata(name.keyspace);
+        KeyspaceMetadata keyspaceMetadata = Schema.instance.getKSMetaData(name.keyspace);
         this.udfContext = new UDFContextImpl(argNames, argCodecs, returnCodec,
                                              keyspaceMetadata);
-    }
-
-    public static UDFunction tryCreate(FunctionName name,
-                                       List<ColumnIdentifier> argNames,
-                                       List<AbstractType<?>> argTypes,
-                                       AbstractType<?> returnType,
-                                       boolean calledOnNullInput,
-                                       String language,
-                                       String body)
-    {
-        try
-        {
-            return create(name, argNames, argTypes, returnType, calledOnNullInput, language, body);
-        }
-        catch (InvalidRequestException e)
-        {
-            return createBrokenFunction(name, argNames, argTypes, returnType, calledOnNullInput, language, body, e);
-        }
     }
 
     public static UDFunction create(FunctionName name,
@@ -247,7 +225,7 @@ public abstract class UDFunction extends AbstractFunction implements ScalarFunct
                                     String language,
                                     String body)
     {
-        assertUdfsEnabled(language);
+        UDFunction.assertUdfsEnabled(language);
 
         switch (language)
         {
@@ -424,7 +402,7 @@ public abstract class UDFunction extends AbstractFunction implements ScalarFunct
     }
 
     /**
-     * Like {@link #executeAsync(ProtocolVersion, List)} but the first parameter is already in non-serialized form.
+     * Like {@link #executeAsync(int, List)} but the first parameter is already in non-serialized form.
      * Remaining parameters (2nd paramters and all others) are in {@code parameters}.
      * This is used to prevent superfluous (de)serialization of the state of aggregates.
      * Means: scalar functions of aggregates are called using this variant.
@@ -607,89 +585,55 @@ public abstract class UDFunction extends AbstractFunction implements ScalarFunct
     }
 
     @Override
-    public boolean referencesUserType(ByteBuffer name)
-    {
-        return any(argTypes(), t -> t.referencesUserType(name)) || returnType.referencesUserType(name);
-    }
-
-    public UDFunction withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        return tryCreate(name,
-                         argNames,
-                         Lists.newArrayList(transform(argTypes, t -> t.withUpdatedUserType(udt))),
-                         returnType.withUpdatedUserType(udt),
-                         calledOnNullInput,
-                         language,
-                         body);
-    }
-
-    @Override
     public boolean equals(Object o)
     {
         if (!(o instanceof UDFunction))
             return false;
 
         UDFunction that = (UDFunction)o;
-        return equalsWithoutTypes(that)
-            && argTypes.equals(that.argTypes)
-            && returnType.equals(that.returnType);
-    }
-
-    private boolean equalsWithoutTypes(UDFunction other)
-    {
-        return name.equals(other.name)
-            && argTypes.size() == other.argTypes.size()
-            && argNames.equals(other.argNames)
-            && body.equals(other.body)
-            && language.equals(other.language)
-            && calledOnNullInput == other.calledOnNullInput;
-    }
-
-    @Override
-    public Optional<Difference> compare(Function function)
-    {
-        if (!(function instanceof UDFunction))
-            throw new IllegalArgumentException();
-
-        UDFunction other = (UDFunction) function;
-
-        if (!equalsWithoutTypes(other))
-            return Optional.of(Difference.SHALLOW);
-
-        boolean typesDifferDeeply = false;
-
-        if (!returnType.equals(other.returnType))
-        {
-            if (returnType.asCQL3Type().toString().equals(other.returnType.asCQL3Type().toString()))
-                typesDifferDeeply = true;
-            else
-                return Optional.of(Difference.SHALLOW);
-        }
-
-        for (int i = 0; i < argTypes().size(); i++)
-        {
-            AbstractType<?> thisType = argTypes.get(i);
-            AbstractType<?> thatType = other.argTypes.get(i);
-
-            if (!thisType.equals(thatType))
-            {
-                if (thisType.asCQL3Type().toString().equals(thatType.asCQL3Type().toString()))
-                    typesDifferDeeply = true;
-                else
-                    return Optional.of(Difference.SHALLOW);
-            }
-        }
-
-        return typesDifferDeeply ? Optional.of(Difference.DEEP) : Optional.empty();
+        return Objects.equal(name, that.name)
+            && Objects.equal(argNames, that.argNames)
+            && Functions.typesMatch(argTypes, that.argTypes)
+            && Functions.typesMatch(returnType, that.returnType)
+            && Objects.equal(language, that.language)
+            && Objects.equal(body, that.body);
     }
 
     @Override
     public int hashCode()
     {
         return Objects.hashCode(name, Functions.typeHashCode(argTypes), Functions.typeHashCode(returnType), returnType, language, body);
+    }
+
+    public void userTypeUpdated(String ksName, String typeName)
+    {
+        boolean updated = false;
+
+        for (int i = 0; i < argCodecs.length; i++)
+        {
+            DataType dataType = argCodecs[i].getCqlType();
+            if (dataType instanceof UserType)
+            {
+                UserType userType = (UserType) dataType;
+                if (userType.getKeyspace().equals(ksName) && userType.getTypeName().equals(typeName))
+                {
+                    KeyspaceMetadata ksm = Schema.instance.getKSMetaData(ksName);
+                    assert ksm != null;
+
+                    org.apache.cassandra.db.marshal.UserType ut = ksm.types.get(ByteBufferUtil.bytes(typeName)).get();
+
+                    DataType newUserType = UDHelper.driverType(ut);
+                    argCodecs[i] = UDHelper.codecFor(newUserType);
+
+                    argTypes.set(i, ut);
+
+                    updated = true;
+                }
+            }
+        }
+
+        if (updated)
+            MigrationManager.announceNewFunction(this, true);
     }
 
     private static class UDFClassLoader extends ClassLoader

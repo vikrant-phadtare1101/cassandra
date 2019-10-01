@@ -29,6 +29,7 @@ import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
@@ -39,9 +40,8 @@ import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.partitions.AbstractUnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.TableMetadata;
 
 public class CompactionIteratorTest
 {
@@ -52,7 +52,7 @@ public class CompactionIteratorTest
     private static final String CFNAME = "Integer1";
 
     static final DecoratedKey kk;
-    static final TableMetadata metadata;
+    static final CFMetaData metadata;
     private static final int RANGE = 1000;
     private static final int COUNT = 100;
 
@@ -71,7 +71,7 @@ public class CompactionIteratorTest
                                                                          1,
                                                                          UTF8Type.instance,
                                                                          Int32Type.instance,
-                                                                         Int32Type.instance).build());
+                                                                         Int32Type.instance));
     }
 
     // See org.apache.cassandra.db.rows.UnfilteredRowsGenerator.parse for the syntax used in these tests.
@@ -311,67 +311,6 @@ public class CompactionIteratorTest
         }
     }
 
-    @Test
-    public void transformTest()
-    {
-        UnfilteredRowsGenerator generator = new UnfilteredRowsGenerator(metadata.comparator, false);
-        List<List<Unfiltered>> inputLists = parse(new String[] {"10[100] 11[100] 12[100]"}, generator);
-        List<List<Unfiltered>> tombstoneLists = parse(new String[] {}, generator);
-        List<Iterable<UnfilteredRowIterator>> content = ImmutableList.copyOf(Iterables.transform(inputLists, list -> ImmutableList.of(listToIterator(list, kk))));
-        Map<DecoratedKey, Iterable<UnfilteredRowIterator>> transformedSources = new TreeMap<>();
-        transformedSources.put(kk, Iterables.transform(tombstoneLists, list -> listToIterator(list, kk)));
-        try (CompactionController controller = new Controller(Keyspace.openAndGetStore(metadata), transformedSources, GC_BEFORE);
-             CompactionIterator iter = new CompactionIterator(OperationType.COMPACTION,
-                                                              Lists.transform(content, x -> new Scanner(x)),
-                                                              controller, NOW, null))
-        {
-            assertTrue(iter.hasNext());
-            UnfilteredRowIterator rows = iter.next();
-            assertTrue(rows.hasNext());
-            assertNotNull(rows.next());
-
-            iter.stop();
-            try
-            {
-                // Will call Transformation#applyToRow
-                rows.hasNext();
-                fail("Should have thrown CompactionInterruptedException");
-            }
-            catch (CompactionInterruptedException e)
-            {
-                // ignore
-            }
-        }
-    }
-
-    @Test
-    public void transformPartitionTest()
-    {
-        UnfilteredRowsGenerator generator = new UnfilteredRowsGenerator(metadata.comparator, false);
-        List<List<Unfiltered>> inputLists = parse(new String[] {"10[100] 11[100] 12[100]"}, generator);
-        List<List<Unfiltered>> tombstoneLists = parse(new String[] {}, generator);
-        List<Iterable<UnfilteredRowIterator>> content = ImmutableList.copyOf(Iterables.transform(inputLists, list -> ImmutableList.of(listToIterator(list, kk))));
-        Map<DecoratedKey, Iterable<UnfilteredRowIterator>> transformedSources = new TreeMap<>();
-        transformedSources.put(kk, Iterables.transform(tombstoneLists, list -> listToIterator(list, kk)));
-        try (CompactionController controller = new Controller(Keyspace.openAndGetStore(metadata), transformedSources, GC_BEFORE);
-             CompactionIterator iter = new CompactionIterator(OperationType.COMPACTION,
-                                                              Lists.transform(content, x -> new Scanner(x)),
-                                                              controller, NOW, null))
-        {
-            iter.stop();
-            try
-            {
-                // Will call Transformation#applyToPartition
-                iter.hasNext();
-                fail("Should have thrown CompactionInterruptedException");
-            }
-            catch (CompactionInterruptedException e)
-            {
-                // ignore
-            }
-        }
-    }
-
     class Controller extends CompactionController
     {
         private final Map<DecoratedKey, Iterable<UnfilteredRowIterator>> tombstoneSources;
@@ -400,7 +339,13 @@ public class CompactionIteratorTest
         }
 
         @Override
-        public TableMetadata metadata()
+        public boolean isForThrift()
+        {
+            return false;
+        }
+
+        @Override
+        public CFMetaData metadata()
         {
             return metadata;
         }
@@ -442,9 +387,9 @@ public class CompactionIteratorTest
         }
 
         @Override
-        public Set<SSTableReader> getBackingSSTables()
+        public String getBackingFiles()
         {
-            return ImmutableSet.of();
+            return null;
         }
     }
 }
