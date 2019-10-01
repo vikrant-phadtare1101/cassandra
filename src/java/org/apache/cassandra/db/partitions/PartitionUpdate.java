@@ -178,7 +178,6 @@ public class PartitionUpdate extends AbstractBTreePartition
      * Warning: this method does not close the provided iterator, it is up to
      * the caller to close it.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromIterator(UnfilteredRowIterator iterator, ColumnFilter filter)
     {
         iterator = UnfilteredRowIterators.withOnlyQueriedData(iterator, filter);
@@ -198,7 +197,6 @@ public class PartitionUpdate extends AbstractBTreePartition
      * Warning: this method does not close the provided iterator, it is up to
      * the caller to close it.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromIterator(RowIterator iterator, ColumnFilter filter)
     {
         iterator = RowIterators.withOnlyQueriedData(iterator, filter);
@@ -220,7 +218,6 @@ public class PartitionUpdate extends AbstractBTreePartition
      *
      * @return the deserialized update or {@code null} if {@code bytes == null}.
      */
-    @SuppressWarnings("resource")
     public static PartitionUpdate fromBytes(ByteBuffer bytes, int version)
     {
         if (bytes == null)
@@ -289,8 +286,9 @@ public class PartitionUpdate extends AbstractBTreePartition
         if (size == 1)
             return Iterables.getOnlyElement(updates);
 
+        int nowInSecs = FBUtilities.nowInSeconds();
         List<UnfilteredRowIterator> asIterators = Lists.transform(updates, AbstractBTreePartition::unfilteredIterator);
-        return fromIterator(UnfilteredRowIterators.merge(asIterators), ColumnFilter.all(updates.get(0).metadata()));
+        return fromIterator(UnfilteredRowIterators.merge(asIterators, nowInSecs), ColumnFilter.all(updates.get(0).metadata()));
     }
 
     // We override this, because the version in the super-class calls holder(), which build the update preventing
@@ -715,6 +713,7 @@ public class PartitionUpdate extends AbstractBTreePartition
         private final boolean canHaveShadowedData;
         private Object[] tree = BTree.empty();
         private final BTree.Builder<Row> rowBuilder;
+        private final int createdAtInSec = FBUtilities.nowInSeconds();
         private Row staticRow = Rows.EMPTY_STATIC_ROW;
         private final RegularAndStaticColumns columns;
         private boolean isBuilt = false;
@@ -798,7 +797,7 @@ public class PartitionUpdate extends AbstractBTreePartition
                 assert columns().statics.containsAll(row.columns()) : columns().statics + " is not superset of " + row.columns();
                 staticRow = staticRow.isEmpty()
                             ? row
-                            : Rows.merge(staticRow, row);
+                            : Rows.merge(staticRow, row, createdAtInSec);
             }
             else
             {
@@ -835,7 +834,7 @@ public class PartitionUpdate extends AbstractBTreePartition
             assert !isBuilt : "A PartitionUpdate.Builder should only get built once";
             Object[] add = rowBuilder.build();
             Object[] merged = BTree.<Row>merge(tree, add, metadata.comparator,
-                                               UpdateFunction.Simple.of(Rows::merge));
+                                               UpdateFunction.Simple.of((a, b) -> Rows.merge(a, b, createdAtInSec)));
 
             EncodingStats newStats = EncodingStats.Collector.collect(staticRow, BTree.iterator(merged), deletionInfo);
 
@@ -864,7 +863,8 @@ public class PartitionUpdate extends AbstractBTreePartition
         private BTree.Builder<Row> rowBuilder(int initialCapacity)
         {
             return BTree.<Row>builder(metadata.comparator, initialCapacity)
-                   .setQuickResolver(Rows::merge);
+                   .setQuickResolver((a, b) ->
+                                     Rows.merge(a, b, createdAtInSec));
         }
         /**
          * Modify this update to set every timestamp for live data to {@code newTimestamp} and
@@ -896,6 +896,7 @@ public class PartitionUpdate extends AbstractBTreePartition
                    ", key=" + key +
                    ", deletionInfo=" + deletionInfo +
                    ", canHaveShadowedData=" + canHaveShadowedData +
+                   ", createdAtInSec=" + createdAtInSec +
                    ", staticRow=" + staticRow +
                    ", columns=" + columns +
                    ", isBuilt=" + isBuilt +

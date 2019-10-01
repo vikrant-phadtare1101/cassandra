@@ -26,7 +26,6 @@ import com.google.common.base.Objects;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.AbstractBounds;
-import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
@@ -107,7 +106,7 @@ public class RepairJobDesc
             UUIDSerializer.serializer.serialize(desc.sessionId, out, version);
             out.writeUTF(desc.keyspace);
             out.writeUTF(desc.columnFamily);
-            IPartitioner.validate(desc.ranges);
+            MessagingService.validatePartitioner(desc.ranges);
             out.writeInt(desc.ranges.size());
             for (Range<Token> rt : desc.ranges)
                 AbstractBounds.tokenSerializer.serialize(rt, out, version);
@@ -129,7 +128,7 @@ public class RepairJobDesc
             for (int i = 0; i < nRanges; i++)
             {
                 range = (Range<Token>) AbstractBounds.tokenSerializer.deserialize(in,
-                        IPartitioner.global(), version);
+                        MessagingService.globalPartitioner(), version);
                 ranges.add(range);
             }
 

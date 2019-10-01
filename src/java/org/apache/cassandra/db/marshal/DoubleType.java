@@ -89,11 +89,7 @@ public class DoubleType extends NumberType<Double>
     @Override
     public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
-        Double value = getSerializer().deserialize(buffer);
-        // JSON does not support NaN, Infinity and -Infinity values. Most of the parser convert them into null.
-        if (value.isNaN() || value.isInfinite())
-            return "null";
-        return value.toString();
+        return getSerializer().deserialize(buffer).toString();
     }
 
     public CQL3Type asCQL3Type()

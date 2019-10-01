@@ -19,7 +19,6 @@ package org.apache.cassandra.db.compaction;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
@@ -181,7 +180,7 @@ public class Verifier implements Closeable
                 while (iter.hasNext())
                 {
                     DecoratedKey key = iter.next();
-                    rangeOwnHelper.validate(key);
+                    rangeOwnHelper.check(key);
                 }
             }
             catch (Throwable t)
@@ -263,7 +262,7 @@ public class Verifier implements Closeable
                 {
                     try
                     {
-                        rangeOwnHelper.validate(key);
+                        rangeOwnHelper.check(key);
                     }
                     catch (Throwable t)
                     {
@@ -351,7 +350,6 @@ public class Verifier implements Closeable
         public RangeOwnHelper(List<Range<Token>> normalizedRanges)
         {
             this.normalizedRanges = normalizedRanges;
-            Range.assertNormalized(normalizedRanges);
         }
 
         /**
@@ -362,27 +360,13 @@ public class Verifier implements Closeable
          * @param key the key
          * @throws RuntimeException if the key is not contained
          */
-        public void validate(DecoratedKey key)
-        {
-            if (!check(key))
-                throw new RuntimeException("Key " + key + " is not contained in the given ranges");
-        }
-
-        /**
-         * check if the given key is contained in any of the given ranges
-         *
-         * Must be called in sorted order - key should be increasing
-         *
-         * @param key the key
-         * @return boolean
-         */
-        public boolean check(DecoratedKey key)
+        public void check(DecoratedKey key)
         {
             assert lastKey == null || key.compareTo(lastKey) > 0;
             lastKey = key;
 
             if (normalizedRanges.isEmpty()) // handle tests etc where we don't have any ranges
-                return true;
+                return;
 
             if (rangeIndex > normalizedRanges.size() - 1)
                 throw new IllegalStateException("RangeOwnHelper can only be used to find the first out-of-range-token");
@@ -391,10 +375,8 @@ public class Verifier implements Closeable
             {
                 rangeIndex++;
                 if (rangeIndex > normalizedRanges.size() - 1)
-                    return false;
+                    throw new RuntimeException("Key "+key+" is not contained in the given ranges");
             }
-
-            return true;
         }
     }
 
@@ -459,7 +441,7 @@ public class Verifier implements Closeable
         {
             try
             {
-                sstable.descriptor.getMetadataSerializer().mutateRepairMetadata(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE, sstable.getPendingRepair(), sstable.isTransient());
+                sstable.descriptor.getMetadataSerializer().mutateRepaired(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE, sstable.getSSTableMetadata().pendingRepair);
                 sstable.reloadSSTableMetadata();
                 cfs.getTracker().notifySSTableRepairedStatusChanged(Collections.singleton(sstable));
             }
@@ -501,8 +483,7 @@ public class Verifier implements Closeable
                                           OperationType.VERIFY,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
-                                          verificationCompactionId,
-                                          ImmutableSet.of(sstable));
+                                          verificationCompactionId);
             }
             catch (Exception e)
             {

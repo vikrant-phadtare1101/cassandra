@@ -26,9 +26,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Enumeration;
 
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
@@ -37,7 +37,6 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
 public class DatabaseDescriptorTest
@@ -253,70 +252,22 @@ public class DatabaseDescriptorTest
         assertTrue(testConfig.request_timeout_in_ms == DatabaseDescriptor.LOWEST_ACCEPTED_TIMEOUT);
     }
 
-    @Test
-    public void testRepairSessionMemorySizeToggles()
+    @Test (expected = ConfigurationException.class)
+    public void testInvalidSub1DefaultRFs() throws ConfigurationException
     {
-        int previousSize = DatabaseDescriptor.getRepairSessionSpaceInMegabytes();
-        try
-        {
-            Assert.assertEquals((Runtime.getRuntime().maxMemory() / (1024 * 1024) / 16),
-                                DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            int targetSize = (int) (Runtime.getRuntime().maxMemory() / (1024 * 1024) / 4) + 1;
-
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(targetSize);
-            Assert.assertEquals(targetSize, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(10);
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-
-            try
-            {
-                DatabaseDescriptor.setRepairSessionSpaceInMegabytes(0);
-                fail("Should have received a ConfigurationException for depth of 9");
-            }
-            catch (ConfigurationException ignored) { }
-
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionSpaceInMegabytes());
-        }
-        finally
-        {
-            DatabaseDescriptor.setRepairSessionSpaceInMegabytes(previousSize);
-        }
+        DatabaseDescriptor.setDefaultKeyspaceRF(0);
     }
 
-    @Test
-    public void testRepairSessionSizeToggles()
+    @Test (expected = ConfigurationException.class)
+    public void testInvalidSub0MinimumRFs() throws ConfigurationException
     {
-        int previousDepth = DatabaseDescriptor.getRepairSessionMaxTreeDepth();
-        try
-        {
-            Assert.assertEquals(20, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(10);
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
+        DatabaseDescriptor.setMinimumKeyspaceRF(-1);
+    }
 
-            try
-            {
-                DatabaseDescriptor.setRepairSessionMaxTreeDepth(9);
-                fail("Should have received a ConfigurationException for depth of 9");
-            }
-            catch (ConfigurationException ignored) { }
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-
-            try
-            {
-                DatabaseDescriptor.setRepairSessionMaxTreeDepth(-20);
-                fail("Should have received a ConfigurationException for depth of -20");
-            }
-            catch (ConfigurationException ignored) { }
-            Assert.assertEquals(10, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(22);
-            Assert.assertEquals(22, DatabaseDescriptor.getRepairSessionMaxTreeDepth());
-        }
-        finally
-        {
-            DatabaseDescriptor.setRepairSessionMaxTreeDepth(previousDepth);
-        }
+    @Test (expected = ConfigurationException.class)
+    public void testDefaultRfLessThanMinRF()
+    {
+        DatabaseDescriptor.setMinimumKeyspaceRF(2);
+        DatabaseDescriptor.setDefaultKeyspaceRF(1);
     }
 }

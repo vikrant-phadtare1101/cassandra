@@ -23,10 +23,10 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.SchemaConstants;
@@ -87,7 +87,7 @@ public final class TraceKeyspace
 
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(SchemaConstants.TRACE_KEYSPACE_NAME, KeyspaceParams.simple(2), Tables.of(Sessions, Events));
+        return KeyspaceMetadata.create(SchemaConstants.TRACE_KEYSPACE_NAME, KeyspaceParams.simple(Math.max(2, DatabaseDescriptor.getDefaultKeyspaceRF())), Tables.of(Sessions, Events));
     }
 
     static Mutation makeStartSessionMutation(ByteBuffer sessionId,
@@ -99,16 +99,15 @@ public final class TraceKeyspace
                                              int ttl)
     {
         PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Sessions, sessionId);
-        Row.SimpleBuilder rb = builder.row();
-        rb.ttl(ttl)
-          .add("client", client)
-          .add("coordinator", FBUtilities.getBroadcastAddressAndPort().address);
-        if (!Gossiper.instance.haveMajorVersion3Nodes())
-            rb.add("coordinator_port", FBUtilities.getBroadcastAddressAndPort().port);
-        rb.add("request", request)
-          .add("started_at", new Date(startedAt))
-          .add("command", command)
-          .appendAll("parameters", parameters);
+        builder.row()
+               .ttl(ttl)
+               .add("client", client)
+               .add("coordinator", FBUtilities.getBroadcastAddressAndPort().address)
+               .add("coordinator_port", FBUtilities.getBroadcastAddressAndPort().port)
+               .add("request", request)
+               .add("started_at", new Date(startedAt))
+               .add("command", command)
+               .appendAll("parameters", parameters);
 
         return builder.buildAsMutation();
     }
@@ -129,10 +128,9 @@ public final class TraceKeyspace
                                               .ttl(ttl);
 
         rowBuilder.add("activity", message)
-                  .add("source", FBUtilities.getBroadcastAddressAndPort().address);
-        if (!Gossiper.instance.haveMajorVersion3Nodes())
-            rowBuilder.add("source_port", FBUtilities.getBroadcastAddressAndPort().port);
-        rowBuilder.add("thread", threadName);
+                  .add("source", FBUtilities.getBroadcastAddressAndPort().address)
+                  .add("source_port", FBUtilities.getBroadcastAddressAndPort().port)
+                  .add("thread", threadName);
 
         if (elapsed >= 0)
             rowBuilder.add("source_elapsed", elapsed);

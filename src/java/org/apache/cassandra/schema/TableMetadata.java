@@ -834,12 +834,6 @@ public final class TableMetadata
             return this;
         }
 
-        public Builder additionalWritePolicy(SpeculativeRetryPolicy val)
-        {
-            params.additionalWritePolicy(val);
-            return this;
-        }
-
         public Builder extensions(Map<String, ByteBuffer> val)
         {
             params.extensions(val);

@@ -17,12 +17,13 @@
  */
 package org.apache.cassandra.locator;
 
-import com.google.common.collect.Iterables;
+import java.util.*;
+
 import org.apache.cassandra.config.DatabaseDescriptor;
 
 public abstract class AbstractEndpointSnitch implements IEndpointSnitch
 {
-    public abstract int compareEndpoints(InetAddressAndPort target, Replica r1, Replica r2);
+    public abstract int compareEndpoints(InetAddressAndPort target, InetAddressAndPort a1, InetAddressAndPort a2);
 
     /**
      * Sorts the <tt>Collection</tt> of node addresses by proximity to the given address
@@ -30,9 +31,27 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
      * @param unsortedAddress the nodes to sort
      * @return a new sorted <tt>List</tt>
      */
-    public <C extends ReplicaCollection<? extends C>> C sortedByProximity(final InetAddressAndPort address, C unsortedAddress)
+    public List<InetAddressAndPort> getSortedListByProximity(InetAddressAndPort address, Collection<InetAddressAndPort> unsortedAddress)
     {
-        return unsortedAddress.sorted((r1, r2) -> compareEndpoints(address, r1, r2));
+        List<InetAddressAndPort> preferred = new ArrayList<>(unsortedAddress);
+        sortByProximity(address, preferred);
+        return preferred;
+    }
+
+    /**
+     * Sorts the <tt>List</tt> of node addresses, in-place, by proximity to the given address
+     * @param address the address to sort the proximity by
+     * @param addresses the nodes to sort
+     */
+    public void sortByProximity(final InetAddressAndPort address, List<InetAddressAndPort> addresses)
+    {
+        Collections.sort(addresses, new Comparator<InetAddressAndPort>()
+        {
+            public int compare(InetAddressAndPort a1, InetAddressAndPort a2)
+            {
+                return compareEndpoints(address, a1, a2);
+            }
+        });
     }
 
     public void gossiperStarting()
@@ -40,7 +59,7 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
         // noop by default
     }
 
-    public boolean isWorthMergingForRangeQuery(ReplicaCollection<?> merged, ReplicaCollection<?> l1, ReplicaCollection<?> l2)
+    public boolean isWorthMergingForRangeQuery(List<InetAddressAndPort> merged, List<InetAddressAndPort> l1, List<InetAddressAndPort> l2)
     {
         // Querying remote DC is likely to be an order of magnitude slower than
         // querying locally, so 2 queries to local nodes is likely to still be
@@ -51,9 +70,14 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
              : true;
     }
 
-    private boolean hasRemoteNode(ReplicaCollection<?> l)
+    private boolean hasRemoteNode(List<InetAddressAndPort> l)
     {
         String localDc = DatabaseDescriptor.getLocalDataCenter();
-        return Iterables.any(l, replica -> !localDc.equals(getDatacenter(replica)));
+        for (InetAddressAndPort ep : l)
+        {
+            if (!localDc.equals(getDatacenter(ep)))
+                return true;
+        }
+        return false;
     }
 }

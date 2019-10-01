@@ -136,43 +136,43 @@ public class CounterCellTest
         // both deleted, diff deletion time, same ts
         left = createDeleted(cfs, col, 2, 5);
         right = createDeleted(cfs, col, 2, 10);
-        assert Cells.reconcile(left, right) == right;
+        assert Cells.reconcile(left, right, 10) == right;
 
         // diff ts
         right = createLegacyCounterCell(cfs, col, 1, 10);
-        assert Cells.reconcile(left, right) == left;
+        assert Cells.reconcile(left, right, 10) == left;
 
         // < tombstone
         left = createDeleted(cfs, col, 6, 6);
         right = createLegacyCounterCell(cfs, col, 1, 5);
-        assert Cells.reconcile(left, right) == left;
+        assert Cells.reconcile(left, right, 10) == left;
 
         // > tombstone
         left = createDeleted(cfs, col, 1, 1);
         right = createLegacyCounterCell(cfs, col, 1, 5);
-        assert Cells.reconcile(left, right) == left;
+        assert Cells.reconcile(left, right, 10) == left;
 
         // == tombstone
         left = createDeleted(cfs, col, 8, 8);
         right = createLegacyCounterCell(cfs, col, 1, 8);
-        assert Cells.reconcile(left, right) == left;
+        assert Cells.reconcile(left, right, 10) == left;
 
         // live + live
         left = createLegacyCounterCell(cfs, col, 1, 2);
         right = createLegacyCounterCell(cfs, col, 3, 5);
-        Cell reconciled = Cells.reconcile(left, right);
+        Cell reconciled = Cells.reconcile(left, right, 10);
         assertEquals(CounterContext.instance().total(reconciled.value()), 4);
         assertEquals(reconciled.timestamp(), 5L);
 
         // Add, don't change TS
         Cell addTen = createLegacyCounterCell(cfs, col, 10, 4);
-        reconciled = Cells.reconcile(reconciled, addTen);
+        reconciled = Cells.reconcile(reconciled, addTen, 10);
         assertEquals(CounterContext.instance().total(reconciled.value()), 14);
         assertEquals(reconciled.timestamp(), 5L);
 
         // Add w/new TS
         Cell addThree = createLegacyCounterCell(cfs, col, 3, 7);
-        reconciled = Cells.reconcile(reconciled, addThree);
+        reconciled = Cells.reconcile(reconciled, addThree, 10);
         assertEquals(CounterContext.instance().total(reconciled.value()), 17);
         assertEquals(reconciled.timestamp(), 7L);
 
@@ -180,7 +180,7 @@ public class CounterCellTest
         assert reconciled.localDeletionTime() == Integer.MAX_VALUE;
 
         Cell deleted = createDeleted(cfs, col, 8, 8);
-        reconciled = Cells.reconcile(reconciled, deleted);
+        reconciled = Cells.reconcile(reconciled, deleted, 10);
         assert reconciled.localDeletionTime() == 8;
     }
 
@@ -292,7 +292,7 @@ public class CounterCellTest
         ColumnMetadata emptyColDef = cfs.metadata().getColumn(ByteBufferUtil.bytes("val2"));
         BufferCell emptyCell = BufferCell.live(emptyColDef, 0, ByteBuffer.allocate(0));
 
-        Row.Builder builder = BTreeRow.unsortedBuilder();
+        Row.Builder builder = BTreeRow.unsortedBuilder(0);
         builder.newRow(Clustering.make(AsciiSerializer.instance.serialize("test")));
         builder.addCell(emptyCell);
         Row row = builder.build();

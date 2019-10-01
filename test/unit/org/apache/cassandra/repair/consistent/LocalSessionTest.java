@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import com.google.common.collect.Lists;
@@ -41,10 +40,10 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
-import org.apache.cassandra.locator.RangesAtEndpoint;
-import org.apache.cassandra.net.Message;
 import org.apache.cassandra.repair.AbstractRepairTest;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.KeyspaceRepairManager;
@@ -124,26 +123,20 @@ public class LocalSessionTest extends AbstractRepairTest
     static class InstrumentedLocalSessions extends LocalSessions
     {
         Map<InetAddressAndPort, List<RepairMessage>> sentMessages = new HashMap<>();
-
-        protected void sendMessage(InetAddressAndPort destination, Message<? extends RepairMessage> message)
+        protected void sendMessage(InetAddressAndPort destination, RepairMessage message)
         {
             if (!sentMessages.containsKey(destination))
             {
                 sentMessages.put(destination, new ArrayList<>());
             }
-            sentMessages.get(destination).add(message.payload);
+            sentMessages.get(destination).add(message);
         }
 
         SettableFuture<Object> prepareSessionFuture = null;
         boolean prepareSessionCalled = false;
 
         @Override
-        ListenableFuture prepareSession(KeyspaceRepairManager repairManager,
-                                        UUID sessionID,
-                                        Collection<ColumnFamilyStore> tables,
-                                        RangesAtEndpoint ranges,
-                                        ExecutorService executor,
-                                        BooleanSupplier isCancelled)
+        ListenableFuture prepareSession(KeyspaceRepairManager repairManager, UUID sessionID, Collection<ColumnFamilyStore> tables, Collection<Range<Token>> ranges, ExecutorService executor)
         {
             prepareSessionCalled = true;
             if (prepareSessionFuture != null)
@@ -152,7 +145,7 @@ public class LocalSessionTest extends AbstractRepairTest
             }
             else
             {
-                return super.prepareSession(repairManager, sessionID, tables, ranges, executor, isCancelled);
+                return super.prepareSession(repairManager, sessionID, tables, ranges, executor);
             }
         }
 
@@ -338,41 +331,7 @@ public class LocalSessionTest extends AbstractRepairTest
         InstrumentedLocalSessions sessions = new InstrumentedLocalSessions();
         sessions.handlePrepareMessage(PARTICIPANT1, new PrepareConsistentRequest(sessionID, COORDINATOR, PARTICIPANTS));
         Assert.assertNull(sessions.getSession(sessionID));
-        assertMessagesSent(sessions, COORDINATOR, new PrepareConsistentResponse(sessionID, PARTICIPANT1, false));
-    }
-
-    /**
-     * If the session is cancelled mid-prepare, the isCancelled boolean supplier should start returning true
-     */
-    @Test
-    public void prepareCancellation()
-    {
-        UUID sessionID = registerSession();
-        AtomicReference<BooleanSupplier> isCancelledRef = new AtomicReference<>();
-        SettableFuture future = SettableFuture.create();
-
-        InstrumentedLocalSessions sessions = new InstrumentedLocalSessions() {
-            ListenableFuture prepareSession(KeyspaceRepairManager repairManager, UUID sessionID, Collection<ColumnFamilyStore> tables, RangesAtEndpoint ranges, ExecutorService executor, BooleanSupplier isCancelled)
-            {
-                isCancelledRef.set(isCancelled);
-                return future;
-            }
-        };
-        sessions.start();
-
-        sessions.handlePrepareMessage(PARTICIPANT1, new PrepareConsistentRequest(sessionID, COORDINATOR, PARTICIPANTS));
-
-        BooleanSupplier isCancelled = isCancelledRef.get();
-        Assert.assertNotNull(isCancelled);
-        Assert.assertFalse(isCancelled.getAsBoolean());
-        Assert.assertTrue(sessions.sentMessages.isEmpty());
-
-        sessions.failSession(sessionID, false);
-        Assert.assertTrue(isCancelled.getAsBoolean());
-
-        // now that the session has failed, it send a negative response to the coordinator (even if the anti-compaction completed successfully)
-        future.set(new Object());
-        assertMessagesSent(sessions, COORDINATOR, new PrepareConsistentResponse(sessionID, PARTICIPANT1, false));
+        assertMessagesSent(sessions, COORDINATOR, new FailSession(sessionID));
     }
 
     @Test
