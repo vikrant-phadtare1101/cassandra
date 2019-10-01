@@ -68,7 +68,7 @@ public class ErrorMessage extends Message.Response
                         ConsistencyLevel cl = CBUtil.readConsistencyLevel(body);
                         int required = body.readInt();
                         int alive = body.readInt();
-                        te = UnavailableException.create(cl, required, alive);
+                        te = new UnavailableException(cl, required, alive);
                     }
                     break;
                 case OVERLOADED:
@@ -377,7 +377,7 @@ public class ErrorMessage extends Message.Response
             if (e instanceof ProtocolException)
             {
                 // if the driver attempted to connect with a protocol version not supported then
-                // respond with the appropiate version, see ProtocolVersion.decode()
+                // reply with the appropiate version, see ProtocolVersion.decode()
                 ProtocolVersion forcedProtocolVersion = ((ProtocolException) e).getForcedProtocolVersion();
                 if (forcedProtocolVersion != null)
                     message.forcedProtocolVersion = forcedProtocolVersion;

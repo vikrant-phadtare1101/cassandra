@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import org.apache.cassandra.audit.AuditLogContext;
-import org.apache.cassandra.audit.AuditLogEntryType;
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.auth.IRoleManager.Option;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -33,39 +31,27 @@ public class AlterRoleStatement extends AuthenticationStatement
 {
     private final RoleResource role;
     private final RoleOptions opts;
-    final DCPermissions dcPermissions;
 
     public AlterRoleStatement(RoleName name, RoleOptions opts)
     {
-        this(name, opts, null);
-    }
-
-    public AlterRoleStatement(RoleName name, RoleOptions opts, DCPermissions dcPermissions)
-    {
         this.role = RoleResource.role(name.getName());
         this.opts = opts;
-        this.dcPermissions = dcPermissions;
     }
 
     public void validate(ClientState state) throws RequestValidationException
     {
         opts.validate();
 
-        if (dcPermissions != null)
-        {
-            dcPermissions.validate();
-        }
-
-        if (opts.isEmpty() && dcPermissions == null)
+        if (opts.isEmpty())
             throw new InvalidRequestException("ALTER [ROLE|USER] can't be empty");
 
-        // validate login here before authorize to avoid leaking user existence to anonymous users.
+        // validate login here before checkAccess to avoid leaking user existence to anonymous users.
         state.ensureNotAnonymous();
         if (!DatabaseDescriptor.getRoleManager().isExistingRole(role))
             throw new InvalidRequestException(String.format("%s doesn't exist", role.getRoleName()));
     }
 
-    public void authorize(ClientState state) throws UnauthorizedException
+    public void checkAccess(ClientState state) throws UnauthorizedException
     {
         AuthenticatedUser user = state.getUser();
         boolean isSuper = user.isSuper();
@@ -101,8 +87,6 @@ public class AlterRoleStatement extends AuthenticationStatement
     {
         if (!opts.isEmpty())
             DatabaseDescriptor.getRoleManager().alterRole(state.getUser(), role, opts);
-        if (dcPermissions != null)
-            DatabaseDescriptor.getNetworkAuthorizer().setRoleDatacenters(role, dcPermissions);
         return null;
     }
     
@@ -110,11 +94,5 @@ public class AlterRoleStatement extends AuthenticationStatement
     public String toString()
     {
         return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
-    }
-
-    @Override
-    public AuditLogContext getAuditLogContext()
-    {
-        return new AuditLogContext(AuditLogEntryType.ALTER_ROLE);
     }
 }

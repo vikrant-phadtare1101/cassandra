@@ -50,7 +50,7 @@ import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.cql3.statements.schema.IndexTarget;
+import org.apache.cassandra.cql3.statements.IndexTarget;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.filter.RowFilter;
@@ -73,10 +73,8 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.concurrent.Refs;
-
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
 
 /**
  * Handles the core maintenance functionality associated with indexes: adding/removing them to or from
@@ -901,10 +899,7 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
                         {
                             Iterator<RangeTombstone> iter = deletionInfo.rangeIterator(false);
                             while (iter.hasNext())
-                            {
-                                RangeTombstone rt = iter.next();
-                                indexers.forEach(indexer -> indexer.rangeTombstone(rt));
-                            }
+                                indexers.forEach(indexer -> indexer.rangeTombstone(iter.next()));
                         }
 
                         indexers.forEach(Index.Indexer::finish);
@@ -927,7 +922,7 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
         if (meanPartitionSize <= 0)
             return DEFAULT_PAGE_SIZE;
 
-        int meanCellsPerPartition = baseCfs.getMeanEstimatedCellPerPartitionCount();
+        int meanCellsPerPartition = baseCfs.getMeanColumns();
         if (meanCellsPerPartition <= 0)
             return DEFAULT_PAGE_SIZE;
 
@@ -1486,12 +1481,5 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
                                             .collect(Collectors.toSet()),
                                      false);
         }
-    }
-
-    @VisibleForTesting
-    public static void shutdownAndWait(long timeout, TimeUnit units) throws InterruptedException, TimeoutException
-    {
-        shutdown(asyncExecutor, blockingExecutor);
-        awaitTermination(timeout, units, asyncExecutor, blockingExecutor);
     }
 }

@@ -54,7 +54,6 @@ public class PendingRangeCalculatorServiceTest
     @BeforeClass
     public static void setUp() throws ConfigurationException
     {
-        System.setProperty(Gossiper.Props.DISABLE_THREAD_VALIDATION, "true");
         SchemaLoader.prepareServer();
         StorageService.instance.initServer();
     }
@@ -63,7 +62,7 @@ public class PendingRangeCalculatorServiceTest
     @BMRule(name = "Block pending range calculation",
             targetClass = "TokenMetadata",
             targetMethod = "calculatePendingRanges",
-            targetLocation = "AT INVOKE org.apache.cassandra.locator.AbstractReplicationStrategy.getAddressReplicas",
+            targetLocation = "AT INVOKE org.apache.cassandra.locator.AbstractReplicationStrategy.getAddressRanges",
             action = "org.apache.cassandra.gms.PendingRangeCalculatorServiceTest.calculationLock.lock()")
     public void testDelayedResponse() throws UnknownHostException, InterruptedException
     {

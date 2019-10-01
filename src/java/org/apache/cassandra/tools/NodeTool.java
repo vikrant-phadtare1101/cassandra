@@ -17,61 +17,33 @@
  */
 package org.apache.cassandra.tools;
 
+import java.io.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.Map.Entry;
+
+import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
+import com.google.common.collect.*;
+
+import io.airlift.airline.*;
+
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
+import org.apache.cassandra.tools.nodetool.*;
+import org.apache.cassandra.utils.FBUtilities;
+
 import static com.google.common.base.Throwables.getStackTraceAsString;
 import static com.google.common.collect.Iterables.toArray;
 import static com.google.common.collect.Lists.newArrayList;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
 import static org.apache.commons.lang3.ArrayUtils.EMPTY_STRING_ARRAY;
-import static org.apache.commons.lang3.StringUtils.EMPTY;
-import static org.apache.commons.lang3.StringUtils.isEmpty;
-import static org.apache.commons.lang3.StringUtils.isNotEmpty;
-
-import java.io.Console;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOError;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Scanner;
-import java.util.SortedMap;
-
-import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
-import org.apache.cassandra.tools.nodetool.*;
-import org.apache.cassandra.utils.FBUtilities;
-
-import com.google.common.base.Joiner;
-import com.google.common.base.Throwables;
-import com.google.common.collect.Maps;
-
-import io.airlift.airline.Cli;
-import io.airlift.airline.Help;
-import io.airlift.airline.Option;
-import io.airlift.airline.OptionType;
-import io.airlift.airline.ParseArgumentsMissingException;
-import io.airlift.airline.ParseArgumentsUnexpectedException;
-import io.airlift.airline.ParseCommandMissingException;
-import io.airlift.airline.ParseCommandUnrecognizedException;
-import io.airlift.airline.ParseOptionConversionException;
-import io.airlift.airline.ParseOptionMissingException;
-import io.airlift.airline.ParseOptionMissingValueException;
+import static org.apache.commons.lang3.StringUtils.*;
 
 public class NodeTool
 {
-    static
-    {
-        FBUtilities.preventIllegalAccessWarnings();
-    }
-
     private static final String HISTORYFILE = "nodetool.history";
 
     public static void main(String... args)
@@ -128,7 +100,6 @@ public class NodeTool
                 Move.class,
                 PauseHandoff.class,
                 ResumeHandoff.class,
-                ProfileLoad.class,
                 ProxyHistograms.class,
                 Rebuild.class,
                 Refresh.class,
@@ -187,13 +158,7 @@ public class NodeTool
                 RelocateSSTables.class,
                 ViewBuildStatus.class,
                 HandoffWindow.class,
-                ReloadSslCertificates.class,
-                EnableAuditLog.class,
-                DisableAuditLog.class,
-                GetReplicas.class,
-                DisableAuditLog.class,
-                EnableOldProtocolVersions.class,
-                DisableOldProtocolVersions.class
+                ReloadSslCertificates.class
         );
 
         Cli.CliBuilder<Runnable> builder = Cli.builder("nodetool");
@@ -288,8 +253,8 @@ public class NodeTool
         @Option(type = OptionType.GLOBAL, name = {"-pwf", "--password-file"}, description = "Path to the JMX password file")
         private String passwordFilePath = EMPTY;
 
-        @Option(type = OptionType.GLOBAL, name = { "-pp", "--print-port"}, description = "Operate in 4.0 mode with hosts disambiguated by port number", arity = 0)
-        protected boolean printPort = false;
+        @Option(type = OptionType.GLOBAL, name = { "-wp", "--with-port"}, description = "Operate in 4.0 mode with hosts disambiguated by port number", arity = 0)
+        protected boolean withPort = false;
 
         @Override
         public void run()

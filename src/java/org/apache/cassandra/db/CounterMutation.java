@@ -24,6 +24,7 @@ import java.util.concurrent.locks.Lock;
 
 import com.google.common.base.Function;
 import com.google.common.base.Objects;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
@@ -38,13 +39,13 @@ import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.net.MessageOut;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.utils.btree.BTreeSet;
-
-import static java.util.concurrent.TimeUnit.*;
 
 public class CounterMutation implements IMutation
 {
@@ -89,6 +90,11 @@ public class CounterMutation implements IMutation
     public ConsistencyLevel consistency()
     {
         return consistency;
+    }
+
+    public MessageOut<CounterMutation> makeMutationMessage()
+    {
+        return new MessageOut<>(MessagingService.Verb.COUNTER_MUTATION, this, serializer);
     }
 
     /**
@@ -140,10 +146,10 @@ public class CounterMutation implements IMutation
 
         for (Lock lock : LOCKS.bulkGet(getCounterLockKeys()))
         {
-            long timeout = getTimeout(NANOSECONDS) - (System.nanoTime() - startTime);
+            long timeout = TimeUnit.MILLISECONDS.toNanos(getTimeout()) - (System.nanoTime() - startTime);
             try
             {
-                if (!lock.tryLock(timeout, NANOSECONDS))
+                if (!lock.tryLock(timeout, TimeUnit.NANOSECONDS))
                     throw new WriteTimeoutException(WriteType.COUNTER, consistency(), 0, consistency().blockFor(keyspace));
                 locks.add(lock);
             }
@@ -303,9 +309,9 @@ public class CounterMutation implements IMutation
         }
     }
 
-    public long getTimeout(TimeUnit unit)
+    public long getTimeout()
     {
-        return DatabaseDescriptor.getCounterWriteRpcTimeout(unit);
+        return DatabaseDescriptor.getCounterWriteRpcTimeout();
     }
 
     @Override

@@ -25,20 +25,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IVerbHandler;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 
-import static org.apache.cassandra.net.Verb.GOSSIP_DIGEST_ACK2;
-
-public class GossipDigestAckVerbHandler extends GossipVerbHandler<GossipDigestAck>
+public class GossipDigestAckVerbHandler implements IVerbHandler<GossipDigestAck>
 {
-    public static final GossipDigestAckVerbHandler instance = new GossipDigestAckVerbHandler();
-
     private static final Logger logger = LoggerFactory.getLogger(GossipDigestAckVerbHandler.class);
 
-    public void doVerb(Message<GossipDigestAck> message)
+    public void doVerb(MessageIn<GossipDigestAck> message, int id)
     {
-        InetAddressAndPort from = message.from();
+        InetAddressAndPort from = message.from;
         if (logger.isTraceEnabled())
             logger.trace("Received a GossipDigestAckMessage from {}", from);
         if (!Gossiper.instance.isEnabled() && !Gossiper.instance.isInShadowRound())
@@ -90,11 +88,11 @@ public class GossipDigestAckVerbHandler extends GossipVerbHandler<GossipDigestAc
                 deltaEpStateMap.put(addr, localEpStatePtr);
         }
 
-        Message<GossipDigestAck2> gDigestAck2Message = Message.out(GOSSIP_DIGEST_ACK2, new GossipDigestAck2(deltaEpStateMap));
+        MessageOut<GossipDigestAck2> gDigestAck2Message = new MessageOut<GossipDigestAck2>(MessagingService.Verb.GOSSIP_DIGEST_ACK2,
+                                                                                           new GossipDigestAck2(deltaEpStateMap),
+                                                                                           GossipDigestAck2.serializer);
         if (logger.isTraceEnabled())
             logger.trace("Sending a GossipDigestAck2Message to {}", from);
-        MessagingService.instance().send(gDigestAck2Message, from);
-
-        super.doVerb(message);
+        MessagingService.instance().sendOneWay(gDigestAck2Message, from);
     }
 }
