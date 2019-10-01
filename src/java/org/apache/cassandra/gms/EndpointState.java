@@ -144,11 +144,6 @@ public class EndpointState
         return rpcState != null && Boolean.parseBoolean(rpcState.value);
     }
 
-    public boolean isNormalState()
-    {
-        return getStatus().equals(VersionedValue.STATUS_NORMAL);
-    }
-
     public String getStatus()
     {
         VersionedValue status = getApplicationState(ApplicationState.STATUS_WITH_PORT);

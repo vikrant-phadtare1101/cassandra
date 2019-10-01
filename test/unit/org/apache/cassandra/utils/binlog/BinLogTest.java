@@ -60,12 +60,17 @@ public class BinLogTest
 
     private BinLog binLog;
     private Path path;
+    private Path archiveDirPath;
 
     @Before
     public void setUp() throws Exception
     {
+        AuditLogOptions options = new AuditLogOptions();
+        options.enabled = false;
+        DatabaseDescriptor.daemonInitialization();
+        DatabaseDescriptor.setAuditLoggingOptions(options);
         path = tempDir();
-        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 10, new DeletingArchiver(1024 * 1024 * 128));
+        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 10, 1024 * 1024 * 128);
         binLog.start();
     }
 
@@ -80,30 +85,37 @@ public class BinLogTest
         {
             f.delete();
         }
+        if(archiveDirPath != null)
+        {
+            for (File f : archiveDirPath.toFile().listFiles())
+            {
+                f.delete();
+            }
+        }
     }
 
     @Test(expected = NullPointerException.class)
     public void testConstructorNullPath() throws Exception
     {
-        new BinLog(null, RollCycles.TEST_SECONDLY, 1, new DeletingArchiver(1));
+        new BinLog(null, RollCycles.TEST_SECONDLY, 1, 1);
     }
 
     @Test(expected = NullPointerException.class)
     public void testConstructorNullRollCycle() throws Exception
     {
-        new BinLog(tempDir(), null, 1, new DeletingArchiver(1));
+        new BinLog(tempDir(), null, 1, 1);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testConstructorZeroWeight() throws Exception
     {
-        new BinLog(tempDir(), RollCycles.TEST_SECONDLY, 0, new DeletingArchiver(1));
+        new BinLog(tempDir(), RollCycles.TEST_SECONDLY, 0, 1);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testConstructorLogSize() throws Exception
     {
-        new BinLog(tempDir(), RollCycles.TEST_SECONDLY, 0, new DeletingArchiver(1));
+        new BinLog(tempDir(), RollCycles.TEST_SECONDLY, 1, 0);
     }
 
     /**
@@ -347,7 +359,7 @@ public class BinLogTest
     public void testCleanupOnOversize() throws Exception
     {
         tearDown();
-        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 1, new DeletingArchiver(10000));
+        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 10000, 1);
         binLog.start();
         for (int ii = 0; ii < 5; ii++)
         {
@@ -357,6 +369,49 @@ public class BinLogTest
         List<String> records = readBinLogRecords(path);
         System.out.println("Records found are " + records);
         assertTrue(records.size() < 5);
+    }
+    @Test
+    public void testBinLogArchival() throws Exception {
+        tearDown();
+        archiveDirPath = tempDir();
+        File archiveScriptFile = FileUtils.createTempFile("archive_script", ".sh", path.toFile());
+        archiveScriptFile.setExecutable(true);
+        FileUtils.append(archiveScriptFile, "#!/bin/sh");
+        FileUtils.append(archiveScriptFile, "mv $1 " + archiveDirPath);
+        DatabaseDescriptor.getAuditLoggingOptions().archive_command = archiveScriptFile.getPath() + " %path";
+        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 10000, 1);
+        binLog.start();
+        for (int ii = 0; ii < 5; ii++)
+        {
+            binLog.put(record(String.valueOf(ii)));
+            Thread.sleep(1001);
+        }
+        List<String> records = readBinLogRecords(path);
+        assertTrue(records.size() < 5);
+        
+        records = readBinLogRecords(archiveDirPath);
+        assertTrue(records.size() >= 1);
+    }
+    
+    @Test
+    // bin logs remain in case of script execution failures
+    public void testBinLogArchivalFailure() throws Exception {
+        tearDown();
+        archiveDirPath = tempDir();
+        File archiveScriptFile = FileUtils.createTempFile("archive_script", ".sh", path.toFile());
+        archiveScriptFile.setExecutable(true);
+        FileUtils.append(archiveScriptFile, "#!/bin/sh");
+        FileUtils.append(archiveScriptFile, "invalid_linux_command");
+        DatabaseDescriptor.getAuditLoggingOptions().archive_command = archiveScriptFile.getPath() + " %path";
+        binLog = new BinLog(path, RollCycles.TEST_SECONDLY, 10000, 1);
+        binLog.start();
+        for (int ii = 0; ii < 5; ii++)
+        {
+            binLog.put(record(String.valueOf(ii)));
+            Thread.sleep(1001);
+        }
+        List<String> records = readBinLogRecords(path);
+        assertTrue(records.size() > 0 && records.size() < 5);
     }
 
     @Test(expected = IllegalStateException.class)

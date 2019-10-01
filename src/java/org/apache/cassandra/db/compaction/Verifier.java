@@ -19,7 +19,6 @@ package org.apache.cassandra.db.compaction;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableSet;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
@@ -351,7 +350,6 @@ public class Verifier implements Closeable
         public RangeOwnHelper(List<Range<Token>> normalizedRanges)
         {
             this.normalizedRanges = normalizedRanges;
-            Range.assertNormalized(normalizedRanges);
         }
 
         /**
@@ -459,7 +457,7 @@ public class Verifier implements Closeable
         {
             try
             {
-                sstable.descriptor.getMetadataSerializer().mutateRepairMetadata(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE, sstable.getPendingRepair(), sstable.isTransient());
+                sstable.descriptor.getMetadataSerializer().mutateRepaired(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE, sstable.getSSTableMetadata().pendingRepair);
                 sstable.reloadSSTableMetadata();
                 cfs.getTracker().notifySSTableRepairedStatusChanged(Collections.singleton(sstable));
             }
@@ -501,8 +499,7 @@ public class Verifier implements Closeable
                                           OperationType.VERIFY,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
-                                          verificationCompactionId,
-                                          ImmutableSet.of(sstable));
+                                          verificationCompactionId);
             }
             catch (Exception e)
             {

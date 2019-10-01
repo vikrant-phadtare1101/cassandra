@@ -19,7 +19,7 @@ package org.apache.cassandra.service.reads;
 
 import com.google.common.base.Objects;
 
-import com.codahale.metrics.Snapshot;
+import com.codahale.metrics.Timer;
 
 public class AlwaysSpeculativeRetryPolicy implements SpeculativeRetryPolicy
 {
@@ -30,7 +30,7 @@ public class AlwaysSpeculativeRetryPolicy implements SpeculativeRetryPolicy
     }
 
     @Override
-    public long calculateThreshold(Snapshot latency, long existingValue)
+    public long calculateThreshold(Timer readLatency)
     {
         return 0;
     }
