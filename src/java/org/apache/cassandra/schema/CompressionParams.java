@@ -29,6 +29,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableMap;
 
+import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import org.slf4j.Logger;
@@ -41,7 +42,6 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.compress.*;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.streaming.messages.StreamMessage;
 
 import static java.lang.String.format;
@@ -181,13 +181,12 @@ public final class CompressionParams
 
     public static CompressionParams zstd()
     {
-        return zstd(DEFAULT_CHUNK_LENGTH);
+        return zstd(null);
     }
 
     public static CompressionParams zstd(Integer chunkLength)
     {
-        ZstdCompressor compressor = ZstdCompressor.create(Collections.emptyMap());
-        return new CompressionParams(compressor, chunkLength, Integer.MAX_VALUE, DEFAULT_MIN_COMPRESS_RATIO, Collections.emptyMap());
+        return new CompressionParams(ZSTDCompressor.create(Collections.emptyMap()), chunkLength, Integer.MAX_VALUE, DEFAULT_MIN_COMPRESS_RATIO, Collections.emptyMap());
     }
 
     public CompressionParams(String sstableCompressorClass, Map<String, String> otherOptions, int chunkLength, double minCompressRatio) throws ConfigurationException
@@ -597,7 +596,7 @@ public final class CompressionParams
                 out.writeUTF(entry.getValue());
             }
             out.writeInt(parameters.chunkLength());
-            if (version >= MessagingService.VERSION_40)
+            if (version >= StreamMessage.VERSION_40)
                 out.writeInt(parameters.maxCompressedLength);
             else
                 if (parameters.maxCompressedLength != Integer.MAX_VALUE)
@@ -617,7 +616,7 @@ public final class CompressionParams
             }
             int chunkLength = in.readInt();
             int minCompressRatio = Integer.MAX_VALUE;   // Earlier Cassandra cannot use uncompressed chunks.
-            if (version >= MessagingService.VERSION_40)
+            if (version >= StreamMessage.VERSION_40)
                 minCompressRatio = in.readInt();
 
             CompressionParams parameters;
@@ -642,7 +641,7 @@ public final class CompressionParams
                 size += TypeSizes.sizeof(entry.getValue());
             }
             size += TypeSizes.sizeof(parameters.chunkLength());
-            if (version >= MessagingService.VERSION_40)
+            if (version >= StreamMessage.VERSION_40)
                 size += TypeSizes.sizeof(parameters.maxCompressedLength());
             return size;
         }

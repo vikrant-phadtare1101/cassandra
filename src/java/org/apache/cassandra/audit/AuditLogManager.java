@@ -122,13 +122,19 @@ public class AuditLogManager
         return fullQueryLogger.enabled();
     }
 
+    private boolean isSystemKeyspace(String keyspaceName)
+    {
+        return SchemaConstants.isLocalSystemKeyspace(keyspaceName);
+    }
+
     /**
      * Logs AuditLogEntry to standard audit logger
      * @param logEntry AuditLogEntry to be logged
      */
     private void logAuditLoggerEntry(AuditLogEntry logEntry)
     {
-        if (!filter.isFiltered(logEntry))
+        if ((logEntry.getKeyspace() == null || !isSystemKeyspace(logEntry.getKeyspace()))
+            && !filter.isFiltered(logEntry))
         {
             auditLogger.log(logEntry);
         }
