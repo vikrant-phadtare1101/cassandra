@@ -39,7 +39,6 @@ import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.partitions.AbstractUnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.TableMetadata;
 
@@ -442,9 +441,9 @@ public class CompactionIteratorTest
         }
 
         @Override
-        public Set<SSTableReader> getBackingSSTables()
+        public String getBackingFiles()
         {
-            return ImmutableSet.of();
+            return null;
         }
     }
 }

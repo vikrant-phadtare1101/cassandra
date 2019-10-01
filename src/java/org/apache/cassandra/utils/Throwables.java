@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Optional;
-import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.apache.cassandra.io.FSReadError;
@@ -36,11 +35,6 @@ public final class Throwables
     public interface DiscreteAction<E extends Exception>
     {
         void perform() throws E;
-    }
-
-    public static boolean isCausedBy(Throwable t, Predicate<Throwable> cause)
-    {
-        return cause.test(t) || (t.getCause() != null && cause.test(t.getCause()));
     }
 
     public static <T extends Throwable> T merge(T existingFail, T newFail)
@@ -81,12 +75,6 @@ public final class Throwables
     }
 
     @SafeVarargs
-    public static <E extends Exception> void maybeFail(DiscreteAction<? extends E> ... actions)
-    {
-        maybeFail(Throwables.perform(null, Stream.of(actions)));
-    }
-
-    @SafeVarargs
     public static <E extends Exception> void perform(DiscreteAction<? extends E> ... actions) throws E
     {
         Throwables.<E>perform(Stream.of(actions));
@@ -100,7 +88,7 @@ public final class Throwables
     @SuppressWarnings("unchecked")
     public static <E extends Exception> void perform(Stream<DiscreteAction<? extends E>> actions) throws E
     {
-        Throwable fail = perform(null, actions);
+        Throwable fail = perform((Throwable) null, actions);
         if (failIfCanCast(fail, null))
             throw (E) fail;
     }

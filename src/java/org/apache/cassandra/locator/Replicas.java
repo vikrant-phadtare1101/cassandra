@@ -23,7 +23,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.function.Predicate;
 
-import com.carrotsearch.hppc.ObjectIntOpenHashMap;
 import com.carrotsearch.hppc.ObjectObjectOpenHashMap;
 import com.google.common.collect.Iterables;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -85,35 +84,18 @@ public class Replicas
         return count;
     }
 
-    /**
-     * count the number of full and transient replicas, separately, for each DC
-     */
-    public static ObjectObjectOpenHashMap<String, ReplicaCount> countPerDc(Collection<String> dataCenters, Iterable<Replica> replicas)
+    public static ObjectObjectOpenHashMap<String, ReplicaCount> countPerDc(Collection<String> dataCenters, Iterable<Replica> liveReplicas)
     {
         ObjectObjectOpenHashMap<String, ReplicaCount> perDc = new ObjectObjectOpenHashMap<>(dataCenters.size());
         for (String dc: dataCenters)
             perDc.put(dc, new ReplicaCount());
 
-        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-        for (Replica replica : replicas)
+        for (Replica replica : liveReplicas)
         {
-            String dc = snitch.getDatacenter(replica);
+            String dc = DatabaseDescriptor.getEndpointSnitch().getDatacenter(replica);
             perDc.get(dc).increment(replica);
         }
         return perDc;
-    }
-
-    /**
-     * increment each of the map's DC entries for each matching replica provided
-     */
-    public static void addToCountPerDc(ObjectIntOpenHashMap<String> perDc, Iterable<Replica> replicas, int add)
-    {
-        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-        for (Replica replica : replicas)
-        {
-            String dc = snitch.getDatacenter(replica);
-            perDc.addTo(dc, add);
-        }
     }
 
     /**

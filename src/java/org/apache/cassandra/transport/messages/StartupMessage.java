@@ -46,7 +46,6 @@ public class StartupMessage extends Message.Request
     public static final String DRIVER_NAME = "DRIVER_NAME";
     public static final String DRIVER_VERSION = "DRIVER_VERSION";
     public static final String CHECKSUM = "CONTENT_CHECKSUM";
-    public static final String THROW_ON_OVERLOAD = "THROW_ON_OVERLOAD";
 
     public static final Message.Codec<StartupMessage> codec = new Message.Codec<StartupMessage>()
     {
@@ -105,8 +104,6 @@ public class StartupMessage extends Message.Request
             connection.setTransformer(CompressingTransformer.getTransformer(compressor));
         }
 
-        connection.setThrowOnOverload("1".equals(options.get(THROW_ON_OVERLOAD)));
-
         ClientState clientState = state.getClientState();
         String driverName = options.get(DRIVER_NAME);
         if (null != driverName)
@@ -134,7 +131,7 @@ public class StartupMessage extends Message.Request
         String name = options.get(CHECKSUM);
         try
         {
-            return name != null ? ChecksumType.valueOf(name.toUpperCase()) : null;
+            return name != null ? ChecksumType.valueOf(name) : null;
         }
         catch (IllegalArgumentException e)
         {

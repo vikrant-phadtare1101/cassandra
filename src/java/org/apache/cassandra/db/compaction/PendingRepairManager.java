@@ -479,7 +479,7 @@ class PendingRepairManager
             throw new UnsupportedOperationException();
         }
 
-        protected int executeInternal(ActiveCompactionsTracker activeCompactions)
+        protected int executeInternal(CompactionManager.CompactionExecutorStatsCollector collector)
         {
             run();
             return transaction.originals().size();
