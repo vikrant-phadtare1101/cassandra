@@ -64,11 +64,6 @@ public final class DropKeyspaceStatement extends AlterSchemaStatement
         return new AuditLogContext(AuditLogEntryType.DROP_KEYSPACE, keyspaceName);
     }
 
-    public String toString()
-    {
-        return String.format("%s (%s)", getClass().getSimpleName(), keyspaceName);
-    }
-
     public static final class Raw extends CQLStatement.Raw
     {
         private final String keyspaceName;
