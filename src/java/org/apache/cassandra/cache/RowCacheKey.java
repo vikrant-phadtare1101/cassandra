@@ -19,41 +19,32 @@ package org.apache.cassandra.cache;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.Objects;
-
-import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.ObjectSizes;
+import org.apache.cassandra.utils.Pair;
 
 public final class RowCacheKey extends CacheKey
 {
     public final byte[] key;
 
-    private static final long EMPTY_SIZE = ObjectSizes.measure(new RowCacheKey(null, null, new byte[0]));
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new RowCacheKey(null, ByteBufferUtil.EMPTY_BYTE_BUFFER));
 
-    public RowCacheKey(TableId tableId, String indexName, byte[] key)
+    public RowCacheKey(Pair<String, String> ksAndCFName, byte[] key)
     {
-        super(tableId, indexName);
+        super(ksAndCFName);
         this.key = key;
     }
 
-    public RowCacheKey(TableMetadata metadata, DecoratedKey key)
+    public RowCacheKey(Pair<String, String> ksAndCFName, DecoratedKey key)
     {
-        super(metadata);
-        this.key = ByteBufferUtil.getArray(key.getKey());
-        assert this.key != null;
+        this(ksAndCFName, key.getKey());
     }
 
-    @VisibleForTesting
-    public RowCacheKey(TableId tableId, String indexName, ByteBuffer key)
+    public RowCacheKey(Pair<String, String> ksAndCFName, ByteBuffer key)
     {
-        super(tableId, indexName);
+        super(ksAndCFName);
         this.key = ByteBufferUtil.getArray(key);
         assert this.key != null;
     }
@@ -71,16 +62,13 @@ public final class RowCacheKey extends CacheKey
 
         RowCacheKey that = (RowCacheKey) o;
 
-        return tableId.equals(that.tableId)
-               && Objects.equals(indexName, that.indexName)
-               && Arrays.equals(key, that.key);
+        return ksAndCFName.equals(that.ksAndCFName) && Arrays.equals(key, that.key);
     }
 
     @Override
     public int hashCode()
     {
-        int result = tableId.hashCode();
-        result = 31 * result + Objects.hashCode(indexName);
+        int result = ksAndCFName.hashCode();
         result = 31 * result + (key != null ? Arrays.hashCode(key) : 0);
         return result;
     }
@@ -88,7 +76,6 @@ public final class RowCacheKey extends CacheKey
     @Override
     public String toString()
     {
-        TableMetadataRef tableRef = Schema.instance.getTableMetadataRef(tableId);
-        return String.format("RowCacheKey(%s, %s, key:%s)", tableRef, indexName, Arrays.toString(key));
+        return String.format("RowCacheKey(ksAndCFName:%s, key:%s)", ksAndCFName, Arrays.toString(key));
     }
 }

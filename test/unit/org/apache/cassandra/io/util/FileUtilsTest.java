@@ -21,7 +21,7 @@ package org.apache.cassandra.io.util;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -45,49 +45,20 @@ public class FileUtilsTest
     }
 
     @Test
-    public void testParseFileSize() throws Exception
-    {
-        // test straightforward conversions for each unit
-        assertEquals("FileUtils.parseFileSize() failed to parse a whole number of bytes",
-            256L, FileUtils.parseFileSize("256 bytes"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a whole number of kilobytes",
-            2048L, FileUtils.parseFileSize("2 KiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a whole number of megabytes",
-            4194304L, FileUtils.parseFileSize("4 MiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a whole number of gigabytes",
-            3221225472L, FileUtils.parseFileSize("3 GiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a whole number of terabytes",
-            5497558138880L, FileUtils.parseFileSize("5 TiB"));
-        // test conversions of fractional units
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of kilobytes",
-            1536L, FileUtils.parseFileSize("1.5 KiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of kilobytes",
-            4434L, FileUtils.parseFileSize("4.33 KiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of megabytes",
-            2359296L, FileUtils.parseFileSize("2.25 MiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of megabytes",
-            3292529L, FileUtils.parseFileSize("3.14 MiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of gigabytes",
-            1299227607L, FileUtils.parseFileSize("1.21 GiB"));
-        assertEquals("FileUtils.parseFileSize() failed to parse a rational number of terabytes",
-            6621259022467L, FileUtils.parseFileSize("6.022 TiB"));
-    }
-
-    @Test
     public void testTruncate() throws IOException
     {
-        File file = FileUtils.createDeletableTempFile("testTruncate", "1");
+        File file = FileUtils.createTempFile("testTruncate", "1");
         final String expected = "The quick brown fox jumps over the lazy dog";
 
         Files.write(file.toPath(), expected.getBytes());
         assertTrue(file.exists());
 
         byte[] b = Files.readAllBytes(file.toPath());
-        assertEquals(expected, new String(b, StandardCharsets.UTF_8));
+        assertEquals(expected, new String(b, Charset.forName("UTF-8")));
 
         FileUtils.truncate(file.getAbsolutePath(), 10);
         b = Files.readAllBytes(file.toPath());
-        assertEquals("The quick ", new String(b, StandardCharsets.UTF_8));
+        assertEquals("The quick ", new String(b, Charset.forName("UTF-8")));
 
         FileUtils.truncate(file.getAbsolutePath(), 0);
         b = Files.readAllBytes(file.toPath());

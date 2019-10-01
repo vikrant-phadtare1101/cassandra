@@ -21,7 +21,6 @@ import java.util.*;
 import java.util.Map.Entry;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -204,7 +203,7 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
     }
 
     @SuppressWarnings("resource")
-    public synchronized Collection<AbstractCompactionTask> getMaximalTask(final int gcBefore, boolean splitOutput)
+    public Collection<AbstractCompactionTask> getMaximalTask(final int gcBefore, boolean splitOutput)
     {
         Iterable<SSTableReader> filteredSSTables = filterSuspectSSTables(sstables);
         if (Iterables.isEmpty(filteredSSTables))
@@ -330,21 +329,15 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
     }
 
     @Override
-    public synchronized void addSSTable(SSTableReader added)
+    public void addSSTable(SSTableReader added)
     {
         sstables.add(added);
     }
 
     @Override
-    public synchronized void removeSSTable(SSTableReader sstable)
+    public void removeSSTable(SSTableReader sstable)
     {
         sstables.remove(sstable);
-    }
-
-    @Override
-    protected Set<SSTableReader> getSSTables()
-    {
-        return ImmutableSet.copyOf(sstables);
     }
 
     public String toString()

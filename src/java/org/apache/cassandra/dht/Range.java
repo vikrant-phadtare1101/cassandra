@@ -19,7 +19,6 @@ package org.apache.cassandra.dht;
 
 import java.io.Serializable;
 import java.util.*;
-import java.util.function.Predicate;
 
 import org.apache.commons.lang3.ObjectUtils;
 
@@ -549,7 +548,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
     /**
      * Helper class to check if a token is contained within a given collection of ranges
      */
-    public static class OrderedRangeContainmentChecker implements Predicate<Token>
+    public static class OrderedRangeContainmentChecker
     {
         private final Iterator<Range<Token>> normalizedRangesIterator;
         private Token lastToken = null;
@@ -570,8 +569,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
          * @param t token to check, must be larger than or equal to the last token passed
          * @return true if the token is contained within the ranges given to the constructor.
          */
-        @Override
-        public boolean test(Token t)
+        public boolean contains(Token t)
         {
             assert lastToken == null || lastToken.compareTo(t) <= 0;
             lastToken = t;
@@ -585,27 +583,6 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
                 if (!normalizedRangesIterator.hasNext())
                     return false;
                 currentRange = normalizedRangesIterator.next();
-            }
-        }
-    }
-
-    public static <T extends RingPosition<T>> void assertNormalized(List<Range<T>> ranges)
-    {
-        Range<T> lastRange = null;
-        for (Range<T> range : ranges)
-        {
-            if (lastRange == null)
-            {
-                lastRange = range;
-            }
-            else if (lastRange.left.compareTo(range.left) >= 0 || lastRange.intersects(range))
-            {
-                throw new AssertionError(String.format("Ranges aren't properly normalized. lastRange %s, range %s, compareTo %d, intersects %b, all ranges %s%n",
-                                                       lastRange,
-                                                       range,
-                                                       lastRange.compareTo(range),
-                                                       lastRange.intersects(range),
-                                                       ranges));
             }
         }
     }

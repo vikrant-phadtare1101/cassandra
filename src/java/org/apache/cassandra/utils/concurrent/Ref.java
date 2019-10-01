@@ -31,7 +31,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import org.apache.cassandra.concurrent.InfiniteLoopExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,15 +44,12 @@ import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.Memory;
 import org.apache.cassandra.io.util.SafeMemory;
-import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.Pair;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
 import static java.util.Collections.emptyList;
 
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdownNow;
 import static org.apache.cassandra.utils.Throwables.maybeFail;
 import static org.apache.cassandra.utils.Throwables.merge;
 
@@ -358,10 +354,11 @@ public final class Ref<T> implements RefCounted<T>
     static final Set<Class<?>> concurrentIterables = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final Set<GlobalState> globallyExtant = Collections.newSetFromMap(new ConcurrentHashMap<>());
     static final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
-    private static final InfiniteLoopExecutor EXEC = new InfiniteLoopExecutor("Reference-Reaper", Ref::reapOneReference).start();
+    private static final ExecutorService EXEC = Executors.newFixedThreadPool(1, new NamedThreadFactory("Reference-Reaper"));
     static final ScheduledExecutorService STRONG_LEAK_DETECTOR = !DEBUG_ENABLED ? null : Executors.newScheduledThreadPool(1, new NamedThreadFactory("Strong-Reference-Leak-Detector"));
     static
     {
+        EXEC.execute(new ReferenceReaper());
         if (DEBUG_ENABLED)
         {
             STRONG_LEAK_DETECTOR.scheduleAtFixedRate(new Visitor(), 1, 15, TimeUnit.MINUTES);
@@ -370,12 +367,28 @@ public final class Ref<T> implements RefCounted<T>
         concurrentIterables.addAll(Arrays.asList(concurrentIterableClasses));
     }
 
-    private static void reapOneReference() throws InterruptedException
+    static final class ReferenceReaper implements Runnable
     {
-        Object obj = referenceQueue.remove(100);
-        if (obj instanceof Ref.State)
+        public void run()
         {
-            ((Ref.State) obj).release(true);
+            try
+            {
+                while (true)
+                {
+                    Object obj = referenceQueue.remove();
+                    if (obj instanceof Ref.State)
+                    {
+                        ((Ref.State) obj).release(true);
+                    }
+                }
+            }
+            catch (InterruptedException e)
+            {
+            }
+            finally
+            {
+                EXEC.execute(this);
+            }
         }
     }
 
@@ -684,7 +697,7 @@ public final class Ref<T> implements RefCounted<T>
             this.candidates.retainAll(candidates);
             if (!this.candidates.isEmpty())
             {
-                List<String> names = new ArrayList<>(this.candidates.size());
+                List<String> names = new ArrayList<>();
                 for (Tidy tidy : this.candidates)
                     names.add(tidy.name());
                 logger.warn("Strong reference leak candidates detected: {}", names);
@@ -705,11 +718,5 @@ public final class Ref<T> implements RefCounted<T>
                 }
             }
         }
-    }
-
-    @VisibleForTesting
-    public static void shutdownReferenceReaper(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, EXEC, STRONG_LEAK_DETECTOR);
     }
 }

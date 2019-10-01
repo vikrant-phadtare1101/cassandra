@@ -20,13 +20,6 @@ package org.apache.cassandra.service;
 
 public interface GCInspectorMXBean
 {
-    /* @returns { interval (ms), max(gc real time (ms)), sum(gc real time (ms)), sum((gc real time (ms))^2), sum(gc bytes), count(gc) }
-     * 
-     */
-    double[] getAndResetStats();
-    void setGcWarnThresholdInMs(long threshold);
-    long getGcWarnThresholdInMs();
-    void setGcLogThresholdInMs(long threshold);
-    long getGcLogThresholdInMs();
-    long getStatusThresholdInMs();
+    // returns { interval (ms), max(gc real time (ms)), sum(gc real time (ms)), sum((gc real time (ms))^2), sum(gc bytes), count(gc) }
+    public double[] getAndResetStats();
 }

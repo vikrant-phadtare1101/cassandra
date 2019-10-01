@@ -104,7 +104,7 @@ elif webbrowser._tryorder[0] == 'xdg-open' and os.environ.get('XDG_DATA_DIRS', '
     webbrowser._tryorder.remove('xdg-open')
     webbrowser._tryorder.append('xdg-open')
 
-# use bundled lib for python-cql if available. if there
+# use bundled libs for python-cql and thrift, if available. if there
 # is a ../lib dir, use bundled libs there preferentially.
 ZIPLIB_DIRS = [os.path.join(CASSANDRA_PATH, 'lib')]
 myplatform = platform.system()
@@ -210,6 +210,7 @@ parser.add_option("--browser", dest='browser', help="""The browser to use to dis
                                                     - one of the supported browsers in https://docs.python.org/2/library/webbrowser.html.
                                                     - browser path followed by %s, example: /usr/bin/google-chrome-stable %s""")
 parser.add_option('--ssl', action='store_true', help='Use SSL', default=False)
+parser.add_option('--no_compact', action='store_true', help='No Compact', default=False)
 parser.add_option("-u", "--username", help="Authenticate as user.")
 parser.add_option("-p", "--password", help="Authenticate using password.")
 parser.add_option('-k', '--keyspace', help='Authenticate to the given keyspace.')
@@ -437,9 +438,6 @@ class Shell(cmd.Cmd):
     shunted_query_out = None
     use_paging = True
 
-    # TODO remove after virtual tables are added to connection metadata
-    virtual_keyspaces = None
-
     default_page_size = 100
 
     def __init__(self, hostname, port, color=False,
@@ -447,6 +445,7 @@ class Shell(cmd.Cmd):
                  completekey=DEFAULT_COMPLETEKEY, browser=None, use_conn=None,
                  cqlver=None, keyspace=None,
                  tracing_enabled=False, expand_enabled=False,
+                 no_compact=False,
                  display_nanotime_format=DEFAULT_NANOTIME_FORMAT,
                  display_timestamp_format=DEFAULT_TIMESTAMP_FORMAT,
                  display_date_format=DEFAULT_DATE_FORMAT,
@@ -458,8 +457,7 @@ class Shell(cmd.Cmd):
                  single_statement=None,
                  request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
                  protocol_version=None,
-                 connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
-                 allow_server_port_discovery=False):
+                 connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS):
         cmd.Cmd.__init__(self, completekey=completekey)
         self.hostname = hostname
         self.port = port
@@ -474,7 +472,6 @@ class Shell(cmd.Cmd):
         self.tracing_enabled = tracing_enabled
         self.page_size = self.default_page_size
         self.expand_enabled = expand_enabled
-        self.allow_server_port_discovery = allow_server_port_discovery
         if use_conn:
             self.conn = use_conn
         else:
@@ -483,11 +480,11 @@ class Shell(cmd.Cmd):
                 kwargs['protocol_version'] = protocol_version
             self.conn = Cluster(contact_points=(self.hostname,), port=self.port, cql_version=cqlver,
                                 auth_provider=self.auth_provider,
+                                no_compact=no_compact,
                                 ssl_options=sslhandling.ssl_settings(hostname, CONFIG_FILE) if ssl else None,
                                 load_balancing_policy=WhiteListRoundRobinPolicy([self.hostname]),
                                 control_connection_timeout=connect_timeout,
                                 connect_timeout=connect_timeout,
-                                allow_server_port_discovery=allow_server_port_discovery,
                                 **kwargs)
         self.owns_connection = not use_conn
 
@@ -631,10 +628,7 @@ class Shell(cmd.Cmd):
         self.connection_versions = vers
 
     def get_keyspace_names(self):
-        # TODO remove after virtual tables are added to connection metadata
-        if self.virtual_keyspaces is None:
-            self.init_virtual_keyspaces_meta()
-        return map(str, self.conn.metadata.keyspaces.keys() + self.virtual_keyspaces.keys())
+        return map(str, self.conn.metadata.keyspaces.keys())
 
     def get_columnfamily_names(self, ksname=None):
         if ksname is None:
@@ -698,78 +692,9 @@ class Shell(cmd.Cmd):
         return self.conn.metadata.partitioner
 
     def get_keyspace_meta(self, ksname):
-        if ksname in self.conn.metadata.keyspaces:
-            return self.conn.metadata.keyspaces[ksname]
-
-        # TODO remove after virtual tables are added to connection metadata
-        if self.virtual_keyspaces is None:
-            self.init_virtual_keyspaces_meta()
-        if ksname in self.virtual_keyspaces:
-            return self.virtual_keyspaces[ksname]
-
-        raise KeyspaceNotFound('Keyspace %r not found.' % ksname)
-
-    # TODO remove after virtual tables are added to connection metadata
-    def init_virtual_keyspaces_meta(self):
-        self.virtual_keyspaces = {}
-        for vkeyspace in self.fetch_virtual_keyspaces():
-            self.virtual_keyspaces[vkeyspace.name] = vkeyspace
-
-    # TODO remove after virtual tables are added to connection metadata
-    def fetch_virtual_keyspaces(self):
-        keyspaces = []
-
-        result = self.session.execute('SELECT keyspace_name FROM system_virtual_schema.keyspaces;')
-        for row in result:
-            name = row['keyspace_name']
-            keyspace = KeyspaceMetadata(name, False, None, None)
-            tables = self.fetch_virtual_tables(name)
-            for table in tables:
-                keyspace.tables[table.name] = table
-            keyspaces.append(keyspace)
-
-        return keyspaces
-
-    # TODO remove after virtual tables are added to connection metadata
-    def fetch_virtual_tables(self, keyspace_name):
-        tables = []
-
-        result = self.session.execute("SELECT * FROM system_virtual_schema.tables WHERE keyspace_name = '{}';".format(keyspace_name))
-        for row in result:
-            name = row['table_name']
-            table = TableMetadata(keyspace_name, name)
-            self.fetch_virtual_columns(table)
-            tables.append(table)
-
-        return tables
-
-    # TODO remove after virtual tables are added to connection metadata
-    def fetch_virtual_columns(self, table):
-        result = self.session.execute("SELECT * FROM system_virtual_schema.columns WHERE keyspace_name = '{}' AND table_name = '{}';".format(table.keyspace_name, table.name))
-
-        partition_key_columns = []
-        clustering_columns = []
-
-        for row in result:
-            name = row['column_name']
-            cql_type = row['type']
-            kind = row['kind']
-            position = row['position']
-            is_static = kind == 'static'
-            is_reversed = row['clustering_order'] == 'desc'
-            column = ColumnMetadata(table, name, cql_type, is_static, is_reversed)
-            table.columns[column.name] = column
-
-            if kind == 'partition_key':
-                partition_key_columns.append((position, column))
-            elif kind == 'clustering':
-                clustering_columns.append((position, column))
-
-        partition_key_columns.sort(key=lambda t: t[0])
-        clustering_columns.sort(key=lambda t: t[0])
-
-        table.partition_key  = map(lambda t: t[1], partition_key_columns)
-        table.clustering_key = map(lambda t: t[1], clustering_columns)
+        if ksname not in self.conn.metadata.keyspaces:
+            raise KeyspaceNotFound('Keyspace %r not found.' % ksname)
+        return self.conn.metadata.keyspaces[ksname]
 
     def get_keyspaces(self):
         return self.conn.metadata.keyspaces.values()
@@ -782,6 +707,7 @@ class Shell(cmd.Cmd):
         if ksname is None:
             ksname = self.current_keyspace
         ksmeta = self.get_keyspace_meta(ksname)
+
         if tablename not in ksmeta.tables:
             if ksname == 'system_auth' and tablename in ['roles', 'role_permissions']:
                 self.get_fake_auth_table_meta(ksname, tablename)
@@ -1164,9 +1090,7 @@ class Shell(cmd.Cmd):
                     num_rows += len(result.current_rows)
                     self.print_static_result(result, table_meta)
                 if result.has_more_pages:
-                    if self.shunted_query_out is None:
-                        # Only pause when not capturing.
-                        raw_input("---MORE---")
+                    raw_input("---MORE---")
                     result.fetch_next_page()
                 else:
                     break
@@ -1199,7 +1123,7 @@ class Shell(cmd.Cmd):
             ks_meta = self.conn.metadata.keyspaces.get(ks_name, None)
             cql_types = [CqlType(cql_typename(t), ks_meta) for t in result.column_types]
 
-        formatted_values = [map(self.myformat_value, [row[c] for c in column_names], cql_types) for row in result.current_rows]
+        formatted_values = [map(self.myformat_value, [row[column] for column in column_names], cql_types) for row in result.current_rows]
 
         if self.expand_enabled:
             self.print_formatted_result_vertically(formatted_names, formatted_values)
@@ -1778,8 +1702,8 @@ class Shell(cmd.Cmd):
         SHOW VERSION
 
           Shows the version and build of the connected Cassandra instance, as
-          well as the version of the CQL spec that the connected Cassandra
-          instance understands.
+          well as the versions of the CQL spec and the Thrift protocol that
+          the connected Cassandra instance understands.
 
         SHOW HOST
 
@@ -1845,8 +1769,7 @@ class Shell(cmd.Cmd):
                          display_timezone=self.display_timezone,
                          max_trace_wait=self.max_trace_wait, ssl=self.ssl,
                          request_timeout=self.session.default_timeout,
-                         connect_timeout=self.conn.connect_timeout,
-                         allow_server_port_discovery=self.allow_server_port_discovery)
+                         connect_timeout=self.conn.connect_timeout)
         subshell.cmdloop()
         f.close()
 
@@ -2322,6 +2245,7 @@ def read_options(cmdlineargs, environment):
     optvalues.debug = False
     optvalues.file = None
     optvalues.ssl = option_with_default(configs.getboolean, 'connection', 'ssl', DEFAULT_SSL)
+    optvalues.no_compact = False
     optvalues.encoding = option_with_default(configs.get, 'ui', 'encoding', UTF8)
 
     optvalues.tty = option_with_default(configs.getboolean, 'ui', 'tty', sys.stdin.isatty())
@@ -2330,7 +2254,6 @@ def read_options(cmdlineargs, environment):
     optvalues.connect_timeout = option_with_default(configs.getint, 'connection', 'timeout', DEFAULT_CONNECT_TIMEOUT_SECONDS)
     optvalues.request_timeout = option_with_default(configs.getint, 'connection', 'request_timeout', DEFAULT_REQUEST_TIMEOUT_SECONDS)
     optvalues.execute = None
-    optvalues.allow_server_port_discovery = option_with_default(configs.getboolean, 'connection', 'allow_server_port_discovery', 'False')
 
     (options, arguments) = parser.parse_args(cmdlineargs, values=optvalues)
 
@@ -2483,6 +2406,7 @@ def main(options, hostname, port):
                       protocol_version=options.protocol_version,
                       cqlver=options.cqlversion,
                       keyspace=options.keyspace,
+                      no_compact=options.no_compact,
                       display_timestamp_format=options.time_format,
                       display_nanotime_format=options.nanotime_format,
                       display_date_format=options.date_format,
@@ -2494,8 +2418,7 @@ def main(options, hostname, port):
                       single_statement=options.execute,
                       request_timeout=options.request_timeout,
                       connect_timeout=options.connect_timeout,
-                      encoding=options.encoding,
-                      allow_server_port_discovery=options.allow_server_port_discovery)
+                      encoding=options.encoding)
     except KeyboardInterrupt:
         sys.exit('Connection aborted.')
     except CQL_ERRORS, e:

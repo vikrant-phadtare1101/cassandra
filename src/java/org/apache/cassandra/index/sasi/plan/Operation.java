@@ -21,8 +21,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.ColumnMetadata.Kind;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.ColumnDefinition.Kind;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.db.rows.Row;
@@ -37,7 +37,6 @@ import org.apache.cassandra.index.sasi.utils.RangeUnionIterator;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.*;
-
 import org.apache.cassandra.utils.FBUtilities;
 
 @SuppressWarnings("resource")
@@ -66,14 +65,14 @@ public class Operation extends RangeIterator<Long, Token>
     private final QueryController controller;
 
     protected final OperationType op;
-    protected final ListMultimap<ColumnMetadata, Expression> expressions;
+    protected final ListMultimap<ColumnDefinition, Expression> expressions;
     protected final RangeIterator<Long, Token> range;
 
     protected Operation left, right;
 
     private Operation(OperationType operation,
                       QueryController controller,
-                      ListMultimap<ColumnMetadata, Expression> expressions,
+                      ListMultimap<ColumnDefinition, Expression> expressions,
                       RangeIterator<Long, Token> range,
                       Operation left, Operation right)
     {
@@ -208,7 +207,7 @@ public class Operation extends RangeIterator<Long, Token>
         boolean result = false;
         int idx = 0;
 
-        for (ColumnMetadata column : expressions.keySet())
+        for (ColumnDefinition column : expressions.keySet())
         {
             if (column.kind == Kind.PARTITION_KEY)
                 continue;
@@ -263,11 +262,11 @@ public class Operation extends RangeIterator<Long, Token>
     }
 
     @VisibleForTesting
-    protected static ListMultimap<ColumnMetadata, Expression> analyzeGroup(QueryController controller,
-                                                                           OperationType op,
-                                                                           List<RowFilter.Expression> expressions)
+    protected static ListMultimap<ColumnDefinition, Expression> analyzeGroup(QueryController controller,
+                                                                             OperationType op,
+                                                                             List<RowFilter.Expression> expressions)
     {
-        ListMultimap<ColumnMetadata, Expression> analyzed = ArrayListMultimap.create();
+        ListMultimap<ColumnDefinition, Expression> analyzed = ArrayListMultimap.create();
 
         // sort all of the expressions in the operation by name and priority of the logical operator
         // this gives us an efficient way to handle inequality and combining into ranges without extra processing
@@ -430,7 +429,7 @@ public class Operation extends RangeIterator<Long, Token>
         {
             if (!expressions.isEmpty())
             {
-                ListMultimap<ColumnMetadata, Expression> analyzedExpressions = analyzeGroup(controller, op, expressions);
+                ListMultimap<ColumnDefinition, Expression> analyzedExpressions = analyzeGroup(controller, op, expressions);
                 RangeIterator.Builder<Long, Token> range = controller.getIndexes(op, analyzedExpressions.values());
 
                 Operation rightOp = null;

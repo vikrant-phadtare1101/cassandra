@@ -54,16 +54,15 @@ import static org.junit.Assert.fail;
 public class DatabaseDescriptorRefTest
 {
     static final String[] validClasses = {
-    "org.apache.cassandra.auth.AllowAllInternodeAuthenticator",
     "org.apache.cassandra.auth.IInternodeAuthenticator",
     "org.apache.cassandra.auth.IAuthenticator",
     "org.apache.cassandra.auth.IAuthorizer",
     "org.apache.cassandra.auth.IRoleManager",
-    "org.apache.cassandra.auth.INetworkAuthorizer",
     "org.apache.cassandra.config.DatabaseDescriptor",
     "org.apache.cassandra.config.ConfigurationLoader",
     "org.apache.cassandra.config.Config",
     "org.apache.cassandra.config.Config$1",
+    "org.apache.cassandra.config.Config$RequestSchedulerId",
     "org.apache.cassandra.config.Config$CommitLogSync",
     "org.apache.cassandra.config.Config$DiskAccessMode",
     "org.apache.cassandra.config.Config$DiskFailurePolicy",
@@ -71,38 +70,19 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.config.Config$DiskOptimizationStrategy",
     "org.apache.cassandra.config.Config$InternodeCompression",
     "org.apache.cassandra.config.Config$MemtableAllocationType",
-    "org.apache.cassandra.config.Config$RepairCommandPoolFullStrategy",
     "org.apache.cassandra.config.Config$UserFunctionTimeoutPolicy",
-    "org.apache.cassandra.config.Config$CorruptedTombstoneStrategy",
+    "org.apache.cassandra.config.RequestSchedulerOptions",
     "org.apache.cassandra.config.ParameterizedClass",
     "org.apache.cassandra.config.EncryptionOptions",
     "org.apache.cassandra.config.EncryptionOptions$ClientEncryptionOptions",
     "org.apache.cassandra.config.EncryptionOptions$ServerEncryptionOptions",
     "org.apache.cassandra.config.EncryptionOptions$ServerEncryptionOptions$InternodeEncryption",
-    "org.apache.cassandra.config.EncryptionOptions$ServerEncryptionOptions$OutgoingEncryptedPortSource",
     "org.apache.cassandra.config.YamlConfigurationLoader",
     "org.apache.cassandra.config.YamlConfigurationLoader$PropertiesChecker",
     "org.apache.cassandra.config.YamlConfigurationLoader$PropertiesChecker$1",
     "org.apache.cassandra.config.YamlConfigurationLoader$CustomConstructor",
     "org.apache.cassandra.config.TransparentDataEncryptionOptions",
-    "org.apache.cassandra.db.ConsistencyLevel",
     "org.apache.cassandra.dht.IPartitioner",
-    "org.apache.cassandra.distributed.api.IInstance",
-    "org.apache.cassandra.distributed.api.IIsolatedExecutor",
-    "org.apache.cassandra.distributed.impl.InstanceClassLoader",
-    "org.apache.cassandra.distributed.impl.InstanceConfig",
-    "org.apache.cassandra.distributed.impl.IInvokableInstance",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$CallableNoExcept",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$InstanceFunction",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableBiConsumer",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableBiFunction",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableCallable",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableConsumer",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableFunction",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableRunnable",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$SerializableTriFunction",
-    "org.apache.cassandra.distributed.impl.InvokableInstance$TriFunction",
-    "org.apache.cassandra.distributed.impl.Message",
     "org.apache.cassandra.exceptions.ConfigurationException",
     "org.apache.cassandra.exceptions.RequestValidationException",
     "org.apache.cassandra.exceptions.CassandraException",
@@ -120,10 +100,10 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.io.util.DataOutputPlus",
     "org.apache.cassandra.io.util.DiskOptimizationStrategy",
     "org.apache.cassandra.io.util.SpinningDiskOptimizationStrategy",
-    "org.apache.cassandra.locator.Replica",
     "org.apache.cassandra.locator.SimpleSeedProvider",
     "org.apache.cassandra.locator.SeedProvider",
     "org.apache.cassandra.net.BackPressureStrategy",
+    "org.apache.cassandra.scheduler.IRequestScheduler",
     "org.apache.cassandra.security.EncryptionContext",
     "org.apache.cassandra.service.CacheService$CacheType",
     "org.apache.cassandra.utils.FBUtilities",
@@ -134,16 +114,9 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.ConsoleAppender",
     "org.apache.cassandra.ConsoleAppender$1",
     "org.apache.cassandra.LogbackStatusListener",
-    "org.apache.cassandra.LogbackStatusListener$ToLoggerOutputStream",
-    "org.apache.cassandra.LogbackStatusListener$WrappedPrintStream",
+    "org.apache.cassandra.LogbackStatusListener$1",
+    "org.apache.cassandra.LogbackStatusListener$2",
     "org.apache.cassandra.TeeingAppender",
-    "org.apache.cassandra.audit.IAuditLogger",
-    "org.apache.cassandra.audit.BinAuditLogger",
-    "org.apache.cassandra.audit.BinLogAuditLogger",
-    "org.apache.cassandra.audit.FullQueryLogger",
-    "org.apache.cassandra.audit.AuditLogOptions",
-    "org.apache.cassandra.utils.binlog.BinLogOptions",
-    "org.apache.cassandra.audit.FullQueryLoggerOptions",
     // generated classes
     "org.apache.cassandra.config.ConfigBeanInfo",
     "org.apache.cassandra.config.ConfigCustomizer",
@@ -153,9 +126,6 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.config.EncryptionOptions$ServerEncryptionOptionsCustomizer",
     "org.apache.cassandra.ConsoleAppenderBeanInfo",
     "org.apache.cassandra.ConsoleAppenderCustomizer",
-    "org.apache.cassandra.locator.InetAddressAndPort",
-    "org.apache.cassandra.cql3.statements.schema.AlterKeyspaceStatement",
-    "org.apache.cassandra.cql3.statements.schema.CreateKeyspaceStatement"
     };
 
     static final Set<String> checkedClasses = new HashSet<>(Arrays.asList(validClasses));
@@ -189,13 +159,6 @@ public class DatabaseDescriptorRefTest
 
             protected Class<?> findClass(String name) throws ClassNotFoundException
             {
-                if (name.startsWith("java."))
-                    // Java 11 does not allow a "custom" class loader (i.e. user code)
-                    // to define classes in protected packages (like java, java.sql, etc).
-                    // Therefore we have to delegate the call to the delegate class loader
-                    // itself.
-                    return delegate.loadClass(name);
-
                 Class<?> cls = classMap.get(name);
                 if (cls != null)
                     return cls;
@@ -210,15 +173,7 @@ public class DatabaseDescriptorRefTest
 
                 URL url = delegate.getResource(name.replace('.', '/') + ".class");
                 if (url == null)
-                {
-                    // For Java 11: system class files are not readable via getResource(), so
-                    // try it this way
-                    cls = Class.forName(name, false, delegate);
-                    classMap.put(name, cls);
-                    return cls;
-                }
-
-                // Java8 way + all non-system class files
+                    throw new ClassNotFoundException(name);
                 try (InputStream in = url.openConnection().getInputStream())
                 {
                     ByteArrayOutputStream os = new ByteArrayOutputStream();
@@ -246,6 +201,7 @@ public class DatabaseDescriptorRefTest
         for (String methodName : new String[]{
             "clientInitialization",
             "applyAddressConfig",
+            "applyThriftHSHA",
             "applyInitialTokens",
             // no seed provider in default configuration for clients
             // "applySeedProvider",
@@ -255,16 +211,17 @@ public class DatabaseDescriptorRefTest
             // "applySnitch",
             "applyEncryptionContext",
             // starts "REQUEST-SCHEDULER" thread via RoundRobinScheduler
+            // "applyRequestScheduler",
         })
         {
             Method method = cDatabaseDescriptor.getDeclaredMethod(methodName);
             method.invoke(null);
 
             if ("clientInitialization".equals(methodName) &&
-                threadCount + 2 == threads.getThreadCount())
+                threadCount + 1 == threads.getThreadCount())
             {
-                // ignore the "AsyncAppender-Worker-ASYNC" and "logback-1" threads
-                threadCount = threadCount + 2;
+                // ignore the "AsyncAppender-Worker-ASYNC" thread
+                threadCount++;
             }
 
             if (threadCount != threads.getThreadCount())

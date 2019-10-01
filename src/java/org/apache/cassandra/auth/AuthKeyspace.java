@@ -19,15 +19,11 @@ package org.apache.cassandra.auth;
 
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.SchemaConstants;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.Tables;
-
-import static java.lang.String.format;
 
 public final class AuthKeyspace
 {
@@ -39,67 +35,55 @@ public final class AuthKeyspace
     public static final String ROLE_MEMBERS = "role_members";
     public static final String ROLE_PERMISSIONS = "role_permissions";
     public static final String RESOURCE_ROLE_INDEX = "resource_role_permissons_index";
-    public static final String NETWORK_PERMISSIONS = "network_permissions";
 
     public static final long SUPERUSER_SETUP_DELAY = Long.getLong("cassandra.superuser_setup_delay_ms", 10000);
 
-    private static final TableMetadata Roles =
-        parse(ROLES,
-              "role definitions",
-              "CREATE TABLE %s ("
-              + "role text,"
-              + "is_superuser boolean,"
-              + "can_login boolean,"
-              + "salted_hash text,"
-              + "member_of set<text>,"
-              + "PRIMARY KEY(role))");
+    private static final CFMetaData Roles =
+        compile(ROLES,
+                "role definitions",
+                "CREATE TABLE %s ("
+                + "role text,"
+                + "is_superuser boolean,"
+                + "can_login boolean,"
+                + "salted_hash text,"
+                + "member_of set<text>,"
+                + "PRIMARY KEY(role))");
 
-    private static final TableMetadata RoleMembers =
-        parse(ROLE_MEMBERS,
-              "role memberships lookup table",
-              "CREATE TABLE %s ("
-              + "role text,"
-              + "member text,"
-              + "PRIMARY KEY(role, member))");
+    private static final CFMetaData RoleMembers =
+        compile(ROLE_MEMBERS,
+                "role memberships lookup table",
+                "CREATE TABLE %s ("
+                + "role text,"
+                + "member text,"
+                + "PRIMARY KEY(role, member))");
 
-    private static final TableMetadata RolePermissions =
-        parse(ROLE_PERMISSIONS,
-              "permissions granted to db roles",
-              "CREATE TABLE %s ("
-              + "role text,"
-              + "resource text,"
-              + "permissions set<text>,"
-              + "PRIMARY KEY(role, resource))");
+    private static final CFMetaData RolePermissions =
+        compile(ROLE_PERMISSIONS,
+                "permissions granted to db roles",
+                "CREATE TABLE %s ("
+                + "role text,"
+                + "resource text,"
+                + "permissions set<text>,"
+                + "PRIMARY KEY(role, resource))");
 
-    private static final TableMetadata ResourceRoleIndex =
-        parse(RESOURCE_ROLE_INDEX,
-              "index of db roles with permissions granted on a resource",
-              "CREATE TABLE %s ("
-              + "resource text,"
-              + "role text,"
-              + "PRIMARY KEY(resource, role))");
+    private static final CFMetaData ResourceRoleIndex =
+        compile(RESOURCE_ROLE_INDEX,
+                "index of db roles with permissions granted on a resource",
+                "CREATE TABLE %s ("
+                + "resource text,"
+                + "role text,"
+                + "PRIMARY KEY(resource, role))");
 
-    private static final TableMetadata NetworkPermissions =
-    parse(NETWORK_PERMISSIONS,
-          "user network permissions",
-          "CREATE TABLE %s ("
-          + "role text, "
-          + "dcs frozen<set<text>>, "
-          + "PRIMARY KEY(role))");
 
-    private static TableMetadata parse(String name, String description, String cql)
+    private static CFMetaData compile(String name, String description, String schema)
     {
-        return CreateTableStatement.parse(format(cql, name), SchemaConstants.AUTH_KEYSPACE_NAME)
-                                   .id(TableId.forSystemTable(SchemaConstants.AUTH_KEYSPACE_NAME, name))
-                                   .comment(description)
-                                   .gcGraceSeconds((int) TimeUnit.DAYS.toSeconds(90))
-                                   .build();
+        return CFMetaData.compile(String.format(schema, name), SchemaConstants.AUTH_KEYSPACE_NAME)
+                         .comment(description)
+                         .gcGraceSeconds((int) TimeUnit.DAYS.toSeconds(90));
     }
 
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(SchemaConstants.AUTH_KEYSPACE_NAME,
-                                       KeyspaceParams.simple(1),
-                                       Tables.of(Roles, RoleMembers, RolePermissions, ResourceRoleIndex, NetworkPermissions));
+        return KeyspaceMetadata.create(SchemaConstants.AUTH_KEYSPACE_NAME, KeyspaceParams.simple(1), Tables.of(Roles, RoleMembers, RolePermissions, ResourceRoleIndex));
     }
 }

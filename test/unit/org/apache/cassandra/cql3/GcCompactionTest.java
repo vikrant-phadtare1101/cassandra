@@ -25,7 +25,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.function.ToIntFunction;
+import java.util.function.Function;
 
 import com.google.common.collect.Iterables;
 import org.junit.Test;
@@ -410,7 +410,7 @@ public class GcCompactionTest extends CQLTester
 
     int countRows(SSTableReader reader)
     {
-        boolean enforceStrictLiveness = reader.metadata().enforceStrictLiveness();
+        boolean enforceStrictLiveness = reader.metadata.enforceStrictLiveness();
         int nowInSec = FBUtilities.nowInSeconds();
         return count(reader, x -> x.isRow() && ((Row) x).hasLiveData(nowInSec, enforceStrictLiveness) ? 1 : 0, x -> 0);
     }
@@ -438,7 +438,7 @@ public class GcCompactionTest extends CQLTester
         return ccd.cellsCount();
     }
 
-    int count(SSTableReader reader, ToIntFunction<Unfiltered> predicate, ToIntFunction<UnfilteredRowIterator> partitionPredicate)
+    int count(SSTableReader reader, Function<Unfiltered, Integer> predicate, Function<UnfilteredRowIterator, Integer> partitionPredicate)
     {
         int instances = 0;
         try (ISSTableScanner partitions = reader.getScanner())
@@ -447,11 +447,11 @@ public class GcCompactionTest extends CQLTester
             {
                 try (UnfilteredRowIterator iter = partitions.next())
                 {
-                    instances += partitionPredicate.applyAsInt(iter);
+                    instances += partitionPredicate.apply(iter);
                     while (iter.hasNext())
                     {
                         Unfiltered atom = iter.next();
-                        instances += predicate.applyAsInt(atom);
+                        instances += predicate.apply(atom);
                     }
                 }
             }

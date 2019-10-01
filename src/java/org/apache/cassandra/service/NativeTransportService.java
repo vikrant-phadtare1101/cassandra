@@ -24,7 +24,6 @@ import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.annotations.VisibleForTesting;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,11 +31,12 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.epoll.Epoll;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.util.concurrent.EventExecutor;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.metrics.AuthMetrics;
 import org.apache.cassandra.metrics.ClientMetrics;
-import org.apache.cassandra.transport.Message;
+import org.apache.cassandra.transport.RequestThreadPoolExecutor;
 import org.apache.cassandra.transport.Server;
-import org.apache.cassandra.utils.NativeLibrary;
 
 /**
  * Handles native transport server lifecycle and associated resources. Lazily initialized.
@@ -50,6 +50,7 @@ public class NativeTransportService
 
     private boolean initialized = false;
     private EventLoopGroup workerGroup;
+    private EventExecutor eventExecutorGroup;
 
     /**
      * Creates netty thread pools and event loops.
@@ -59,6 +60,9 @@ public class NativeTransportService
     {
         if (initialized)
             return;
+
+        // prepare netty resources
+        eventExecutorGroup = new RequestThreadPoolExecutor();
 
         if (useEpoll())
         {
@@ -76,10 +80,11 @@ public class NativeTransportService
         InetAddress nativeAddr = DatabaseDescriptor.getRpcAddress();
 
         org.apache.cassandra.transport.Server.Builder builder = new org.apache.cassandra.transport.Server.Builder()
+                                                                .withEventExecutor(eventExecutorGroup)
                                                                 .withEventLoopGroup(workerGroup)
                                                                 .withHost(nativeAddr);
 
-        if (!DatabaseDescriptor.getNativeProtocolEncryptionOptions().enabled)
+        if (!DatabaseDescriptor.getClientEncryptionOptions().enabled)
         {
             servers = Collections.singleton(builder.withSSL(false).withPort(nativePort).build());
         }
@@ -102,7 +107,16 @@ public class NativeTransportService
             }
         }
 
-        ClientMetrics.instance.init(servers);
+        // register metrics
+        ClientMetrics.instance.addCounter("connectedNativeClients", () ->
+        {
+            int ret = 0;
+            for (Server server : servers)
+                ret += server.getConnectedClients();
+            return ret;
+        });
+
+        AuthMetrics.init();
 
         initialized = true;
     }
@@ -135,19 +149,16 @@ public class NativeTransportService
         // shutdown executors used by netty for native transport server
         workerGroup.shutdownGracefully(3, 5, TimeUnit.SECONDS).awaitUninterruptibly();
 
-        Message.Dispatcher.shutdown();
+        // shutdownGracefully not implemented yet in RequestThreadPoolExecutor
+        eventExecutorGroup.shutdown();
     }
 
     /**
-     * @return intend to use epoll based event looping
+     * @return intend to use epoll bassed event looping
      */
     public static boolean useEpoll()
     {
         final boolean enableEpoll = Boolean.parseBoolean(System.getProperty("cassandra.native.epoll.enabled", "true"));
-
-        if (enableEpoll && !Epoll.isAvailable() && NativeLibrary.osType == NativeLibrary.OSType.LINUX)
-            logger.warn("epoll not available", Epoll.unavailabilityCause());
-
         return enableEpoll && Epoll.isAvailable();
     }
 
@@ -168,14 +179,14 @@ public class NativeTransportService
     }
 
     @VisibleForTesting
+    EventExecutor getEventExecutor()
+    {
+        return eventExecutorGroup;
+    }
+
+    @VisibleForTesting
     Collection<Server> getServers()
     {
         return servers;
-    }
-
-    public void clearConnectionHistory()
-    {
-        for (Server server : servers)
-            server.clearConnectionHistory();
     }
 }

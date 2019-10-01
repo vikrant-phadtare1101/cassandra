@@ -32,8 +32,7 @@ import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.serializers.CollectionSerializer;
-import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.service.QueryState;
+import org.apache.cassandra.service.pager.PagingState;
 import org.apache.cassandra.transport.Event.TopologyChange;
 import org.apache.cassandra.transport.Event.SchemaChange;
 import org.apache.cassandra.transport.Event.StatusChange;
@@ -50,7 +49,6 @@ import static org.junit.Assert.assertNotSame;
  */
 public class SerDeserTest
 {
-
     @BeforeClass
     public static void setupDD()
     {
@@ -116,12 +114,12 @@ public class SerDeserTest
     {
         List<Event> events = new ArrayList<>();
 
-        events.add(TopologyChange.newNode(FBUtilities.getBroadcastAddressAndPort()));
-        events.add(TopologyChange.removedNode(FBUtilities.getBroadcastAddressAndPort()));
-        events.add(TopologyChange.movedNode(FBUtilities.getBroadcastAddressAndPort()));
+        events.add(TopologyChange.newNode(FBUtilities.getBroadcastAddress(), 42));
+        events.add(TopologyChange.removedNode(FBUtilities.getBroadcastAddress(), 42));
+        events.add(TopologyChange.movedNode(FBUtilities.getBroadcastAddress(), 42));
 
-        events.add(StatusChange.nodeUp(FBUtilities.getBroadcastAddressAndPort()));
-        events.add(StatusChange.nodeDown(FBUtilities.getBroadcastAddressAndPort()));
+        events.add(StatusChange.nodeUp(FBUtilities.getBroadcastAddress(), 42));
+        events.add(StatusChange.nodeDown(FBUtilities.getBroadcastAddress(), 42));
 
         events.add(new SchemaChange(SchemaChange.Change.CREATED, "ks"));
         events.add(new SchemaChange(SchemaChange.Change.UPDATED, "ks"));
@@ -309,65 +307,26 @@ public class SerDeserTest
     }
 
     @Test
-    public void queryOptionsSerDeserTest()
+    public void queryOptionsSerDeserTest() throws Exception
     {
         for (ProtocolVersion version : ProtocolVersion.SUPPORTED)
-        {
-            queryOptionsSerDeserTest(
-                version,
-                QueryOptions.create(ConsistencyLevel.ALL,
-                                    Collections.singletonList(ByteBuffer.wrap(new byte[] { 0x00, 0x01, 0x02 })),
-                                    false,
-                                    5000,
-                                    Util.makeSomePagingState(version),
-                                    ConsistencyLevel.SERIAL,
-                                    version,
-                                    null)
-            );
-        }
-
-        for (ProtocolVersion version : ProtocolVersion.supportedVersionsStartingWith(ProtocolVersion.V5))
-        {
-            queryOptionsSerDeserTest(
-                version,
-                QueryOptions.create(ConsistencyLevel.LOCAL_ONE,
-                                    Arrays.asList(ByteBuffer.wrap(new byte[] { 0x00, 0x01, 0x02 }),
-                                                  ByteBuffer.wrap(new byte[] { 0x03, 0x04, 0x05, 0x03, 0x04, 0x05 })),
-                                    true,
-                                    10,
-                                    Util.makeSomePagingState(version),
-                                    ConsistencyLevel.SERIAL,
-                                    version,
-                                    "some_keyspace")
-            );
-        }
-
-        for (ProtocolVersion version : ProtocolVersion.supportedVersionsStartingWith(ProtocolVersion.V5))
-        {
-            queryOptionsSerDeserTest(
-                version,
-                QueryOptions.create(ConsistencyLevel.LOCAL_ONE,
-                                    Arrays.asList(ByteBuffer.wrap(new byte[] { 0x00, 0x01, 0x02 }),
-                                                  ByteBuffer.wrap(new byte[] { 0x03, 0x04, 0x05, 0x03, 0x04, 0x05 })),
-                                    true,
-                                    10,
-                                    Util.makeSomePagingState(version),
-                                    ConsistencyLevel.SERIAL,
-                                    version,
-                                    "some_keyspace",
-                                    FBUtilities.timestampMicros(),
-                                    FBUtilities.nowInSeconds())
-            );
-        }
+            queryOptionsSerDeserTest(version);
     }
 
-    private void queryOptionsSerDeserTest(ProtocolVersion version, QueryOptions options)
+    private void queryOptionsSerDeserTest(ProtocolVersion version) throws Exception
     {
+        QueryOptions options = QueryOptions.create(ConsistencyLevel.ALL,
+                                                   Collections.singletonList(ByteBuffer.wrap(new byte[] { 0x00, 0x01, 0x02 })),
+                                                   false,
+                                                   5000,
+                                                   Util.makeSomePagingState(version),
+                                                   ConsistencyLevel.SERIAL,
+                                                   version
+                                                   );
+
         ByteBuf buf = Unpooled.buffer(QueryOptions.codec.encodedSize(options, version));
         QueryOptions.codec.encode(options, buf, version);
         QueryOptions decodedOptions = QueryOptions.codec.decode(buf, version);
-
-        QueryState state = new QueryState(ClientState.forInternalCalls());
 
         assertNotNull(decodedOptions);
         assertEquals(options.getConsistency(), decodedOptions.getConsistency());
@@ -377,8 +336,5 @@ public class SerDeserTest
         assertEquals(options.getValues(), decodedOptions.getValues());
         assertEquals(options.getPagingState(), decodedOptions.getPagingState());
         assertEquals(options.skipMetadata(), decodedOptions.skipMetadata());
-        assertEquals(options.getKeyspace(), decodedOptions.getKeyspace());
-        assertEquals(options.getTimestamp(state), decodedOptions.getTimestamp(state));
-        assertEquals(options.getNowInSeconds(state), decodedOptions.getNowInSeconds(state));
     }
 }
