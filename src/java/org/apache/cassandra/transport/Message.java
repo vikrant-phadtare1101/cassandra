@@ -37,12 +37,16 @@ import io.netty.channel.*;
 import io.netty.handler.codec.MessageToMessageDecoder;
 import io.netty.handler.codec.MessageToMessageEncoder;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.concurrent.DebuggableTask;
 import org.apache.cassandra.concurrent.LocalAwareExecutorService;
+import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.exceptions.OverloadedException;
 import org.apache.cassandra.metrics.ClientMetrics;
@@ -63,6 +67,10 @@ import static org.apache.cassandra.concurrent.SharedExecutorPool.SHARED;
 public abstract class Message
 {
     protected static final Logger logger = LoggerFactory.getLogger(Message.class);
+    /**
+     * Max length to display values for debug strings
+     **/
+    public final static int MAX_VALUE_LEN = Integer.getInteger(Config.PROPERTY_PREFIX + "max_cql_debug_length", 128);
 
     /**
      * When we encounter an unexpected IOException we look for these {@link Throwable#getMessage() messages}
@@ -272,6 +280,11 @@ public abstract class Message
         boolean isTracingRequested()
         {
             return tracingRequested;
+        }
+
+        public String toString()
+        {
+            return type.toString();
         }
     }
 
@@ -626,7 +639,7 @@ public abstract class Message
         {
             // if we decide to handle this message, process it outside of the netty event loop
             if (shouldHandleRequest(ctx, request))
-                requestExecutor.submit(() -> processRequest(ctx, request));
+                requestExecutor.submit(new RequestProcessor(ctx, request, this));
         }
 
         /** This check for inflight payload to potentially discard the request should have been ideally in one of the
@@ -702,45 +715,67 @@ public abstract class Message
         }
 
         /**
-         * Note: this method is not expected to execute on the netty event loop.
+         * Note: this is not expected to execute on the netty event loop.
          */
-        void processRequest(ChannelHandlerContext ctx, Request request)
+        public class RequestProcessor implements Runnable, DebuggableTask
         {
-            final Response response;
-            final ServerConnection connection;
+            private final ChannelHandlerContext ctx;
+            private final Request request;
+            private final Dispatcher dispatcher;
             long queryStartNanoTime = System.nanoTime();
 
-            try
+            public RequestProcessor(ChannelHandlerContext ctx, Request request, Dispatcher dispatcher)
             {
-                assert request.connection() instanceof ServerConnection;
-                connection = (ServerConnection)request.connection();
-                if (connection.getVersion().isGreaterOrEqualTo(ProtocolVersion.V4))
-                    ClientWarn.instance.captureWarnings();
-
-                QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion());
-
-                logger.trace("Received: {}, v={}", request, connection.getVersion());
-                connection.requests.inc();
-                response = request.execute(qstate, queryStartNanoTime);
-                response.setStreamId(request.getStreamId());
-                response.setWarnings(ClientWarn.instance.getWarnings());
-                response.attach(connection);
-                connection.applyStateTransition(request.type, response.type);
+                this.ctx = ctx;
+                this.request = request;
+                this.dispatcher = dispatcher;
             }
-            catch (Throwable t)
+            public void run()
             {
-                JVMStabilityInspector.inspectThrowable(t);
-                UnexpectedChannelExceptionHandler handler = new UnexpectedChannelExceptionHandler(ctx.channel(), true);
-                flush(new FlushItem(ctx, ErrorMessage.fromException(t, handler).setStreamId(request.getStreamId()), request.getSourceFrame(), this));
-                return;
-            }
-            finally
-            {
-                ClientWarn.instance.resetWarnings();
+                final Response response;
+                final ServerConnection connection;
+                try
+                {
+                    assert request.connection() instanceof ServerConnection;
+                    connection = (ServerConnection)request.connection();
+                    if (connection.getVersion().isGreaterOrEqualTo(ProtocolVersion.V4))
+                        ClientWarn.instance.captureWarnings();
+
+                    QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion());
+
+                    logger.trace("Received: {}, v={}", request, connection.getVersion());
+                    connection.requests.inc();
+                    response = request.execute(qstate, queryStartNanoTime);
+                    response.setStreamId(request.getStreamId());
+                    response.setWarnings(ClientWarn.instance.getWarnings());
+                    response.attach(connection);
+                    connection.applyStateTransition(request.type, response.type);
+                }
+                catch (Throwable t)
+                {
+                    JVMStabilityInspector.inspectThrowable(t);
+                    UnexpectedChannelExceptionHandler handler = new UnexpectedChannelExceptionHandler(ctx.channel(), true);
+                    flush(new FlushItem(ctx, ErrorMessage.fromException(t, handler).setStreamId(request.getStreamId()), request.getSourceFrame(), dispatcher));
+                    return;
+                }
+                finally
+                {
+                    ClientWarn.instance.resetWarnings();
+                }
+
+                logger.trace("Responding: {}, v={}", response, connection.getVersion());
+                flush(new FlushItem(ctx, response, request.getSourceFrame(), dispatcher));
             }
 
-            logger.trace("Responding: {}, v={}", response, connection.getVersion());
-            flush(new FlushItem(ctx, response, request.getSourceFrame(), this));
+            public long approxStartNanos()
+            {
+                return queryStartNanoTime;
+            }
+
+            public String debug()
+            {
+                return request.toString();
+            }
         }
 
         @Override
@@ -876,5 +911,39 @@ public abstract class Message
             // We handled the exception.
             return true;
         }
+    }
+
+
+    protected static String truncateCqlLiteral(String value)
+    {
+        return truncateCqlLiteral(value, MAX_VALUE_LEN);
+    }
+
+    /**
+     * chars that wrap a CQL literal
+     */
+    private static List<Character> LITERAL_END = Lists.newArrayList('\'', ']', '}', ')');
+
+    @VisibleForTesting
+    protected static String truncateCqlLiteral(final String value, int max)
+    {
+        if (value.length() <= max)
+            return value;
+
+        String result = value;
+        // Do not interrupt a escaped '
+        int truncateAt = max;
+        for (;value.charAt(truncateAt) == '\'' && truncateAt < value.length()-1; truncateAt++);
+
+        result = value.substring(0, truncateAt) + "...";
+
+        // both string literals or blobs are expected to exceed this size, while blobs are fine as is the string
+        // literals will be truncating their trailing '. Collections have (), {}, and []'s
+        char last = value.charAt(value.length() - 1);
+        if (LITERAL_END.contains(last))
+        {
+            result += last;
+        }
+        return result;
     }
 }

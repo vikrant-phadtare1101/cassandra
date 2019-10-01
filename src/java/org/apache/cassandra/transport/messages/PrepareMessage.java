@@ -156,6 +156,6 @@ public class PrepareMessage extends Message.Request
     @Override
     public String toString()
     {
-        return "PREPARE " + query;
+        return String.format("PREPARE %s IN %s", query, keyspace);
     }
 }
