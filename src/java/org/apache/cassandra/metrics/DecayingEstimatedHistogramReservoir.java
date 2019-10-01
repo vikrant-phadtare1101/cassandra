@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.primitives.Ints;
 
 import com.codahale.metrics.Clock;
 import com.codahale.metrics.Reservoir;
@@ -151,8 +150,7 @@ public class DecayingEstimatedHistogramReservoir implements Reservoir
         decayingBuckets = new LongAdder[bucketOffsets.length + 1];
         buckets = new LongAdder[bucketOffsets.length + 1];
 
-        for(int i = 0; i < buckets.length; i++) 
-        {
+        for(int i = 0; i < buckets.length; i++) {
             decayingBuckets[i] = new LongAdder();
             buckets[i] = new LongAdder();
         }
@@ -317,7 +315,7 @@ public class DecayingEstimatedHistogramReservoir implements Reservoir
      * The decaying buckets will be used for quantile calculations and mean values, but the non decaying buckets will be
      * exposed for calls to {@link Snapshot#getValues()}.
      */
-    static class EstimatedHistogramReservoirSnapshot extends Snapshot
+    class EstimatedHistogramReservoirSnapshot extends Snapshot
     {
         private final long[] decayingBuckets;
         private final long[] values;
@@ -329,19 +327,19 @@ public class DecayingEstimatedHistogramReservoir implements Reservoir
         public EstimatedHistogramReservoirSnapshot(DecayingEstimatedHistogramReservoir reservoir)
         {
             final int length = reservoir.decayingBuckets.length;
-            final double rescaleFactor = reservoir.forwardDecayWeight(reservoir.clock.getTime());
+            final double rescaleFactor = forwardDecayWeight(clock.getTime());
 
             this.decayingBuckets = new long[length];
             this.values = new long[length];
-            this.snapshotLandmark = reservoir.decayLandmark;
+            this.count = count();
+            this.snapshotLandmark = decayLandmark;
             this.bucketOffsets = reservoir.bucketOffsets; // No need to copy, these are immutable
 
             for (int i = 0; i < length; i++)
             {
                 this.decayingBuckets[i] = Math.round(reservoir.decayingBuckets[i].sum() / rescaleFactor);
-                this.values[i] = reservoir.buckets[i].sum();
+                this.values[i] = buckets[i].sum();
             }
-            this.count = count();
             this.reservoir = reservoir;
         }
 
@@ -389,12 +387,15 @@ public class DecayingEstimatedHistogramReservoir implements Reservoir
         }
 
         /**
-         * @see {@link Snapshot#size()}
-         * @return
+         * Return the number of buckets where recorded values are stored.
+         *
+         * This method does not return the number of recorded values as suggested by the {@link Snapshot} interface.
+         *
+         * @return the number of buckets
          */
         public int size()
         {
-            return Ints.saturatedCast(count);
+            return decayingBuckets.length;
         }
 
         @VisibleForTesting
@@ -591,8 +592,7 @@ public class DecayingEstimatedHistogramReservoir implements Reservoir
             }
         }
 
-        public void rebaseReservoir() 
-        {
+        public void rebaseReservoir() {
             this.reservoir.rebase(this);
         }
     }

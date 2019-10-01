@@ -20,18 +20,13 @@ package org.apache.cassandra.streaming.async;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
+import java.net.InetAddress;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.Uninterruptibles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,32 +38,33 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.FastThreadLocalThread;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.AsyncStreamingInputPlus;
-import org.apache.cassandra.net.AsyncStreamingInputPlus.InputTimeoutException;
+import org.apache.cassandra.net.async.RebufferingByteBufDataInputPlus;
 import org.apache.cassandra.streaming.StreamManager;
 import org.apache.cassandra.streaming.StreamReceiveException;
 import org.apache.cassandra.streaming.StreamResultFuture;
 import org.apache.cassandra.streaming.StreamSession;
-import org.apache.cassandra.streaming.messages.IncomingStreamMessage;
+import org.apache.cassandra.streaming.messages.FileMessageHeader;
+import org.apache.cassandra.streaming.messages.IncomingFileMessage;
 import org.apache.cassandra.streaming.messages.KeepAliveMessage;
 import org.apache.cassandra.streaming.messages.StreamInitMessage;
 import org.apache.cassandra.streaming.messages.StreamMessage;
-import org.apache.cassandra.streaming.messages.StreamMessageHeader;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 import static org.apache.cassandra.streaming.async.NettyStreamingMessageSender.createLogTag;
 
 /**
- * Handles the inbound side of streaming messages and stream data. From the incoming data, we derserialize the message
- * including the actual stream data itself. Because the reading and deserialization of streams is a blocking affair,
+ * Handles the inbound side of streaming messages and sstable data. From the incoming data, we derserialize the message
+ * and potentially reify partitions and rows and write those out to new sstable files. Because deserialization is a blocking affair,
  * we can't block the netty event loop. Thus we have a background thread perform all the blocking deserialization.
  */
 public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
 {
     private static final Logger logger = LoggerFactory.getLogger(StreamingInboundHandler.class);
-    private static final Function<SessionIdentifier, StreamSession> DEFAULT_SESSION_PROVIDER = sid -> StreamManager.instance.findSession(sid.from, sid.planId, sid.sessionIndex);
-    private static volatile boolean trackInboundHandlers = false;
-    private static Collection<StreamingInboundHandler> inboundHandlers;
+    static final Function<SessionIdentifier, StreamSession> DEFAULT_SESSION_PROVIDER = sid -> StreamManager.instance.findSession(sid.from, sid.planId, sid.sessionIndex);
+
+    private static final int AUTO_READ_LOW_WATER_MARK = 1 << 15;
+    private static final int AUTO_READ_HIGH_WATER_MARK = 1 << 16;
+
     private final InetAddressAndPort remoteAddress;
     private final int protocolVersion;
 
@@ -79,10 +75,10 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
      * structure, and then consumed.
      * <p>
      * For thread safety, this structure's resources are released on the consuming thread
-     * (via {@link AsyncStreamingInputPlus#close()},
-     * but the producing side calls {@link AsyncStreamingInputPlus#requestClosure()} to notify the input that is should close.
+     * (via {@link RebufferingByteBufDataInputPlus#close()},
+     * but the producing side calls {@link RebufferingByteBufDataInputPlus#markClose()} to notify the input that is should close.
      */
-    private AsyncStreamingInputPlus buffers;
+    private RebufferingByteBufDataInputPlus buffers;
 
     private volatile boolean closed;
 
@@ -91,15 +87,13 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
         this.remoteAddress = remoteAddress;
         this.protocolVersion = protocolVersion;
         this.session = session;
-        if (trackInboundHandlers)
-            inboundHandlers.add(this);
     }
 
     @Override
     @SuppressWarnings("resource")
     public void handlerAdded(ChannelHandlerContext ctx)
     {
-        buffers = new AsyncStreamingInputPlus(ctx.channel());
+        buffers = new RebufferingByteBufDataInputPlus(AUTO_READ_LOW_WATER_MARK, AUTO_READ_HIGH_WATER_MARK, ctx.channel().config());
         Thread blockingIOThread = new FastThreadLocalThread(new StreamDeserializingTask(DEFAULT_SESSION_PROVIDER, session, ctx.channel()),
                                                             String.format("Stream-Deserializer-%s-%s", remoteAddress.toString(), ctx.channel().id()));
         blockingIOThread.setDaemon(true);
@@ -109,7 +103,9 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object message)
     {
-        if (closed || !(message instanceof ByteBuf) || !buffers.append((ByteBuf) message))
+        if (!closed && message instanceof ByteBuf)
+            buffers.append((ByteBuf) message);
+        else
             ReferenceCountUtil.release(message);
     }
 
@@ -123,9 +119,7 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
     void close()
     {
         closed = true;
-        buffers.requestClosure();
-        if (trackInboundHandlers)
-            inboundHandlers.remove(this);
+        buffers.markClose();
     }
 
     @Override
@@ -134,14 +128,14 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
         if (cause instanceof IOException)
             logger.trace("connection problem while streaming", cause);
         else
-            logger.warn("exception occurred while in processing streaming data", cause);
+            logger.warn("exception occurred while in processing streaming file", cause);
         close();
     }
 
     /**
      * For testing only!!
      */
-    void setPendingBuffers(AsyncStreamingInputPlus bufChannel)
+    void setPendingBuffers(RebufferingByteBufDataInputPlus bufChannel)
     {
         this.buffers = bufChannel;
     }
@@ -171,11 +165,9 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
             {
                 while (true)
                 {
-                    buffers.maybeIssueRead();
-
                     // do a check of available bytes and possibly sleep some amount of time (then continue).
                     // this way we can break out of run() sanely or we end up blocking indefintely in StreamMessage.deserialize()
-                    while (buffers.isEmpty())
+                    while (buffers.available() == 0)
                     {
                         if (closed)
                             return;
@@ -189,21 +181,17 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
                     // wrt session lifecycle, due to races), just log that we received the message and carry on
                     if (message instanceof KeepAliveMessage)
                     {
-                        if (logger.isDebugEnabled())
-                            logger.debug("{} Received {}", createLogTag(session, channel), message);
+                        logger.debug("{} Received {}", createLogTag(session, channel), message);
                         continue;
                     }
 
                     if (session == null)
                         session = deriveSession(message);
-
-                    if (logger.isDebugEnabled())
-                        logger.debug("{} Received {}", createLogTag(session, channel), message);
-
+                    logger.debug("{} Received {}", createLogTag(session, channel), message);
                     session.messageReceived(message);
                 }
             }
-            catch (InputTimeoutException | EOFException e)
+            catch (EOFException eof)
             {
                 // ignore
             }
@@ -229,33 +217,27 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
                 closed = true;
 
                 if (buffers != null)
-                {
-                    // request closure again as the original request could have raced with receiving a
-                    // message and been consumed in the message receive loop above.  Otherweise
-                    // buffers could hang indefinitely on the queue.poll.
-                    buffers.requestClosure();
                     buffers.close();
-                }
             }
         }
 
-        StreamSession deriveSession(StreamMessage message)
+        StreamSession deriveSession(StreamMessage message) throws IOException
         {
             StreamSession streamSession = null;
-            // StreamInitMessage starts a new channel, and IncomingStreamMessage potentially, as well.
-            // IncomingStreamMessage needs a session to be established a priori, though
+            // StreamInitMessage starts a new channel, and IncomingFileMessage potentially, as well.
+            // IncomingFileMessage needs a session to be established a priori, though
             if (message instanceof StreamInitMessage)
             {
                 assert session == null : "initiator of stream session received a StreamInitMessage";
                 StreamInitMessage init = (StreamInitMessage) message;
-                StreamResultFuture.initReceivingSide(init.sessionIndex, init.planId, init.streamOperation, init.from, channel, init.pendingRepair, init.previewKind);
+                StreamResultFuture.initReceivingSide(init.sessionIndex, init.planId, init.streamOperation, init.from, channel, init.keepSSTableLevel, init.pendingRepair, init.previewKind);
                 streamSession = sessionProvider.apply(new SessionIdentifier(init.from, init.planId, init.sessionIndex));
             }
-            else if (message instanceof IncomingStreamMessage)
+            else if (message instanceof IncomingFileMessage)
             {
-                // TODO: it'd be great to check if the session actually exists before slurping in the entire stream,
+                // TODO: it'd be great to check if the session actually exists before slurping in the entire sstable,
                 // but that's a refactoring for another day
-                StreamMessageHeader header = ((IncomingStreamMessage) message).header;
+                FileMessageHeader header = ((IncomingFileMessage) message).header;
                 streamSession = sessionProvider.apply(new SessionIdentifier(header.sender, header.planId, header.sessionIndex));
             }
 
@@ -282,25 +264,5 @@ public class StreamingInboundHandler extends ChannelInboundHandlerAdapter
             this.planId = planId;
             this.sessionIndex = sessionIndex;
         }
-    }
-
-    /** Shutdown for in-JVM tests. For any other usage, tracking of active inbound streaming handlers
-     *  should be revisted first and in-JVM shutdown refactored with it.
-     *  This does not prevent new inbound handlers being added after shutdown, nor is not thread-safe
-     *  around new inbound handlers being opened during shutdown.
-      */
-    @VisibleForTesting
-    public static void shutdown()
-    {
-        assert trackInboundHandlers == true : "in-JVM tests required tracking of inbound streaming handlers";
-
-        inboundHandlers.forEach(StreamingInboundHandler::close);
-        inboundHandlers.clear();
-    }
-
-    public static void trackInboundHandlers()
-    {
-        inboundHandlers = Collections.newSetFromMap(new ConcurrentHashMap<>());
-        trackInboundHandlers = true;
     }
 }

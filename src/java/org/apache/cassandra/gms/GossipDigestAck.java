@@ -27,8 +27,7 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
-
-import static org.apache.cassandra.locator.InetAddressAndPort.Serializer.inetAddressAndPortSerializer;
+import org.apache.cassandra.net.CompactEndpointSerializationHelper;
 
 /**
  * This ack gets sent out as a result of the receipt of a GossipDigestSynMessage by an
@@ -67,7 +66,7 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
         for (Map.Entry<InetAddressAndPort, EndpointState> entry : gDigestAckMessage.epStateMap.entrySet())
         {
             InetAddressAndPort ep = entry.getKey();
-            inetAddressAndPortSerializer.serialize(ep, out, version);
+            CompactEndpointSerializationHelper.instance.serialize(ep, out, version);
             EndpointState.serializer.serialize(entry.getValue(), out, version);
         }
     }
@@ -80,7 +79,7 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
 
         for (int i = 0; i < size; ++i)
         {
-            InetAddressAndPort ep = inetAddressAndPortSerializer.deserialize(in, version);
+            InetAddressAndPort ep = CompactEndpointSerializationHelper.instance.deserialize(in, version);
             EndpointState epState = EndpointState.serializer.deserialize(in, version);
             epStateMap.put(ep, epState);
         }
@@ -92,7 +91,7 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
         int size = GossipDigestSerializationHelper.serializedSize(ack.gDigestList, version);
         size += TypeSizes.sizeof(ack.epStateMap.size());
         for (Map.Entry<InetAddressAndPort, EndpointState> entry : ack.epStateMap.entrySet())
-            size += inetAddressAndPortSerializer.serializedSize(entry.getKey(), version)
+            size += CompactEndpointSerializationHelper.instance.serializedSize(entry.getKey(), version)
                     + EndpointState.serializer.serializedSize(entry.getValue(), version);
         return size;
     }

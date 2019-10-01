@@ -170,7 +170,7 @@ public class CompositesSearcher extends CassandraIndexSearcher
                         filterStaleEntries(dataCmd.queryMemtableAndDisk(index.baseCfs, executionController),
                                            indexKey.getKey(),
                                            entries,
-                                           executionController.getWriteContext(),
+                                           executionController.writeOpOrderGroup(),
                                            command.nowInSec());
 
                     if (dataIter.isEmpty())
@@ -198,21 +198,20 @@ public class CompositesSearcher extends CassandraIndexSearcher
         };
     }
 
-    private void deleteAllEntries(final List<IndexEntry> entries, final WriteContext ctx, final int nowInSec)
+    private void deleteAllEntries(final List<IndexEntry> entries, final OpOrder.Group writeOp, final int nowInSec)
     {
         entries.forEach(entry ->
             index.deleteStaleEntry(entry.indexValue,
                                    entry.indexClustering,
                                    new DeletionTime(entry.timestamp, nowInSec),
-                                   ctx));
+                                   writeOp));
     }
 
     // We assume all rows in dataIter belong to the same partition.
-    @SuppressWarnings("resource")
     private UnfilteredRowIterator filterStaleEntries(UnfilteredRowIterator dataIter,
                                                      final ByteBuffer indexValue,
                                                      final List<IndexEntry> entries,
-                                                     final WriteContext ctx,
+                                                     final OpOrder.Group writeOp,
                                                      final int nowInSec)
     {
         // collect stale index entries and delete them when we close this iterator
@@ -246,7 +245,7 @@ public class CompositesSearcher extends CassandraIndexSearcher
                                                                          dataIter.partitionLevelDeletion(),
                                                                          dataIter.isReverseOrder());
             }
-            deleteAllEntries(staleEntries, ctx, nowInSec);
+            deleteAllEntries(staleEntries, writeOp, nowInSec);
         }
         else
         {
@@ -293,7 +292,7 @@ public class CompositesSearcher extends CassandraIndexSearcher
                 @Override
                 public void onPartitionClose()
                 {
-                    deleteAllEntries(staleEntries, ctx, nowInSec);
+                    deleteAllEntries(staleEntries, writeOp, nowInSec);
                 }
             }
             iteratorToReturn = Transformation.apply(dataIter, new Transform());

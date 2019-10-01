@@ -27,12 +27,12 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
+import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.AbstractRepairTest;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.messages.FailSession;
 import org.apache.cassandra.repair.messages.FinalizePromise;
 import org.apache.cassandra.repair.messages.PrepareConsistentResponse;
@@ -93,9 +93,9 @@ public class CoordinatorSessionsTest extends AbstractRepairTest
             return (InstrumentedCoordinatorSession) super.getSession(sessionId);
         }
 
-        public InstrumentedCoordinatorSession registerSession(UUID sessionId, Set<InetAddressAndPort> peers, boolean isForced)
+        public InstrumentedCoordinatorSession registerSession(UUID sessionId, Set<InetAddressAndPort> peers)
         {
-            return (InstrumentedCoordinatorSession) super.registerSession(sessionId, peers, isForced);
+            return (InstrumentedCoordinatorSession) super.registerSession(sessionId, peers);
         }
     }
 
@@ -118,7 +118,7 @@ public class CoordinatorSessionsTest extends AbstractRepairTest
     {
         CoordinatorSessions sessions = new CoordinatorSessions();
         UUID sessionID = registerSession();
-        CoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS, false);
+        CoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS);
 
         Assert.assertEquals(ConsistentSession.State.PREPARING, session.getState());
         Assert.assertEquals(sessionID, session.sessionID);
@@ -139,7 +139,7 @@ public class CoordinatorSessionsTest extends AbstractRepairTest
         InstrumentedCoordinatorSessions sessions = new InstrumentedCoordinatorSessions();
         UUID sessionID = registerSession();
 
-        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS, false);
+        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS);
         Assert.assertEquals(0, session.prepareResponseCalls);
 
         sessions.handlePrepareResponse(new PrepareConsistentResponse(sessionID, PARTICIPANT1, true));
@@ -164,7 +164,7 @@ public class CoordinatorSessionsTest extends AbstractRepairTest
         InstrumentedCoordinatorSessions sessions = new InstrumentedCoordinatorSessions();
         UUID sessionID = registerSession();
 
-        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS, false);
+        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS);
         Assert.assertEquals(0, session.finalizePromiseCalls);
 
         sessions.handleFinalizePromiseMessage(new FinalizePromise(sessionID, PARTICIPANT1, true));
@@ -189,7 +189,7 @@ public class CoordinatorSessionsTest extends AbstractRepairTest
         InstrumentedCoordinatorSessions sessions = new InstrumentedCoordinatorSessions();
         UUID sessionID = registerSession();
 
-        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS, false);
+        InstrumentedCoordinatorSession session = sessions.registerSession(sessionID, PARTICIPANTS);
         Assert.assertEquals(0, session.failCalls);
 
         sessions.handleFailSessionMessage(new FailSession(sessionID));

@@ -30,9 +30,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 
 import org.slf4j.Logger;
@@ -64,7 +62,6 @@ class PendingRepairManager
 
     private final ColumnFamilyStore cfs;
     private final CompactionParams params;
-    private final boolean isTransient;
     private volatile ImmutableMap<UUID, AbstractCompactionStrategy> strategies = ImmutableMap.of();
 
     /**
@@ -78,11 +75,10 @@ class PendingRepairManager
         }
     }
 
-    PendingRepairManager(ColumnFamilyStore cfs, CompactionParams params, boolean isTransient)
+    PendingRepairManager(ColumnFamilyStore cfs, CompactionParams params)
     {
         this.cfs = cfs;
         this.params = params;
-        this.isTransient = isTransient;
     }
 
     private ImmutableMap.Builder<UUID, AbstractCompactionStrategy> mapBuilder()
@@ -136,7 +132,7 @@ class PendingRepairManager
         return getOrCreate(sstable.getSSTableMetadata().pendingRepair);
     }
 
-    private synchronized void removeSessionIfEmpty(UUID sessionID)
+    private synchronized void removeSession(UUID sessionID)
     {
         if (!strategies.containsKey(sessionID) || !strategies.get(sessionID).getSSTables().isEmpty())
             return;
@@ -147,30 +143,13 @@ class PendingRepairManager
 
     synchronized void removeSSTable(SSTableReader sstable)
     {
-        for (Map.Entry<UUID, AbstractCompactionStrategy> entry : strategies.entrySet())
-        {
-            entry.getValue().removeSSTable(sstable);
-            removeSessionIfEmpty(entry.getKey());
-        }
-    }
-
-
-    void removeSSTables(Iterable<SSTableReader> removed)
-    {
-        for (SSTableReader sstable : removed)
-            removeSSTable(sstable);
+        for (AbstractCompactionStrategy strategy : strategies.values())
+            strategy.removeSSTable(sstable);
     }
 
     synchronized void addSSTable(SSTableReader sstable)
     {
-        Preconditions.checkArgument(sstable.isTransient() == isTransient);
         getOrCreate(sstable).addSSTable(sstable);
-    }
-
-    void addSSTables(Iterable<SSTableReader> added)
-    {
-        for (SSTableReader sstable : added)
-            addSSTable(sstable);
     }
 
     synchronized void replaceSSTables(Set<SSTableReader> removed, Set<SSTableReader> added)
@@ -210,8 +189,6 @@ class PendingRepairManager
                 strategy.replaceSSTables(groupRemoved, groupAdded);
             else
                 strategy.addSSTables(groupAdded);
-
-            removeSessionIfEmpty(entry.getKey());
         }
     }
 
@@ -358,6 +335,21 @@ class PendingRepairManager
         return !ActiveRepairService.instance.consistent.local.isSessionInProgress(sessionID);
     }
 
+    /**
+     * calling this when underlying strategy is not LeveledCompactionStrategy is an error
+     */
+    synchronized int[] getSSTableCountPerLevel()
+    {
+        int [] res = new int[LeveledManifest.MAX_LEVEL_COUNT];
+        for (AbstractCompactionStrategy strategy : strategies.values())
+        {
+            assert strategy instanceof LeveledCompactionStrategy;
+            int[] counts = ((LeveledCompactionStrategy) strategy).getAllLevelSize();
+            res = CompactionStrategyManager.sumArrays(res, counts);
+        }
+        return res;
+    }
+
     @SuppressWarnings("resource")
     synchronized Set<ISSTableScanner> getScanners(Collection<SSTableReader> sstables, Collection<Range<Token>> ranges)
     {
@@ -399,16 +391,7 @@ class PendingRepairManager
         return strategies.keySet().contains(sessionID);
     }
 
-    boolean containsSSTable(SSTableReader sstable)
-    {
-        if (!sstable.isPendingRepair())
-            return false;
-
-        AbstractCompactionStrategy strategy = strategies.get(sstable.getPendingRepair());
-        return strategy != null && strategy.getSSTables().contains(sstable);
-    }
-
-    public Collection<AbstractCompactionTask> createUserDefinedTasks(Collection<SSTableReader> sstables, int gcBefore)
+    public Collection<AbstractCompactionTask> createUserDefinedTasks(List<SSTableReader> sstables, int gcBefore)
     {
         Map<UUID, List<SSTableReader>> group = sstables.stream().collect(Collectors.groupingBy(s -> s.getSSTableMetadata().pendingRepair));
         return group.entrySet().stream().map(g -> strategies.get(g.getKey()).getUserDefinedTask(g.getValue(), gcBefore)).collect(Collectors.toList());
@@ -438,38 +421,21 @@ class PendingRepairManager
         protected void runMayThrow() throws Exception
         {
             boolean completed = false;
-            boolean obsoleteSSTables = isTransient && repairedAt > 0;
             try
             {
-                if (obsoleteSSTables)
-                {
-                    logger.info("Obsoleting transient repaired ssatbles");
-                    Preconditions.checkState(Iterables.all(transaction.originals(), SSTableReader::isTransient));
-                    transaction.obsoleteOriginals();
-                }
-                else
-                {
-                    logger.debug("Setting repairedAt to {} on {} for {}", repairedAt, transaction.originals(), sessionID);
-                    cfs.getCompactionStrategyManager().mutateRepaired(transaction.originals(), repairedAt, ActiveRepairService.NO_PENDING_REPAIR, false);
-                }
+                logger.debug("Setting repairedAt to {} on {} for {}", repairedAt, transaction.originals(), sessionID);
+                cfs.getCompactionStrategyManager().mutateRepaired(transaction.originals(), repairedAt, ActiveRepairService.NO_PENDING_REPAIR);
                 completed = true;
             }
             finally
             {
-                if (obsoleteSSTables)
-                {
-                    transaction.finish();
-                }
-                else
-                {
-                    // we abort here because mutating metadata isn't guarded by LifecycleTransaction, so this won't roll
-                    // anything back. Also, we don't want to obsolete the originals. We're only using it to prevent other
-                    // compactions from marking these sstables compacting, and unmarking them when we're done
-                    transaction.abort();
-                }
+                // we always abort because mutating metadata isn't guarded by LifecycleTransaction, so this won't roll
+                // anything back. Also, we don't want to obsolete the originals. We're only using it to prevent other
+                // compactions from marking these sstables compacting, and unmarking them when we're done
+                transaction.abort();
                 if (completed)
                 {
-                    removeSessionIfEmpty(sessionID);
+                    removeSession(sessionID);
                 }
             }
         }
@@ -479,7 +445,7 @@ class PendingRepairManager
             throw new UnsupportedOperationException();
         }
 
-        protected int executeInternal(ActiveCompactionsTracker activeCompactions)
+        protected int executeInternal(CompactionManager.CompactionExecutorStatsCollector collector)
         {
             run();
             return transaction.originals().size();

@@ -25,7 +25,7 @@ import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.utils.FBUtilities;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 
 public class PartitionUpdateTest extends CQLTester
 {

@@ -44,15 +44,15 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
     columnfamily_layout_options = (
         ('bloom_filter_fp_chance', None),
         ('comment', None),
+        ('dclocal_read_repair_chance', 'local_read_repair_chance'),
         ('gc_grace_seconds', None),
         ('min_index_interval', None),
         ('max_index_interval', None),
+        ('read_repair_chance', None),
         ('default_time_to_live', None),
         ('speculative_retry', None),
-        ('additional_write_policy', None),
         ('memtable_flush_period_in_ms', None),
-        ('cdc', None),
-        ('read_repair', None),
+        ('cdc', None)
     )
 
     columnfamily_layout_map_options = (
@@ -503,15 +503,14 @@ def cf_prop_val_completer(ctxt, cass):
         return ["{'keys': '"]
     if any(this_opt == opt[0] for opt in CqlRuleSet.obsolete_cf_options):
         return ["'<obsolete_option>'"]
-    if this_opt == 'bloom_filter_fp_chance':
+    if this_opt in ('read_repair_chance', 'bloom_filter_fp_chance',
+                    'dclocal_read_repair_chance'):
         return [Hint('<float_between_0_and_1>')]
     if this_opt in ('min_compaction_threshold', 'max_compaction_threshold',
                     'gc_grace_seconds', 'min_index_interval', 'max_index_interval'):
         return [Hint('<integer>')]
     if this_opt in ('cdc'):
         return [Hint('<true|false>')]
-    if this_opt in ('read_repair'):
-        return [Hint('<\'none\'|\'blocking\'>')]
     return [Hint('<option_value>')]
 
 
@@ -1472,8 +1471,6 @@ syntax_rules += r'''
                  | "OPTIONS" "=" <mapLiteral>
                  | "SUPERUSER" "=" <boolean>
                  | "LOGIN" "=" <boolean>
-                 | "ACCESS" "TO" "DATACENTERS" <setLiteral>
-                 | "ACCESS" "TO" "ALL" "DATACENTERS"
                  ;
 
 <dropRoleStatement> ::= "DROP" "ROLE" <rolename>

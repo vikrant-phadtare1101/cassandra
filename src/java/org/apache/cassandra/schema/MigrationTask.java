@@ -32,13 +32,11 @@ import org.apache.cassandra.db.SystemKeyspace.BootstrapState;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.RequestCallback;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IAsyncCallback;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.WrappedRunnable;
-
-import static org.apache.cassandra.net.NoPayload.noPayload;
-import static org.apache.cassandra.net.Verb.SCHEMA_PULL_REQ;
 
 final class MigrationTask extends WrappedRunnable
 {
@@ -53,7 +51,6 @@ final class MigrationTask extends WrappedRunnable
     MigrationTask(InetAddressAndPort endpoint)
     {
         this.endpoint = endpoint;
-        SchemaMigrationDiagnostics.taskCreated(endpoint);
     }
 
     static ConcurrentLinkedQueue<CountDownLatch> getInflightTasks()
@@ -66,7 +63,6 @@ final class MigrationTask extends WrappedRunnable
         if (!FailureDetector.instance.isAlive(endpoint))
         {
             logger.warn("Can't send schema pull request: node {} is down.", endpoint);
-            SchemaMigrationDiagnostics.taskSendAborted(endpoint);
             return;
         }
 
@@ -76,27 +72,35 @@ final class MigrationTask extends WrappedRunnable
         if (!MigrationManager.shouldPullSchemaFrom(endpoint))
         {
             logger.info("Skipped sending a migration request: node {} has a higher major version now.", endpoint);
-            SchemaMigrationDiagnostics.taskSendAborted(endpoint);
             return;
         }
 
-        Message message = Message.out(SCHEMA_PULL_REQ, noPayload);
+        MessageOut message = new MessageOut<>(MessagingService.Verb.MIGRATION_REQUEST, null, MigrationManager.MigrationsSerializer.instance);
 
         final CountDownLatch completionLatch = new CountDownLatch(1);
 
-        RequestCallback<Collection<Mutation>> cb = msg ->
+        IAsyncCallback<Collection<Mutation>> cb = new IAsyncCallback<Collection<Mutation>>()
         {
-            try
+            @Override
+            public void response(MessageIn<Collection<Mutation>> message)
             {
-                Schema.instance.mergeAndAnnounceVersion(msg.payload);
+                try
+                {
+                    Schema.instance.mergeAndAnnounceVersion(message.payload);
+                }
+                catch (ConfigurationException e)
+                {
+                    logger.error("Configuration exception merging remote schema", e);
+                }
+                finally
+                {
+                    completionLatch.countDown();
+                }
             }
-            catch (ConfigurationException e)
+
+            public boolean isLatencyForSnitch()
             {
-                logger.error("Configuration exception merging remote schema", e);
-            }
-            finally
-            {
-                completionLatch.countDown();
+                return false;
             }
         };
 
@@ -104,8 +108,6 @@ final class MigrationTask extends WrappedRunnable
         if (monitoringBootstrapStates.contains(SystemKeyspace.getBootstrapState()))
             inflightTasks.offer(completionLatch);
 
-        MessagingService.instance().sendWithCallback(message, endpoint, cb);
-
-        SchemaMigrationDiagnostics.taskRequestSend(endpoint);
+        MessagingService.instance().sendRR(message, endpoint, cb);
     }
 }

@@ -122,8 +122,7 @@ public class LatencyMetrics
         }
     }
 
-    public void addChildren(LatencyMetrics latencyMetric) 
-    {
+    public void addChildren(LatencyMetrics latencyMetric) {
         this.children.add(latencyMetric);
     }
 
@@ -176,13 +175,11 @@ public class LatencyMetrics
         }
     }
 
-    class LatencyMetricsTimer extends Timer 
-    {
+    class LatencyMetricsTimer extends Timer {
 
         long releasedLatencyCount = 0;
 
-        public LatencyMetricsTimer(Reservoir reservoir) 
-        {
+        public LatencyMetricsTimer(Reservoir reservoir) {
             super(reservoir);
         }
 
@@ -256,8 +253,7 @@ public class LatencyMetrics
         }
     }
 
-    class LatencyMetricsCounter extends Counter 
-    {
+    class LatencyMetricsCounter extends Counter {
         @Override
         public long getCount()
         {

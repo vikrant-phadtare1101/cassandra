@@ -49,16 +49,6 @@ public abstract class UnfilteredPartitionIterators
     {
         public UnfilteredRowIterators.MergeListener getRowMergeListener(DecoratedKey partitionKey, List<UnfilteredRowIterator> versions);
         public void close();
-
-        public static MergeListener NOOP = new MergeListener()
-        {
-            public UnfilteredRowIterators.MergeListener getRowMergeListener(DecoratedKey partitionKey, List<UnfilteredRowIterator> versions)
-            {
-                return UnfilteredRowIterators.MergeListener.NOOP;
-            }
-
-            public void close() {}
-        };
     }
 
     @SuppressWarnings("resource") // The created resources are returned right away
@@ -111,8 +101,7 @@ public abstract class UnfilteredPartitionIterators
         return FilteredPartitions.filter(iterator, nowInSec);
     }
 
-    @SuppressWarnings("resource")
-    public static UnfilteredPartitionIterator merge(final List<? extends UnfilteredPartitionIterator> iterators, final MergeListener listener)
+    public static UnfilteredPartitionIterator merge(final List<? extends UnfilteredPartitionIterator> iterators, final int nowInSec, final MergeListener listener)
     {
         assert listener != null;
         assert !iterators.isEmpty();
@@ -136,26 +125,16 @@ public abstract class UnfilteredPartitionIterators
                 toMerge.set(idx, current);
             }
 
-            @SuppressWarnings("resource")
             protected UnfilteredRowIterator getReduced()
             {
                 UnfilteredRowIterators.MergeListener rowListener = listener.getRowMergeListener(partitionKey, toMerge);
 
-                // Make a single empty iterator object to merge, we don't need toMerge.size() copiess
-                UnfilteredRowIterator empty = null;
-
                 // Replace nulls by empty iterators
                 for (int i = 0; i < toMerge.size(); i++)
-                {
                     if (toMerge.get(i) == null)
-                    {
-                        if (null == empty)
-                            empty = EmptyIterators.unfilteredRow(metadata, partitionKey, isReverseOrder);
-                        toMerge.set(i, empty);
-                    }
-                }
+                        toMerge.set(i, EmptyIterators.unfilteredRow(metadata, partitionKey, isReverseOrder));
 
-                return UnfilteredRowIterators.merge(toMerge, rowListener);
+                return UnfilteredRowIterators.merge(toMerge, nowInSec, rowListener);
             }
 
             protected void onKeyChange()
@@ -192,8 +171,7 @@ public abstract class UnfilteredPartitionIterators
         };
     }
 
-    @SuppressWarnings("resource")
-    public static UnfilteredPartitionIterator mergeLazily(final List<? extends UnfilteredPartitionIterator> iterators)
+    public static UnfilteredPartitionIterator mergeLazily(final List<? extends UnfilteredPartitionIterator> iterators, final int nowInSec)
     {
         assert !iterators.isEmpty();
 
@@ -217,7 +195,7 @@ public abstract class UnfilteredPartitionIterators
                 {
                     protected UnfilteredRowIterator initializeIterator()
                     {
-                        return UnfilteredRowIterators.merge(toMerge);
+                        return UnfilteredRowIterators.merge(toMerge, nowInSec);
                     }
                 };
             }
@@ -256,19 +234,20 @@ public abstract class UnfilteredPartitionIterators
     /**
      * Digests the the provided iterator.
      *
-     * Caller must close the provided iterator.
-     *
      * @param iterator the iterator to digest.
      * @param hasher the {@link Hasher} to use for the digest.
      * @param version the messaging protocol to use when producing the digest.
      */
     public static void digest(UnfilteredPartitionIterator iterator, Hasher hasher, int version)
     {
-        while (iterator.hasNext())
+        try (UnfilteredPartitionIterator iter = iterator)
         {
-            try (UnfilteredRowIterator partition = iterator.next())
+            while (iter.hasNext())
             {
+                try (UnfilteredRowIterator partition = iter.next())
+                {
                     UnfilteredRowIterators.digest(partition, hasher, version);
+                }
             }
         }
     }
