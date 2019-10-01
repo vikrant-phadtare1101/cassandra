@@ -20,8 +20,8 @@ package org.apache.cassandra.db;
 import java.util.Collections;
 import java.util.concurrent.ExecutionException;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.dht.Bounds;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -33,7 +33,7 @@ import org.junit.Test;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.service.CacheService;
 
@@ -52,14 +52,15 @@ public class CounterCacheTest
     {
         SchemaLoader.prepareServer();
 
-        TableMetadata.Builder counterTable =
-            TableMetadata.builder(KEYSPACE1, COUNTER1)
-                         .isCounter(true)
-                         .addPartitionKeyColumn("key", Int32Type.instance)
-                         .addClusteringColumn("name", Int32Type.instance)
-                         .addRegularColumn("c", CounterColumnType.instance);
+        CFMetaData counterTable = CFMetaData.Builder.create(KEYSPACE1, COUNTER1, false, true, true)
+                                  .addPartitionKey("key", Int32Type.instance)
+                                  .addClusteringColumn("name", Int32Type.instance)
+                                  .addRegularColumn("c", CounterColumnType.instance)
+                                  .build();
 
-        SchemaLoader.createKeyspace(KEYSPACE1, KeyspaceParams.simple(1), counterTable);
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    KeyspaceParams.simple(1),
+                                    counterTable);
     }
 
     @AfterClass
@@ -75,9 +76,9 @@ public class CounterCacheTest
         cfs.truncateBlocking();
         CacheService.instance.invalidateCounterCache();
 
-        Clustering c1 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(1)).build();
-        Clustering c2 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(2)).build();
-        ColumnMetadata cd = cfs.metadata().getColumn(ByteBufferUtil.bytes("c"));
+        Clustering c1 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(1)).build();
+        Clustering c2 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(2)).build();
+        ColumnDefinition cd = cfs.metadata.getColumnDefinition(ByteBufferUtil.bytes("c"));
 
         assertEquals(0, CacheService.instance.counterCache.size());
         assertNull(cfs.getCachedCounter(bytes(1), c1, cd, null));
@@ -103,9 +104,9 @@ public class CounterCacheTest
         cfs.truncateBlocking();
         CacheService.instance.invalidateCounterCache();
 
-        Clustering c1 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(1)).build();
-        Clustering c2 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(2)).build();
-        ColumnMetadata cd = cfs.metadata().getColumn(ByteBufferUtil.bytes("c"));
+        Clustering c1 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(1)).build();
+        Clustering c2 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(2)).build();
+        ColumnDefinition cd = cfs.metadata.getColumnDefinition(ByteBufferUtil.bytes("c"));
 
         assertEquals(0, CacheService.instance.counterCache.size());
         assertNull(cfs.getCachedCounter(bytes(1), c1, cd, null));
@@ -148,10 +149,10 @@ public class CounterCacheTest
         cfs.truncateBlocking();
         CacheService.instance.invalidateCounterCache();
 
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
 
         assertEquals(4, CacheService.instance.counterCache.size());
 
@@ -164,14 +165,14 @@ public class CounterCacheTest
         CacheService.instance.counterCache.loadSaved();
         assertEquals(4, CacheService.instance.counterCache.size());
 
-        Clustering c1 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(1)).build();
-        Clustering c2 = CBuilder.create(cfs.metadata().comparator).add(ByteBufferUtil.bytes(2)).build();
-        ColumnMetadata cd = cfs.metadata().getColumn(ByteBufferUtil.bytes("c"));
+        Clustering c1 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(1)).build();
+        Clustering c2 = CBuilder.create(cfs.metadata.comparator).add(ByteBufferUtil.bytes(2)).build();
+        ColumnDefinition cd = cfs.metadata.getColumnDefinition(ByteBufferUtil.bytes("c"));
 
-        assertEquals(1L, cfs.getCachedCounter(bytes(1), c1, cd, null).count);
-        assertEquals(2L, cfs.getCachedCounter(bytes(1), c2, cd, null).count);
-        assertEquals(1L, cfs.getCachedCounter(bytes(2), c1, cd, null).count);
-        assertEquals(2L, cfs.getCachedCounter(bytes(2), c2, cd, null).count);
+        assertEquals(ClockAndCount.create(1L, 1L), cfs.getCachedCounter(bytes(1), c1, cd, null));
+        assertEquals(ClockAndCount.create(1L, 2L), cfs.getCachedCounter(bytes(1), c2, cd, null));
+        assertEquals(ClockAndCount.create(1L, 1L), cfs.getCachedCounter(bytes(2), c1, cd, null));
+        assertEquals(ClockAndCount.create(1L, 2L), cfs.getCachedCounter(bytes(2), c2, cd, null));
     }
 
     @Test
@@ -181,10 +182,10 @@ public class CounterCacheTest
         cfs.truncateBlocking();
         CacheService.instance.invalidateCounterCache();
 
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
 
         // flush the counter cache and invalidate
         CacheService.instance.counterCache.submitWrite(Integer.MAX_VALUE).get();
@@ -212,10 +213,10 @@ public class CounterCacheTest
         cfs.truncateBlocking();
         CacheService.instance.invalidateCounterCache();
 
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
-        new CounterMutation(new RowUpdateBuilder(cfs.metadata(), 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(1)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(1).add("c", 1L).build(), ConsistencyLevel.ONE).apply();
+        new CounterMutation(new RowUpdateBuilder(cfs.metadata, 0, bytes(2)).clustering(2).add("c", 2L).build(), ConsistencyLevel.ONE).apply();
 
         // flush the counter cache and invalidate
         CacheService.instance.counterCache.submitWrite(Integer.MAX_VALUE).get();

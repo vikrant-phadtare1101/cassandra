@@ -39,11 +39,6 @@ public class OrderPreservingPartitionerTest extends PartitionerTestCase
         partitioner = OrderPreservingPartitioner.instance;
     }
 
-    protected boolean shouldStopRecursion(Token left, Token right)
-    {
-        return false;
-    }
-
     @Test
     public void testCompare()
     {

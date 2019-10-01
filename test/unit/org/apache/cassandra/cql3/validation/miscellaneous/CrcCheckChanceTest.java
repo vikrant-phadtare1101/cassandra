@@ -23,15 +23,15 @@ import java.util.concurrent.Future;
 
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.CompactionInterruptedException;
 import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.io.compress.CompressedRandomAccessReader;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.utils.FBUtilities;
 
 
@@ -70,11 +70,11 @@ public class CrcCheckChanceTest extends CQLTester
         ColumnFamilyStore indexCfs = cfs.indexManager.getAllIndexColumnFamilyStores().iterator().next();
         cfs.forceBlockingFlush();
 
-        Assert.assertEquals(0.99, cfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.99, cfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
+        Assert.assertEquals(0.99, cfs.getCrcCheckChance());
+        Assert.assertEquals(0.99, cfs.getLiveSSTables().iterator().next().getCrcCheckChance());
 
-        Assert.assertEquals(0.99, indexCfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.99, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
+        Assert.assertEquals(0.99, indexCfs.getCrcCheckChance());
+        Assert.assertEquals(0.99, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance());
 
         //Test for stack overflow
         if (newFormat)
@@ -114,10 +114,10 @@ public class CrcCheckChanceTest extends CQLTester
         //Now let's change via JMX
         cfs.setCrcCheckChance(0.01);
 
-        Assert.assertEquals(0.01, cfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.01, cfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.01, indexCfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.01, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
+        Assert.assertEquals(0.01, cfs.getCrcCheckChance());
+        Assert.assertEquals(0.01, cfs.getLiveSSTables().iterator().next().getCrcCheckChance());
+        Assert.assertEquals(0.01, indexCfs.getCrcCheckChance());
+        Assert.assertEquals(0.01, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance());
 
         assertRows(execute("SELECT * FROM %s WHERE p=?", "p1"),
                    row("p1", "k1", "sv1", "v1"),
@@ -135,33 +135,33 @@ public class CrcCheckChanceTest extends CQLTester
             alterTable("ALTER TABLE %s WITH compression = {'sstable_compression': 'LZ4Compressor', 'crc_check_chance': 0.5}");
 
         //We should be able to get the new value by accessing directly the schema metadata
-        Assert.assertEquals(0.5, cfs.metadata().params.crcCheckChance, 0.0);
+        Assert.assertEquals(0.5, cfs.metadata.params.crcCheckChance);
 
         //but previous JMX-set value will persist until next restart
-        Assert.assertEquals(0.01, cfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.01, indexCfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.01, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
+        Assert.assertEquals(0.01, cfs.getLiveSSTables().iterator().next().getCrcCheckChance());
+        Assert.assertEquals(0.01, indexCfs.getCrcCheckChance());
+        Assert.assertEquals(0.01, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance());
 
         //Verify the call used by JMX still works
         cfs.setCrcCheckChance(0.03);
-        Assert.assertEquals(0.03, cfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.03, cfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.03, indexCfs.getCrcCheckChance(), 0.0);
-        Assert.assertEquals(0.03, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance(), 0.0);
+        Assert.assertEquals(0.03, cfs.getCrcCheckChance());
+        Assert.assertEquals(0.03, cfs.getLiveSSTables().iterator().next().getCrcCheckChance());
+        Assert.assertEquals(0.03, indexCfs.getCrcCheckChance());
+        Assert.assertEquals(0.03, indexCfs.getLiveSSTables().iterator().next().getCrcCheckChance());
 
         // Also check that any open readers also use the updated value
         // note: only compressed files currently perform crc checks, so only the dfile reader is relevant here
         SSTableReader baseSSTable = cfs.getLiveSSTables().iterator().next();
         SSTableReader idxSSTable = indexCfs.getLiveSSTables().iterator().next();
-        try (RandomAccessReader baseDataReader = baseSSTable.openDataReader();
-             RandomAccessReader idxDataReader = idxSSTable.openDataReader())
+        try (CompressedRandomAccessReader baseDataReader = (CompressedRandomAccessReader)baseSSTable.openDataReader();
+             CompressedRandomAccessReader idxDataReader = (CompressedRandomAccessReader)idxSSTable.openDataReader())
         {
-            Assert.assertEquals(0.03, baseDataReader.getCrcCheckChance(), 0.0);
-            Assert.assertEquals(0.03, idxDataReader.getCrcCheckChance(), 0.0);
+            Assert.assertEquals(0.03, baseDataReader.getCrcCheckChance());
+            Assert.assertEquals(0.03, idxDataReader.getCrcCheckChance());
 
             cfs.setCrcCheckChance(0.31);
-            Assert.assertEquals(0.31, baseDataReader.getCrcCheckChance(), 0.0);
-            Assert.assertEquals(0.31, idxDataReader.getCrcCheckChance(), 0.0);
+            Assert.assertEquals(0.31, baseDataReader.getCrcCheckChance());
+            Assert.assertEquals(0.31, idxDataReader.getCrcCheckChance());
         }
     }
 

@@ -21,13 +21,11 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.regex.Pattern;
 
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.BytesSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -109,10 +107,6 @@ public abstract class AbstractCompositeType extends AbstractType<ByteBuffer>
         }
         return l.toArray(new ByteBuffer[l.size()]);
     }
-    private static final String COLON = ":";
-    private static final Pattern COLON_PAT = Pattern.compile(COLON);
-    private static final String ESCAPED_COLON = "\\\\:";
-    private static final Pattern ESCAPED_COLON_PAT = Pattern.compile(ESCAPED_COLON);
 
 
     /*
@@ -124,7 +118,7 @@ public abstract class AbstractCompositeType extends AbstractType<ByteBuffer>
         if (input.isEmpty())
             return input;
 
-        String res = COLON_PAT.matcher(input).replaceAll(ESCAPED_COLON);
+        String res = input.replaceAll(":", "\\\\:");
         char last = res.charAt(res.length() - 1);
         return last == '\\' || last == '!' ? res + '!' : res;
     }
@@ -138,7 +132,7 @@ public abstract class AbstractCompositeType extends AbstractType<ByteBuffer>
         if (input.isEmpty())
             return input;
 
-        String res = ESCAPED_COLON_PAT.matcher(input).replaceAll(COLON);
+        String res = input.replaceAll("\\\\:", ":");
         char last = res.charAt(res.length() - 1);
         return last == '!' ? res.substring(0, res.length() - 1) : res;
     }
@@ -252,7 +246,7 @@ public abstract class AbstractCompositeType extends AbstractType<ByteBuffer>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         throw new UnsupportedOperationException();
     }
@@ -295,6 +289,12 @@ public abstract class AbstractCompositeType extends AbstractType<ByteBuffer>
     public TypeSerializer<ByteBuffer> getSerializer()
     {
         return BytesSerializer.instance;
+    }
+
+    @Override
+    public boolean referencesUserType(String name)
+    {
+        return getComponents().stream().anyMatch(f -> f.referencesUserType(name));
     }
 
     /**

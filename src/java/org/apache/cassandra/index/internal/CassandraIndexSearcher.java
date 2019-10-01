@@ -26,7 +26,7 @@ import java.util.NavigableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
@@ -56,14 +56,14 @@ public abstract class CassandraIndexSearcher implements Index.Searcher
 
     @SuppressWarnings("resource") // Both the OpOrder and 'indexIter' are closed on exception, or through the closing of the result
     // of this method.
-    public UnfilteredPartitionIterator search(ReadExecutionController executionController)
+    public UnfilteredPartitionIterator search(ReadOrderGroup orderGroup)
     {
         // the value of the index expression is the partition key in the index table
         DecoratedKey indexKey = index.getBackingTable().get().decorateKey(expression.getIndexValue());
-        UnfilteredRowIterator indexIter = queryIndex(indexKey, command, executionController);
+        UnfilteredRowIterator indexIter = queryIndex(indexKey, command, orderGroup);
         try
         {
-            return queryDataFromIndex(indexKey, UnfilteredRowIterators.filter(indexIter, command.nowInSec()), command, executionController);
+            return queryDataFromIndex(indexKey, UnfilteredRowIterators.filter(indexIter, command.nowInSec()), command, orderGroup);
         }
         catch (RuntimeException | Error e)
         {
@@ -72,13 +72,13 @@ public abstract class CassandraIndexSearcher implements Index.Searcher
         }
     }
 
-    private UnfilteredRowIterator queryIndex(DecoratedKey indexKey, ReadCommand command, ReadExecutionController executionController)
+    private UnfilteredRowIterator queryIndex(DecoratedKey indexKey, ReadCommand command, ReadOrderGroup orderGroup)
     {
         ClusteringIndexFilter filter = makeIndexFilter(command);
         ColumnFamilyStore indexCfs = index.getBackingTable().get();
-        TableMetadata indexMetadata = indexCfs.metadata();
-        return SinglePartitionReadCommand.create(indexMetadata, command.nowInSec(), indexKey, ColumnFilter.all(indexMetadata), filter)
-                                         .queryMemtableAndDisk(indexCfs, executionController.indexReadController());
+        CFMetaData indexCfm = indexCfs.metadata;
+        return SinglePartitionReadCommand.create(indexCfm, command.nowInSec(), indexKey, ColumnFilter.all(indexCfm), filter)
+                                         .queryMemtableAndDisk(indexCfs, orderGroup.indexReadOpOrderGroup());
     }
 
     private ClusteringIndexFilter makeIndexFilter(ReadCommand command)
@@ -132,8 +132,8 @@ public abstract class CassandraIndexSearcher implements Index.Searcher
                     DecoratedKey startKey = (DecoratedKey) range.left;
                     DecoratedKey endKey = (DecoratedKey) range.right;
 
-                    ClusteringBound start = ClusteringBound.BOTTOM;
-                    ClusteringBound end = ClusteringBound.TOP;
+                    Slice.Bound start = Slice.Bound.BOTTOM;
+                    Slice.Bound end = Slice.Bound.TOP;
 
                     /*
                      * For index queries over a range, we can't do a whole lot better than querying everything for the key range, though for
@@ -166,15 +166,15 @@ public abstract class CassandraIndexSearcher implements Index.Searcher
                 else
                 {
                     // otherwise, just start the index slice from the key we do have
-                    slice = Slice.make(makeIndexBound(((DecoratedKey)range.left).getKey(), ClusteringBound.BOTTOM),
-                                       ClusteringBound.TOP);
+                    slice = Slice.make(makeIndexBound(((DecoratedKey)range.left).getKey(), Slice.Bound.BOTTOM),
+                                       Slice.Bound.TOP);
                 }
             }
             return new ClusteringIndexSliceFilter(Slices.with(index.getIndexComparator(), slice), false);
         }
     }
 
-    private ClusteringBound makeIndexBound(ByteBuffer rowKey, ClusteringBound bound)
+    private Slice.Bound makeIndexBound(ByteBuffer rowKey, Slice.Bound bound)
     {
         return index.buildIndexClusteringPrefix(rowKey, bound, null)
                                  .buildBound(bound.isStart(), bound.isInclusive());
@@ -188,5 +188,5 @@ public abstract class CassandraIndexSearcher implements Index.Searcher
     protected abstract UnfilteredPartitionIterator queryDataFromIndex(DecoratedKey indexKey,
                                                                       RowIterator indexHits,
                                                                       ReadCommand command,
-                                                                      ReadExecutionController executionController);
+                                                                      ReadOrderGroup orderGroup);
 }

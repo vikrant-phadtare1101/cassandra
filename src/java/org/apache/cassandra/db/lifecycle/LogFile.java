@@ -66,7 +66,7 @@ final class LogFile implements AutoCloseable
     private final LogReplicaSet replicas = new LogReplicaSet();
 
     // The transaction records, this set must be ORDER PRESERVING
-    private final Set<LogRecord> records = Collections.synchronizedSet(new LinkedHashSet<>()); // TODO: Hack until we fix CASSANDRA-14554
+    private final LinkedHashSet<LogRecord> records = new LinkedHashSet<>();
 
     // The type of the transaction
     private final OperationType type;
@@ -95,9 +95,9 @@ final class LogFile implements AutoCloseable
         return new LogFile(operationType, id, logReplicas);
     }
 
-    Throwable syncDirectory(Throwable accumulate)
+    Throwable syncFolder(Throwable accumulate)
     {
-        return replicas.syncDirectory(accumulate);
+        return replicas.syncFolder(accumulate);
     }
 
     OperationType type()
@@ -114,17 +114,11 @@ final class LogFile implements AutoCloseable
     {
         try
         {
-            // we sync the parent directories before content deletion to ensure
-            // any previously deleted files (see SSTableTider) are not
-            // incorrectly picked up by record.getExistingFiles() in
-            // deleteRecordFiles(), see CASSANDRA-12261
-            Throwables.maybeFail(syncDirectory(accumulate));
-
             deleteFilesForRecordsOfType(committed() ? Type.REMOVE : Type.ADD);
 
-            // we sync the parent directories between contents and log deletion
+            // we sync the parent folders between contents and log deletion
             // to ensure there is a happens before edge between them
-            Throwables.maybeFail(syncDirectory(accumulate));
+            Throwables.maybeFail(syncFolder(accumulate));
 
             accumulate = replicas.delete(accumulate);
         }
@@ -158,7 +152,7 @@ final class LogFile implements AutoCloseable
         records.clear();
         if (!replicas.readRecords(records))
         {
-            logger.error("Failed to read records for transaction log {}", this);
+            logger.error("Failed to read records from {}", replicas);
             return false;
         }
 
@@ -171,7 +165,7 @@ final class LogFile implements AutoCloseable
         LogRecord failedOn = firstInvalid.get();
         if (getLastRecord() != failedOn)
         {
-            setErrorInReplicas(failedOn);
+            logError(failedOn);
             return false;
         }
 
@@ -179,24 +173,25 @@ final class LogFile implements AutoCloseable
         if (records.stream()
                    .filter((r) -> r != failedOn)
                    .filter(LogRecord::isInvalid)
-                   .map(this::setErrorInReplicas)
+                   .map(LogFile::logError)
                    .findFirst().isPresent())
         {
-            setErrorInReplicas(failedOn);
+            logError(failedOn);
             return false;
         }
 
         // if only the last record is corrupt and all other records have matching files on disk, @see verifyRecord,
         // then we simply exited whilst serializing the last record and we carry on
-        logger.warn("Last record of transaction {} is corrupt or incomplete [{}], " +
-                    "but all previous records match state on disk; continuing",
-                    id, failedOn.error());
+        logger.warn(String.format("Last record of transaction %s is corrupt or incomplete [%s], " +
+                                  "but all previous records match state on disk; continuing",
+                                  id,
+                                  failedOn.error()));
         return true;
     }
 
-    LogRecord setErrorInReplicas(LogRecord record)
+    static LogRecord logError(LogRecord record)
     {
-        replicas.setErrorInReplicas(record);
+        logger.error("{}", record.error());
         return record;
     }
 
@@ -204,8 +199,9 @@ final class LogFile implements AutoCloseable
     {
         if (record.checksum != record.computeChecksum())
         {
-            record.setError(String.format("Invalid checksum for sstable [%s]: [%d] should have been [%d]",
+            record.setError(String.format("Invalid checksum for sstable [%s], record [%s]: [%d] should have been [%d]",
                                           record.fileName(),
+                                          record,
                                           record.checksum,
                                           record.computeChecksum()));
             return;
@@ -223,9 +219,10 @@ final class LogFile implements AutoCloseable
         record.status.onDiskRecord = record.withExistingFiles();
         if (record.updateTime != record.status.onDiskRecord.updateTime && record.status.onDiskRecord.updateTime > 0)
         {
-            record.setError(String.format("Unexpected files detected for sstable [%s]: " +
-                                          "last update time [%tT] should have been [%tT]",
+            record.setError(String.format("Unexpected files detected for sstable [%s], " +
+                                          "record [%s]: last update time [%tT] should have been [%tT]",
                                           record.fileName(),
+                                          record,
                                           record.status.onDiskRecord.updateTime,
                                           record.updateTime));
 
@@ -237,9 +234,11 @@ final class LogFile implements AutoCloseable
         if (record.type == Type.REMOVE && record.status.onDiskRecord.numFiles < record.numFiles)
         { // if we found a corruption in the last record, then we continue only
           // if the number of files matches exactly for all previous records.
-            record.setError(String.format("Incomplete fileset detected for sstable [%s]: " +
-                                          "number of files [%d] should have been [%d].",
+            record.setError(String.format("Incomplete fileset detected for sstable [%s], record [%s]: " +
+                                          "number of files [%d] should have been [%d]. Treating as unrecoverable " +
+                                          "due to corruption of the final record.",
                                           record.fileName(),
+                                          record.raw,
                                           record.status.onDiskRecord.numFiles,
                                           record.numFiles));
         }
@@ -247,11 +246,13 @@ final class LogFile implements AutoCloseable
 
     void commit()
     {
+        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeCommit(System.currentTimeMillis()));
     }
 
     void abort()
     {
+        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeAbort(System.currentTimeMillis()));
     }
 
@@ -280,13 +281,20 @@ final class LogFile implements AutoCloseable
 
     void add(Type type, SSTable table)
     {
-        addRecord(makeRecord(type, table));
+        add(makeRecord(type, table));
+    }
+
+    void add(LogRecord record)
+    {
+        if (!addRecord(record))
+            throw new IllegalStateException();
     }
 
     public void addAll(Type type, Iterable<SSTableReader> toBulkAdd)
     {
         for (LogRecord record : makeRecords(type, toBulkAdd).values())
-            addRecord(record);
+            if (!addRecord(record))
+                throw new IllegalStateException();
     }
 
     Map<SSTable, LogRecord> makeRecords(Type type, Iterable<SSTableReader> tables)
@@ -295,9 +303,8 @@ final class LogFile implements AutoCloseable
 
         for (SSTableReader sstable : tables)
         {
-            File directory = sstable.descriptor.directory;
-            String fileName = StringUtils.join(directory, File.separator, getFileName());
-            replicas.maybeCreateReplica(directory, fileName, records);
+            File folder = sstable.descriptor.directory;
+            replicas.maybeCreateReplica(folder, getFileName(folder), records);
         }
         return LogRecord.make(type, tables);
     }
@@ -306,9 +313,8 @@ final class LogFile implements AutoCloseable
     {
         assert type == Type.ADD || type == Type.REMOVE;
 
-        File directory = table.descriptor.directory;
-        String fileName = StringUtils.join(directory, File.separator, getFileName());
-        replicas.maybeCreateReplica(directory, fileName, records);
+        File folder = table.descriptor.directory;
+        replicas.maybeCreateReplica(folder, getFileName(folder), records);
         return LogRecord.make(type, table);
     }
 
@@ -321,23 +327,19 @@ final class LogFile implements AutoCloseable
     {
         assert type == Type.ADD || type == Type.REMOVE;
 
-        File directory = table.descriptor.directory;
-        String fileName = StringUtils.join(directory, File.separator, getFileName());
-        replicas.maybeCreateReplica(directory, fileName, records);
+        File folder = table.descriptor.directory;
+        replicas.maybeCreateReplica(folder, getFileName(folder), records);
         return record.asType(type);
     }
 
-    void addRecord(LogRecord record)
+    private boolean addRecord(LogRecord record)
     {
-        if (completed())
-            throw new IllegalStateException("Transaction already completed");
-
         if (records.contains(record))
-            throw new IllegalStateException("Record already exists");
+            return false;
 
         replicas.append(record);
-        if (!records.add(record))
-            throw new IllegalStateException("Failed to add record");
+
+        return records.add(record);
     }
 
     void remove(Type type, SSTable table)
@@ -429,25 +431,7 @@ final class LogFile implements AutoCloseable
     @Override
     public String toString()
     {
-        return toString(false);
-    }
-
-    public String toString(boolean showContents)
-    {
-        StringBuilder str = new StringBuilder();
-        str.append('[');
-        str.append(getFileName());
-        str.append(" in ");
-        str.append(replicas.getDirectories());
-        str.append(']');
-        if (showContents)
-        {
-            str.append(System.lineSeparator());
-            str.append("Files and contents follow:");
-            str.append(System.lineSeparator());
-            replicas.printContentsWithAnyErrors(str);
-        }
-        return str.toString();
+        return replicas.toString();
     }
 
     @VisibleForTesting
@@ -462,16 +446,22 @@ final class LogFile implements AutoCloseable
         return replicas.getFilePaths();
     }
 
-    private String getFileName()
+    private String getFileName(File folder)
     {
-        return StringUtils.join(BigFormat.latestVersion,
-                                LogFile.SEP,
-                                "txn",
-                                LogFile.SEP,
-                                type.fileName,
-                                LogFile.SEP,
-                                id.toString(),
-                                LogFile.EXT);
+        String fileName = StringUtils.join(BigFormat.latestVersion,
+                                           LogFile.SEP,
+                                           "txn",
+                                           LogFile.SEP,
+                                           type.fileName,
+                                           LogFile.SEP,
+                                           id.toString(),
+                                           LogFile.EXT);
+        return StringUtils.join(folder, File.separator, fileName);
+    }
+
+    Collection<LogRecord> getRecords()
+    {
+        return records;
     }
 
     public boolean isEmpty()

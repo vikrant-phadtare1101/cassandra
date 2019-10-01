@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.dht;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -26,12 +25,10 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.PreHashedDecoratedKey;
-import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.PartitionerDefinedOrder;
 import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.MurmurHash;
 import org.apache.cassandra.utils.ObjectSizes;
@@ -45,25 +42,11 @@ public class Murmur3Partitioner implements IPartitioner
 {
     public static final LongToken MINIMUM = new LongToken(Long.MIN_VALUE);
     public static final long MAXIMUM = Long.MAX_VALUE;
-    private static final int MAXIMUM_TOKEN_SIZE = TypeSizes.sizeof(MAXIMUM);
 
     private static final int HEAP_SIZE = (int) ObjectSizes.measureDeep(MINIMUM);
 
     public static final Murmur3Partitioner instance = new Murmur3Partitioner();
     public static final AbstractType<?> partitionOrdering = new PartitionerDefinedOrder(instance);
-
-    private final Splitter splitter = new Splitter(this)
-    {
-        public Token tokenForValue(BigInteger value)
-        {
-            return new LongToken(value.longValue());
-        }
-
-        public BigInteger valueForToken(Token token)
-        {
-            return BigInteger.valueOf(((LongToken) token).token);
-        }
-    };
 
     public DecoratedKey decorateKey(ByteBuffer key)
     {
@@ -96,42 +79,6 @@ public class Murmur3Partitioner implements IPartitioner
         }
 
         return new LongToken(midpoint.longValue());
-    }
-
-    public Token split(Token lToken, Token rToken, double ratioToLeft)
-    {
-        BigDecimal l = BigDecimal.valueOf(((LongToken) lToken).token),
-                   r = BigDecimal.valueOf(((LongToken) rToken).token),
-                   ratio = BigDecimal.valueOf(ratioToLeft);
-        long newToken;
-
-        if (l.compareTo(r) < 0)
-        {
-            newToken = r.subtract(l).multiply(ratio).add(l).toBigInteger().longValue();
-        }
-        else
-        {
-            // wrapping case
-            // L + ((R - min) + (max - L)) * pct
-            BigDecimal max = BigDecimal.valueOf(MAXIMUM);
-            BigDecimal min = BigDecimal.valueOf(MINIMUM.token);
-
-            BigInteger token = max.subtract(min).add(r).subtract(l).multiply(ratio).add(l).toBigInteger();
-
-            BigInteger maxToken = BigInteger.valueOf(MAXIMUM);
-
-            if (token.compareTo(maxToken) <= 0)
-            {
-                newToken = token.longValue();
-            }
-            else
-            {
-                // if the value is above maximum
-                BigInteger minToken = BigInteger.valueOf(MINIMUM.token);
-                newToken = minToken.add(token.subtract(maxToken)).longValue();
-            }
-        }
-        return new LongToken(newToken);
     }
 
     public LongToken getMinimumToken()
@@ -228,11 +175,6 @@ public class Murmur3Partitioner implements IPartitioner
         return new LongToken(normalize(hash[0]));
     }
 
-    public int getMaxTokenSize()
-    {
-        return MAXIMUM_TOKEN_SIZE;
-    }
-
     private long[] getHash(ByteBuffer key)
     {
         long[] hash = new long[2];
@@ -309,33 +251,9 @@ public class Murmur3Partitioner implements IPartitioner
             return ByteBufferUtil.bytes(longToken.token);
         }
 
-        @Override
-        public void serialize(Token token, DataOutputPlus out) throws IOException
-        {
-            out.writeLong(((LongToken) token).token);
-        }
-
-        @Override
-        public void serialize(Token token, ByteBuffer out)
-        {
-            out.putLong(((LongToken) token).token);
-        }
-
-        @Override
-        public int byteSize(Token token)
-        {
-            return 8;
-        }
-
         public Token fromByteArray(ByteBuffer bytes)
         {
             return new LongToken(ByteBufferUtil.toLong(bytes));
-        }
-
-        @Override
-        public Token fromByteBuffer(ByteBuffer bytes, int position, int length)
-        {
-            return new LongToken(bytes.getLong(position));
         }
 
         public String toString(Token token)
@@ -347,7 +265,7 @@ public class Murmur3Partitioner implements IPartitioner
         {
             try
             {
-                fromString(token);
+                Long.valueOf(token);
             }
             catch (NumberFormatException e)
             {
@@ -373,18 +291,8 @@ public class Murmur3Partitioner implements IPartitioner
         return LongType.instance;
     }
 
-    public Token getMaximumToken()
-    {
-        return new LongToken(Long.MAX_VALUE);
-    }
-
     public AbstractType<?> partitionOrdering()
     {
         return partitionOrdering;
-    }
-
-    public Optional<Splitter> splitter()
-    {
-        return Optional.of(splitter);
     }
 }

@@ -47,7 +47,7 @@ public final class UDFByteCodeVerifier
 
     public static final String JAVA_UDF_NAME = JavaUDF.class.getName().replace('.', '/');
     public static final String OBJECT_NAME = Object.class.getName().replace('.', '/');
-    public static final String CTOR_SIG = "(Lcom/datastax/driver/core/TypeCodec;[Lcom/datastax/driver/core/TypeCodec;Lorg/apache/cassandra/cql3/functions/UDFContext;)V";
+    public static final String CTOR_SIG = "(Lcom/datastax/driver/core/TypeCodec;[Lcom/datastax/driver/core/TypeCodec;)V";
 
     private final Set<String> disallowedClasses = new HashSet<>();
     private final Multimap<String, String> disallowedMethodCalls = HashMultimap.create();
@@ -80,11 +80,10 @@ public final class UDFByteCodeVerifier
         return this;
     }
 
-    public Set<String> verify(String clsName, byte[] bytes)
+    public Set<String> verify(byte[] bytes)
     {
-        String clsNameSl = clsName.replace('.', '/');
         Set<String> errors = new TreeSet<>(); // it's a TreeSet for unit tests
-        ClassVisitor classVisitor = new ClassVisitor(Opcodes.ASM7)
+        ClassVisitor classVisitor = new ClassVisitor(Opcodes.ASM5)
         {
             public FieldVisitor visitField(int access, String name, String desc, String signature, Object value)
             {
@@ -101,18 +100,11 @@ public final class UDFByteCodeVerifier
                     // allowed constructor - JavaUDF(TypeCodec returnCodec, TypeCodec[] argCodecs)
                     return new ConstructorVisitor(errors);
                 }
-                if ("executeImpl".equals(name) && "(Lorg/apache/cassandra/transport/ProtocolVersion;Ljava/util/List;)Ljava/nio/ByteBuffer;".equals(desc))
+                if ("executeImpl".equals(name) && "(ILjava/util/List;)Ljava/nio/ByteBuffer;".equals(desc))
                 {
                     if (Opcodes.ACC_PROTECTED != access)
                         errors.add("executeImpl not protected");
-                    // the executeImpl method - ByteBuffer executeImpl(ProtocolVersion protocolVersion, List<ByteBuffer> params)
-                    return new ExecuteImplVisitor(errors);
-                }
-                if ("executeAggregateImpl".equals(name) && "(Lorg/apache/cassandra/transport/ProtocolVersion;Ljava/lang/Object;Ljava/util/List;)Ljava/lang/Object;".equals(desc))
-                {
-                    if (Opcodes.ACC_PROTECTED != access)
-                        errors.add("executeAggregateImpl not protected");
-                    // the executeImpl method - ByteBuffer executeImpl(ProtocolVersion protocolVersion, List<ByteBuffer> params)
+                    // the executeImpl method - ByteBuffer executeImpl(int protocolVersion, List<ByteBuffer> params)
                     return new ExecuteImplVisitor(errors);
                 }
                 if ("<clinit>".equals(name))
@@ -142,8 +134,7 @@ public final class UDFByteCodeVerifier
 
             public void visitInnerClass(String name, String outerName, String innerName, int access)
             {
-                if (clsNameSl.equals(outerName)) // outerName might be null, which is true for anonymous inner classes
-                    errors.add("class declared as inner class");
+                errors.add("class declared as inner class");
                 super.visitInnerClass(name, outerName, innerName, access);
             }
         };
