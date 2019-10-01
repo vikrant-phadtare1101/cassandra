@@ -239,10 +239,10 @@ public abstract class Rows
             iter.next();
     }
 
-    public static Row merge(Row row1, Row row2)
+    public static Row merge(Row row1, Row row2, int nowInSec)
     {
         Row.Builder builder = BTreeRow.sortedBuilder();
-        merge(row1, row2, builder);
+        merge(row1, row2, builder, nowInSec);
         return builder.build();
     }
 
@@ -256,6 +256,9 @@ public abstract class Rows
      * @param existing
      * @param update
      * @param builder the row build to which the result of the reconciliation is written.
+     * @param nowInSec the current time in seconds (which plays a role during reconciliation
+     * because deleted cells always have precedence on timestamp equality and deciding if a
+     * cell is a live or not depends on the current time due to expiring cells).
      *
      * @return the smallest timestamp delta between corresponding rows from existing and update. A
      * timestamp delta being computed as the difference between the cells and DeletionTimes from {@code existing}
@@ -263,7 +266,8 @@ public abstract class Rows
      */
     public static long merge(Row existing,
                              Row update,
-                             Row.Builder builder)
+                             Row.Builder builder,
+                             int nowInSec)
     {
         Clustering clustering = existing.clustering();
         builder.newRow(clustering);
@@ -297,7 +301,7 @@ public abstract class Rows
             ColumnMetadata column = getColumnMetadata(cura, curb);
             if (column.isSimple())
             {
-                timeDelta = Math.min(timeDelta, Cells.reconcile((Cell) cura, (Cell) curb, deletion, builder));
+                timeDelta = Math.min(timeDelta, Cells.reconcile((Cell) cura, (Cell) curb, deletion, builder, nowInSec));
             }
             else
             {
@@ -314,7 +318,7 @@ public abstract class Rows
 
                 Iterator<Cell> existingCells = existingData == null ? null : existingData.iterator();
                 Iterator<Cell> updateCells = updateData == null ? null : updateData.iterator();
-                timeDelta = Math.min(timeDelta, Cells.reconcileComplex(column, existingCells, updateCells, maxDt, builder));
+                timeDelta = Math.min(timeDelta, Cells.reconcileComplex(column, existingCells, updateCells, maxDt, builder, nowInSec));
             }
 
             if (cura != null)
@@ -333,8 +337,11 @@ public abstract class Rows
      * @param existing source row
      * @param update shadowing row
      * @param rangeDeletion extra {@code DeletionTime} from covering tombstone
+     * @param nowInSec the current time in seconds (which plays a role during reconciliation
+     * because deleted cells always have precedence on timestamp equality and deciding if a
+     * cell is a live or not depends on the current time due to expiring cells).
      */
-    public static Row removeShadowedCells(Row existing, Row update, DeletionTime rangeDeletion)
+    public static Row removeShadowedCells(Row existing, Row update, DeletionTime rangeDeletion, int nowInSec)
     {
         Row.Builder builder = BTreeRow.sortedBuilder();
         Clustering clustering = existing.clustering();
@@ -364,7 +371,7 @@ public abstract class Rows
                 ColumnData curb = comparison == 0 ? nextb : null;
                 if (column.isSimple())
                 {
-                    Cells.addNonShadowed((Cell) cura, (Cell) curb, deletion, builder);
+                    Cells.addNonShadowed((Cell) cura, (Cell) curb, deletion, builder, nowInSec);
                 }
                 else
                 {
@@ -383,7 +390,7 @@ public abstract class Rows
 
                     Iterator<Cell> existingCells = existingData.iterator();
                     Iterator<Cell> updateCells = updateData == null ? null : updateData.iterator();
-                    Cells.addNonShadowedComplex(column, existingCells, updateCells, maxDt, builder);
+                    Cells.addNonShadowedComplex(column, existingCells, updateCells, maxDt, builder, nowInSec);
                 }
                 nexta = a.hasNext() ? a.next() : null;
                 if (curb != null)

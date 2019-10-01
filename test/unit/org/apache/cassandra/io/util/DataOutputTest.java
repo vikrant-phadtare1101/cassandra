@@ -141,11 +141,11 @@ public class DataOutputTest
 
         void superReallocate(int count) throws IOException
         {
-            super.expandToFit(count);
+            super.reallocate(count);
         }
 
         @Override
-        protected void expandToFit(long count)
+        protected void reallocate(long count)
         {
             if (count <= 0)
                 return;

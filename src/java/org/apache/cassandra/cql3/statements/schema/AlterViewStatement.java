@@ -92,11 +92,6 @@ public final class AlterViewStatement extends AlterSchemaStatement
         return new AuditLogContext(AuditLogEntryType.ALTER_VIEW, keyspaceName, viewName);
     }
 
-    public String toString()
-    {
-        return String.format("%s (%s, %s)", getClass().getSimpleName(), keyspaceName, viewName);
-    }
-
     public static final class Raw extends CQLStatement.Raw
     {
         private final QualifiedName name;

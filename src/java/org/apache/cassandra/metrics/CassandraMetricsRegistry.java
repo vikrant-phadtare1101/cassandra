@@ -17,21 +17,27 @@
  */
 package org.apache.cassandra.metrics;
 
+import java.lang.management.ManagementFactory;
 import java.lang.reflect.Method;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+
+import javax.management.MBeanServer;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
 
+import com.codahale.metrics.Counter;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.Histogram;
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.Metered;
+import com.codahale.metrics.Metric;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
-
-import com.codahale.metrics.*;
-import org.apache.cassandra.utils.MBeanWrapper;
+import com.google.common.collect.ImmutableMap;
 
 /**
  * Makes integrating 3.0 metrics API with 2.0.
@@ -44,7 +50,7 @@ public class CassandraMetricsRegistry extends MetricRegistry
     public static final CassandraMetricsRegistry Metrics = new CassandraMetricsRegistry();
     private final Map<String, ThreadPoolMetrics> threadPoolMetrics = new ConcurrentHashMap<>();
 
-    private final MBeanWrapper mBeanServer = MBeanWrapper.instance;
+    private final MBeanServer mBeanServer = ManagementFactory.getPlatformMBeanServer();
 
     private CassandraMetricsRegistry()
     {
@@ -126,24 +132,45 @@ public class CassandraMetricsRegistry extends MetricRegistry
         }
     }
 
-    public Collection<ThreadPoolMetrics> allThreadPoolMetrics()
+    public Map<String, ThreadPoolMetrics> getThreadPoolMetrics()
     {
-        return Collections.unmodifiableCollection(threadPoolMetrics.values());
+        return ImmutableMap.copyOf(threadPoolMetrics);
     }
 
-    public Optional<ThreadPoolMetrics> getThreadPoolMetrics(String poolName)
+    public void register(ThreadPoolMetrics metrics)
     {
-        return Optional.ofNullable(threadPoolMetrics.get(poolName));
-    }
-
-    ThreadPoolMetrics register(ThreadPoolMetrics metrics)
-    {
+        MetricNameFactory factory = threadPoolNameFactory(metrics);
+        register(factory.createMetricName(ThreadPoolMetrics.ACTIVE_TASKS), metrics.activeTasks);
+        register(factory.createMetricName(ThreadPoolMetrics.PENDING_TASKS), metrics.pendingTasks);
+        register(factory.createMetricName(ThreadPoolMetrics.COMPLETED_TASKS), metrics.completedTasks);
+        register(factory.createMetricName(ThreadPoolMetrics.CURRENTLY_BLOCKED_TASKS), metrics.currentBlocked);
+        register(factory.createMetricName(ThreadPoolMetrics.TOTAL_BLOCKED_TASKS), metrics.totalBlocked);
+        register(factory.createMetricName(ThreadPoolMetrics.MAX_POOL_SIZE), metrics.maxPoolSize);
+        register(factory.createMetricName(ThreadPoolMetrics.MAX_TASKS_QUEUED), metrics.maxTasksQueued);
         threadPoolMetrics.put(metrics.poolName, metrics);
-        return metrics;
     }
 
-    void remove(ThreadPoolMetrics metrics)
+    private MetricNameFactory threadPoolNameFactory(ThreadPoolMetrics metrics)
     {
+        return metricName -> new CassandraMetricsRegistry.MetricName(
+                "org.apache.cassandra.metrics",
+                "ThreadPools",
+                metricName,
+                metrics.path + '.' + metrics.poolName,
+                String.format("org.apache.cassandra.metrics:type=ThreadPools,path=%s,scope=%s,name=%s",
+                        metrics.path, metrics.poolName, metricName));
+    }
+
+    public void release(ThreadPoolMetrics metrics)
+    {
+        MetricNameFactory factory = threadPoolNameFactory(metrics);
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.ACTIVE_TASKS));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.PENDING_TASKS));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.COMPLETED_TASKS));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.CURRENTLY_BLOCKED_TASKS));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.TOTAL_BLOCKED_TASKS));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.MAX_POOL_SIZE));
+        Metrics.remove(factory.createMetricName(ThreadPoolMetrics.MAX_TASKS_QUEUED));
         threadPoolMetrics.remove(metrics.poolName, metrics);
     }
 
@@ -158,7 +185,11 @@ public class CassandraMetricsRegistry extends MetricRegistry
     {
         boolean removed = remove(name.getMetricName());
 
-        mBeanServer.unregisterMBean(name.getMBeanName(), MBeanWrapper.OnException.IGNORE);
+        try
+        {
+            mBeanServer.unregisterMBean(name.getMBeanName());
+        } catch (Exception ignore) {}
+
         return removed;
     }
 
@@ -177,20 +208,29 @@ public class CassandraMetricsRegistry extends MetricRegistry
         AbstractBean mbean;
 
         if (metric instanceof Gauge)
+        {
             mbean = new JmxGauge((Gauge<?>) metric, name);
-        else if (metric instanceof Counter)
+        } else if (metric instanceof Counter)
+        {
             mbean = new JmxCounter((Counter) metric, name);
-        else if (metric instanceof Histogram)
+        } else if (metric instanceof Histogram)
+        {
             mbean = new JmxHistogram((Histogram) metric, name);
-        else if (metric instanceof Timer)
+        } else if (metric instanceof Meter)
+        {
+            mbean = new JmxMeter((Meter) metric, name, TimeUnit.SECONDS);
+        } else if (metric instanceof Timer)
+        {
             mbean = new JmxTimer((Timer) metric, name, TimeUnit.SECONDS, TimeUnit.MICROSECONDS);
-        else if (metric instanceof Metered)
-            mbean = new JmxMeter((Metered) metric, name, TimeUnit.SECONDS);
-        else
+        } else
+        {
             throw new IllegalArgumentException("Unknown metric type: " + metric.getClass());
+        }
 
-        if (!mBeanServer.isRegistered(name))
-            mBeanServer.registerMBean(mbean, name, MBeanWrapper.OnException.LOG);
+        try
+        {
+            mBeanServer.registerMBean(mbean, name);
+        } catch (Exception ignored) {}
     }
 
     private void registerAlias(MetricName existingName, MetricName aliasName)
@@ -203,8 +243,10 @@ public class CassandraMetricsRegistry extends MetricRegistry
 
     private void removeAlias(MetricName name)
     {
-        if (mBeanServer.isRegistered(name.getMBeanName()))
-            MBeanWrapper.instance.unregisterMBean(name.getMBeanName(), MBeanWrapper.OnException.IGNORE);
+        try
+        {
+            mBeanServer.unregisterMBean(name.getMBeanName());
+        } catch (Exception ignore) {}
     }
     
     /**

@@ -20,6 +20,7 @@ package org.apache.cassandra.db.streaming;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -40,7 +41,7 @@ import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
-import org.apache.cassandra.net.AsyncStreamingOutputPlus;
+import org.apache.cassandra.net.async.ByteBufDataOutputStreamPlus;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.streaming.OutgoingStream;
 import org.apache.cassandra.streaming.StreamOperation;
@@ -67,18 +68,17 @@ public class CassandraOutgoingFile implements OutgoingStream
     private final ComponentManifest manifest;
     private Boolean isFullyContained;
 
-    private final List<Range<Token>> normalizedRanges;
+    private final List<Range<Token>> ranges;
 
     public CassandraOutgoingFile(StreamOperation operation, Ref<SSTableReader> ref,
-                                 List<SSTableReader.PartitionPositionBounds> sections, List<Range<Token>> normalizedRanges,
+                                 List<SSTableReader.PartitionPositionBounds> sections, Collection<Range<Token>> ranges,
                                  long estimatedKeys)
     {
         Preconditions.checkNotNull(ref.get());
-        Range.assertNormalized(normalizedRanges);
         this.ref = ref;
         this.estimatedKeys = estimatedKeys;
         this.sections = sections;
-        this.normalizedRanges = ImmutableList.copyOf(normalizedRanges);
+        this.ranges = ImmutableList.copyOf(ranges);
         this.filename = ref.get().getFilename();
         this.manifest = getComponentManifest(ref.get());
 
@@ -163,10 +163,10 @@ public class CassandraOutgoingFile implements OutgoingStream
         CassandraStreamHeader.serializer.serialize(header, out, version);
         out.flush();
 
-        if (shouldStreamEntireSSTable() && out instanceof AsyncStreamingOutputPlus)
+        if (shouldStreamEntireSSTable() && out instanceof ByteBufDataOutputStreamPlus)
         {
             CassandraEntireSSTableStreamWriter writer = new CassandraEntireSSTableStreamWriter(sstable, session, manifest);
-            writer.write((AsyncStreamingOutputPlus) out);
+            writer.write((ByteBufDataOutputStreamPlus) out);
         }
         else
         {
@@ -194,7 +194,7 @@ public class CassandraOutgoingFile implements OutgoingStream
                                                            .getCompactionStrategyFor(ref.get());
 
         if (compactionStrategy instanceof LeveledCompactionStrategy)
-            return contained(normalizedRanges, ref.get());
+            return contained(ranges, ref.get());
 
         return false;
     }
@@ -251,6 +251,6 @@ public class CassandraOutgoingFile implements OutgoingStream
     @Override
     public String toString()
     {
-        return "CassandraOutgoingFile{" + filename + '}';
+        return "CassandraOutgoingFile{" + ref.get().getFilename() + '}';
     }
 }

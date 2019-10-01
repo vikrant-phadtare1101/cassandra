@@ -214,13 +214,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor implements 
     }
 
     @Override
-    public int getActiveTaskCount()
-    {
-        return getActiveCount();
-    }
-
-    @Override
-    public int getPendingTaskCount()
+    public long getPendingTaskCount()
     {
         return getQueue().size();
     }

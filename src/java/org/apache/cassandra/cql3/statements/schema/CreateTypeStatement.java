@@ -115,11 +115,6 @@ public final class CreateTypeStatement extends AlterSchemaStatement
         return new AuditLogContext(AuditLogEntryType.CREATE_TYPE, keyspaceName, typeName);
     }
 
-    public String toString()
-    {
-        return String.format("%s (%s, %s)", getClass().getSimpleName(), keyspaceName, typeName);
-    }
-
     public static final class Raw extends CQLStatement.Raw
     {
         private final UTName name;
