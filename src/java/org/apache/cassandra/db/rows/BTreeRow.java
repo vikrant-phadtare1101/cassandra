@@ -194,12 +194,7 @@ public class BTreeRow extends AbstractRow
 
     public Collection<ColumnMetadata> columns()
     {
-        return Collections2.transform(columnData(), ColumnData::column);
-    }
-
-    public int columnCount()
-    {
-        return BTree.size(btree);
+        return Collections2.transform(this, ColumnData::column);
     }
 
     public LivenessInfo primaryKeyLivenessInfo()
@@ -240,14 +235,9 @@ public class BTreeRow extends AbstractRow
         return (ComplexColumnData) BTree.<Object>find(btree, ColumnMetadata.asymmetricColumnDataComparator, c);
     }
 
-    @Override
-    public Collection<ColumnData> columnData()
+    public int size()
     {
-        return new AbstractCollection<ColumnData>()
-        {
-            @Override public Iterator<ColumnData> iterator() { return BTreeRow.this.iterator(); }
-            @Override public int size() { return BTree.size(btree); }
-        };
+        return BTree.size(btree);
     }
 
     public Iterator<ColumnData> iterator()
@@ -461,9 +451,9 @@ public class BTreeRow extends AbstractRow
         return new Builder(true);
     }
 
-    public static Row.Builder unsortedBuilder()
+    public static Row.Builder unsortedBuilder(int nowInSec)
     {
-        return new Builder(false);
+        return new Builder(false, nowInSec);
     }
 
     // This is only used by PartitionUpdate.CounterMark but other uses should be avoided as much as possible as it breaks our general
@@ -615,7 +605,11 @@ public class BTreeRow extends AbstractRow
         // converts a run of Cell with equal column into a ColumnData
         private static class CellResolver implements BTree.Builder.Resolver
         {
-            static final CellResolver instance = new CellResolver();
+            final int nowInSec;
+            private CellResolver(int nowInSec)
+            {
+                this.nowInSec = nowInSec;
+            }
 
             public ColumnData resolve(Object[] cells, int lb, int ub)
             {
@@ -623,8 +617,9 @@ public class BTreeRow extends AbstractRow
                 ColumnMetadata column = cell.column;
                 if (cell.column.isSimple())
                 {
+                    assert lb + 1 == ub || nowInSec != Integer.MIN_VALUE;
                     while (++lb < ub)
-                        cell = Cells.reconcile(cell, (Cell) cells[lb]);
+                        cell = Cells.reconcile(cell, (Cell) cells[lb], nowInSec);
                     return cell;
                 }
 
@@ -657,7 +652,7 @@ public class BTreeRow extends AbstractRow
                     {
                         if (previous != null && column.cellComparator().compare(previous, c) == 0)
                         {
-                            c = Cells.reconcile(previous, c);
+                            c = Cells.reconcile(previous, c, nowInSec);
                             buildFrom.set(buildFrom.size() - 1, c);
                         }
                         else
@@ -671,21 +666,28 @@ public class BTreeRow extends AbstractRow
                 Object[] btree = BTree.build(buildFrom, UpdateFunction.noOp());
                 return new ComplexColumnData(column, btree, deletion);
             }
-        }
 
+        }
         protected Clustering clustering;
         protected LivenessInfo primaryKeyLivenessInfo = LivenessInfo.EMPTY;
         protected Deletion deletion = Deletion.LIVE;
 
         private final boolean isSorted;
         private BTree.Builder<Cell> cells_;
+        private final CellResolver resolver;
         private boolean hasComplex = false;
 
         // For complex column at index i of 'columns', we store at complexDeletions[i] its complex deletion.
 
         protected Builder(boolean isSorted)
         {
+            this(isSorted, Integer.MIN_VALUE);
+        }
+
+        protected Builder(boolean isSorted, int nowInSecs)
+        {
             cells_ = null;
+            resolver = new CellResolver(nowInSecs);
             this.isSorted = isSorted;
         }
 
@@ -705,6 +707,7 @@ public class BTreeRow extends AbstractRow
             primaryKeyLivenessInfo = builder.primaryKeyLivenessInfo;
             deletion = builder.deletion;
             cells_ = builder.cells_ == null ? null : builder.cells_.copy();
+            resolver = builder.resolver;
             isSorted = builder.isSorted;
             hasComplex = builder.hasComplex;
         }
@@ -780,7 +783,7 @@ public class BTreeRow extends AbstractRow
             // we can avoid resolving if we're sorted and have no complex values
             // (because we'll only have unique simple cells, which are already in their final condition)
             if (!isSorted | hasComplex)
-                getCells().resolve(CellResolver.instance);
+                getCells().resolve(resolver);
             Object[] btree = getCells().build();
 
             if (deletion.isShadowedBy(primaryKeyLivenessInfo))

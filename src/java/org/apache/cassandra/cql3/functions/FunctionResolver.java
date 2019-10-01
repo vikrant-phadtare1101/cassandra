@@ -69,32 +69,8 @@ public final class FunctionResolver
                                AbstractType<?> receiverType)
     throws InvalidRequestException
     {
-        Collection<Function> candidates = collectCandidates(keyspace, name, receiverKs, receiverCf, receiverType);
-
-        if (candidates.isEmpty())
-            return null;
-
-        // Fast path if there is only one choice
-        if (candidates.size() == 1)
-        {
-            Function fun = candidates.iterator().next();
-            validateTypes(keyspace, fun, providedArgs, receiverKs, receiverCf);
-            return fun;
-        }
-
-        return pickBestMatch(keyspace, name, providedArgs, receiverKs, receiverCf, receiverType, candidates);
-    }
-
-    private static Collection<Function> collectCandidates(String keyspace,
-                                                          FunctionName name,
-                                                          String receiverKs,
-                                                          String receiverCf,
-                                                          AbstractType<?> receiverType)
-    {
-        Collection<Function> candidates = new ArrayList<>();
-
         if (name.equalsNativeFunction(TOKEN_FUNCTION_NAME))
-            candidates.add(new TokenFct(Schema.instance.getTableMetadata(receiverKs, receiverCf)));
+            return new TokenFct(Schema.instance.getTableMetadata(receiverKs, receiverCf));
 
         // The toJson() function can accept any type of argument, so instances of it are not pre-declared.  Instead,
         // we create new instances as needed while handling selectors (which is the only place that toJson() is supported,
@@ -107,12 +83,14 @@ public final class FunctionResolver
         {
             if (receiverType == null)
                 throw new InvalidRequestException("fromJson() cannot be used in the selection clause of a SELECT statement");
-            candidates.add(FromJsonFct.getInstance(receiverType));
+            return FromJsonFct.getInstance(receiverType);
         }
 
+        Collection<Function> candidates;
         if (!name.hasKeyspace())
         {
             // function name not fully qualified
+            candidates = new ArrayList<>();
             // add 'SYSTEM' (native) candidates
             candidates.addAll(Schema.instance.getFunctions(name.asNativeFunction()));
             // add 'current keyspace' candidates
@@ -121,19 +99,20 @@ public final class FunctionResolver
         else
         {
             // function name is fully qualified (keyspace + name)
-            candidates.addAll(Schema.instance.getFunctions(name));
+            candidates = Schema.instance.getFunctions(name);
         }
 
-        return candidates;
-    }
+        if (candidates.isEmpty())
+            return null;
 
-    private static Function pickBestMatch(String keyspace,
-                                          FunctionName name,
-                                          List<? extends AssignmentTestable> providedArgs,
-                                          String receiverKs,
-                                          String receiverCf, AbstractType<?> receiverType,
-                                          Collection<Function> candidates)
-    {
+        // Fast path if there is only one choice
+        if (candidates.size() == 1)
+        {
+            Function fun = candidates.iterator().next();
+            validateTypes(keyspace, fun, providedArgs, receiverKs, receiverCf);
+            return fun;
+        }
+
         List<Function> compatibles = null;
         for (Function toTest : candidates)
         {
@@ -187,7 +166,6 @@ public final class FunctionResolver
             throw invalidRequest("Ambiguous call to function %s (can be matched by following signatures: %s): use type casts to disambiguate",
                                  name, format(compatibles));
         }
-
         return compatibles.get(0);
     }
 

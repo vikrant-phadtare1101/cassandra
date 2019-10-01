@@ -20,7 +20,6 @@ package org.apache.cassandra.cql3.statements;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 
 import org.slf4j.Logger;
@@ -67,6 +66,7 @@ import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
@@ -227,14 +227,14 @@ public class SelectStatement implements CQLStatement
         // Nothing to do, all validation has been done by RawStatement.prepare()
     }
 
-    public ResultMessage.Rows execute(QueryState state, QueryOptions options, long queryStartNanoTime)
+    public ResultMessage.Rows execute(QueryState state, QueryOptions options, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
     {
         ConsistencyLevel cl = options.getConsistency();
         checkNotNull(cl, "Invalid empty consistency level");
 
         cl.validateForRead(keyspace());
 
-        int nowInSec = options.getNowInSeconds(state);
+        int nowInSec = FBUtilities.nowInSeconds();
         int userLimit = getLimit(options);
         int userPerPartitionLimit = getPerPartitionLimit(options);
         int pageSize = options.getPageSize();
@@ -428,7 +428,7 @@ public class SelectStatement implements CQLStatement
 
     public ResultMessage.Rows executeLocally(QueryState state, QueryOptions options) throws RequestExecutionException, RequestValidationException
     {
-        return executeInternal(state, options, options.getNowInSeconds(state), System.nanoTime());
+        return executeInternal(state, options, FBUtilities.nowInSeconds(), System.nanoTime());
     }
 
     public ResultMessage.Rows executeInternal(QueryState state, QueryOptions options, int nowInSec, long queryStartNanoTime) throws RequestExecutionException, RequestValidationException
@@ -626,8 +626,7 @@ public class SelectStatement implements CQLStatement
         return new ClusteringIndexNamesFilter(clusterings, isReversed);
     }
 
-    @VisibleForTesting
-    public Slices makeSlices(QueryOptions options)
+    private Slices makeSlices(QueryOptions options)
     throws InvalidRequestException
     {
         SortedSet<ClusteringBound> startBounds = restrictions.getClusteringColumnsBounds(Bound.START, options);
@@ -639,7 +638,7 @@ public class SelectStatement implements CQLStatement
         {
             ClusteringBound start = startBounds.first();
             ClusteringBound end = endBounds.first();
-            return Slice.isEmpty(table.comparator, start, end)
+            return table.comparator.compare(start, end) > 0
                  ? Slices.NONE
                  : Slices.with(table.comparator, Slice.make(start, end));
         }
@@ -653,7 +652,7 @@ public class SelectStatement implements CQLStatement
             ClusteringBound end = endIter.next();
 
             // Ignore slices that are nonsensical
-            if (Slice.isEmpty(table.comparator, start, end))
+            if (table.comparator.compare(start, end) > 0)
                 continue;
 
             builder.add(start, end);

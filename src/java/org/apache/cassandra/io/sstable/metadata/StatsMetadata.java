@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-import org.apache.cassandra.db.rows.EncodingStats;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.commons.lang3.builder.EqualsBuilder;
@@ -47,7 +46,7 @@ public class StatsMetadata extends MetadataComponent
     public static final ISerializer<IntervalSet<CommitLogPosition>> commitLogPositionSetSerializer = IntervalSet.serializer(CommitLogPosition.serializer);
 
     public final EstimatedHistogram estimatedPartitionSize;
-    public final EstimatedHistogram estimatedCellPerPartitionCount;
+    public final EstimatedHistogram estimatedColumnCount;
     public final IntervalSet<CommitLogPosition> commitLogIntervals;
     public final long minTimestamp;
     public final long maxTimestamp;
@@ -65,12 +64,9 @@ public class StatsMetadata extends MetadataComponent
     public final long totalColumnsSet;
     public final long totalRows;
     public final UUID pendingRepair;
-    public final boolean isTransient;
-    // just holds the current encoding stats to avoid allocating - it is not serialized
-    public final EncodingStats encodingStats;
 
     public StatsMetadata(EstimatedHistogram estimatedPartitionSize,
-                         EstimatedHistogram estimatedCellPerPartitionCount,
+                         EstimatedHistogram estimatedColumnCount,
                          IntervalSet<CommitLogPosition> commitLogIntervals,
                          long minTimestamp,
                          long maxTimestamp,
@@ -87,11 +83,10 @@ public class StatsMetadata extends MetadataComponent
                          long repairedAt,
                          long totalColumnsSet,
                          long totalRows,
-                         UUID pendingRepair,
-                         boolean isTransient)
+                         UUID pendingRepair)
     {
         this.estimatedPartitionSize = estimatedPartitionSize;
-        this.estimatedCellPerPartitionCount = estimatedCellPerPartitionCount;
+        this.estimatedColumnCount = estimatedColumnCount;
         this.commitLogIntervals = commitLogIntervals;
         this.minTimestamp = minTimestamp;
         this.maxTimestamp = maxTimestamp;
@@ -109,8 +104,6 @@ public class StatsMetadata extends MetadataComponent
         this.totalColumnsSet = totalColumnsSet;
         this.totalRows = totalRows;
         this.pendingRepair = pendingRepair;
-        this.isTransient = isTransient;
-        this.encodingStats = new EncodingStats(minTimestamp, minLocalDeletionTime, minTTL);
     }
 
     public MetadataType getType()
@@ -124,7 +117,7 @@ public class StatsMetadata extends MetadataComponent
      */
     public double getEstimatedDroppableTombstoneRatio(int gcBefore)
     {
-        long estimatedColumnCount = this.estimatedCellPerPartitionCount.mean() * this.estimatedCellPerPartitionCount.count();
+        long estimatedColumnCount = this.estimatedColumnCount.mean() * this.estimatedColumnCount.count();
         if (estimatedColumnCount > 0)
         {
             double droppable = getDroppableTombstonesBefore(gcBefore);
@@ -145,7 +138,7 @@ public class StatsMetadata extends MetadataComponent
     public StatsMetadata mutateLevel(int newLevel)
     {
         return new StatsMetadata(estimatedPartitionSize,
-                                 estimatedCellPerPartitionCount,
+                                 estimatedColumnCount,
                                  commitLogIntervals,
                                  minTimestamp,
                                  maxTimestamp,
@@ -162,14 +155,13 @@ public class StatsMetadata extends MetadataComponent
                                  repairedAt,
                                  totalColumnsSet,
                                  totalRows,
-                                 pendingRepair,
-                                 isTransient);
+                                 pendingRepair);
     }
 
-    public StatsMetadata mutateRepairedMetadata(long newRepairedAt, UUID newPendingRepair, boolean newIsTransient)
+    public StatsMetadata mutateRepairedAt(long newRepairedAt)
     {
         return new StatsMetadata(estimatedPartitionSize,
-                                 estimatedCellPerPartitionCount,
+                                 estimatedColumnCount,
                                  commitLogIntervals,
                                  minTimestamp,
                                  maxTimestamp,
@@ -186,8 +178,30 @@ public class StatsMetadata extends MetadataComponent
                                  newRepairedAt,
                                  totalColumnsSet,
                                  totalRows,
-                                 newPendingRepair,
-                                 newIsTransient);
+                                 pendingRepair);
+    }
+
+    public StatsMetadata mutatePendingRepair(UUID newPendingRepair)
+    {
+        return new StatsMetadata(estimatedPartitionSize,
+                                 estimatedColumnCount,
+                                 commitLogIntervals,
+                                 minTimestamp,
+                                 maxTimestamp,
+                                 minLocalDeletionTime,
+                                 maxLocalDeletionTime,
+                                 minTTL,
+                                 maxTTL,
+                                 compressionRatio,
+                                 estimatedTombstoneDropTime,
+                                 sstableLevel,
+                                 minClusteringValues,
+                                 maxClusteringValues,
+                                 hasLegacyCounterShards,
+                                 repairedAt,
+                                 totalColumnsSet,
+                                 totalRows,
+                                 newPendingRepair);
     }
 
     @Override
@@ -199,7 +213,7 @@ public class StatsMetadata extends MetadataComponent
         StatsMetadata that = (StatsMetadata) o;
         return new EqualsBuilder()
                        .append(estimatedPartitionSize, that.estimatedPartitionSize)
-                       .append(estimatedCellPerPartitionCount, that.estimatedCellPerPartitionCount)
+                       .append(estimatedColumnCount, that.estimatedColumnCount)
                        .append(commitLogIntervals, that.commitLogIntervals)
                        .append(minTimestamp, that.minTimestamp)
                        .append(maxTimestamp, that.maxTimestamp)
@@ -225,7 +239,7 @@ public class StatsMetadata extends MetadataComponent
     {
         return new HashCodeBuilder()
                        .append(estimatedPartitionSize)
-                       .append(estimatedCellPerPartitionCount)
+                       .append(estimatedColumnCount)
                        .append(commitLogIntervals)
                        .append(minTimestamp)
                        .append(maxTimestamp)
@@ -252,7 +266,7 @@ public class StatsMetadata extends MetadataComponent
         {
             int size = 0;
             size += EstimatedHistogram.serializer.serializedSize(component.estimatedPartitionSize);
-            size += EstimatedHistogram.serializer.serializedSize(component.estimatedCellPerPartitionCount);
+            size += EstimatedHistogram.serializer.serializedSize(component.estimatedColumnCount);
             size += CommitLogPosition.serializer.serializedSize(component.commitLogIntervals.upperBound().orElse(CommitLogPosition.NONE));
             size += 8 + 8 + 4 + 4 + 4 + 4 + 8 + 8; // mix/max timestamp(long), min/maxLocalDeletionTime(int), min/max TTL, compressionRatio(double), repairedAt (long)
             size += TombstoneHistogram.serializer.serializedSize(component.estimatedTombstoneDropTime);
@@ -278,19 +292,13 @@ public class StatsMetadata extends MetadataComponent
                 if (component.pendingRepair != null)
                     size += UUIDSerializer.serializer.serializedSize(component.pendingRepair, 0);
             }
-
-            if (version.hasIsTransient())
-            {
-                size += TypeSizes.sizeof(component.isTransient);
-            }
-
             return size;
         }
 
         public void serialize(Version version, StatsMetadata component, DataOutputPlus out) throws IOException
         {
             EstimatedHistogram.serializer.serialize(component.estimatedPartitionSize, out);
-            EstimatedHistogram.serializer.serialize(component.estimatedCellPerPartitionCount, out);
+            EstimatedHistogram.serializer.serialize(component.estimatedColumnCount, out);
             CommitLogPosition.serializer.serialize(component.commitLogIntervals.upperBound().orElse(CommitLogPosition.NONE), out);
             out.writeLong(component.minTimestamp);
             out.writeLong(component.maxTimestamp);
@@ -330,11 +338,6 @@ public class StatsMetadata extends MetadataComponent
                     out.writeByte(0);
                 }
             }
-
-            if (version.hasIsTransient())
-            {
-                out.writeBoolean(component.isTransient);
-            }
         }
 
         public StatsMetadata deserialize(Version version, DataInputPlus in) throws IOException
@@ -354,25 +357,15 @@ public class StatsMetadata extends MetadataComponent
             int sstableLevel = in.readInt();
             long repairedAt = in.readLong();
 
-            // for legacy sstables, we skip deserializing the min and max clustering value
-            // to prevent erroneously excluding sstables from reads (see CASSANDRA-14861)
             int colCount = in.readInt();
             List<ByteBuffer> minClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-            {
-                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
-                if (version.hasAccurateMinMax())
-                    minClusteringValues.add(val);
-            }
+                minClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
 
             colCount = in.readInt();
             List<ByteBuffer> maxClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-            {
-                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
-                if (version.hasAccurateMinMax())
-                    maxClusteringValues.add(val);
-            }
+                maxClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
 
             boolean hasLegacyCounterShards = in.readBoolean();
 
@@ -393,8 +386,6 @@ public class StatsMetadata extends MetadataComponent
                 pendingRepair = UUIDSerializer.serializer.deserialize(in, 0);
             }
 
-            boolean isTransient = version.hasIsTransient() && in.readBoolean();
-
             return new StatsMetadata(partitionSizes,
                                      columnCounts,
                                      commitLogIntervals,
@@ -413,8 +404,7 @@ public class StatsMetadata extends MetadataComponent
                                      repairedAt,
                                      totalColumnsSet,
                                      totalRows,
-                                     pendingRepair,
-                                     isTransient);
+                                     pendingRepair);
         }
     }
 }
