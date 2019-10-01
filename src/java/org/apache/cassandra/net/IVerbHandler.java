@@ -24,6 +24,7 @@ import java.io.IOException;
  * The concrete implementation of this interface would provide the functionality
  * for a given verb.
  */
+
 public interface IVerbHandler<T>
 {
     /**
@@ -33,6 +34,7 @@ public interface IVerbHandler<T>
      * because the implementation may be synchronized.
      *
      * @param message - incoming message that needs handling.
+     * @param id
      */
-    void doVerb(Message<T> message) throws IOException;
+    public void doVerb(MessageIn<T> message, int id) throws IOException;
 }

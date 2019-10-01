@@ -19,6 +19,7 @@ package org.apache.cassandra.hints;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -31,7 +32,6 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.SyncUtil;
 
@@ -84,14 +84,14 @@ final class HintsStore
         return dispatchDequeue.size();
     }
 
-    InetAddressAndPort address()
+    InetAddress address()
     {
         return StorageService.instance.getEndpointForHostId(hostId);
     }
 
     boolean isLive()
     {
-        InetAddressAndPort address = address();
+        InetAddress address = address();
         return address != null && FailureDetector.instance.isAlive(address);
     }
 

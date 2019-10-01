@@ -28,10 +28,11 @@ import java.util.concurrent.TimeUnit;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
+import org.apache.cassandra.MockSchema;
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.schema.TableMetadataRef;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SerializationHeader;
@@ -64,6 +65,8 @@ public class RealTransactionsTest extends SchemaLoader
     @BeforeClass
     public static void setUp()
     {
+        MockSchema.cleanup();
+
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE,
                                     KeyspaceParams.simple(1),
@@ -150,24 +153,21 @@ public class RealTransactionsTest extends SchemaLoader
         int nowInSec = FBUtilities.nowInSeconds();
         try (CompactionController controller = new CompactionController(cfs, txn.originals(), cfs.gcBefore(FBUtilities.nowInSeconds())))
         {
-            try (SSTableRewriter rewriter = SSTableRewriter.constructKeepingOriginals(txn, false, 1000);
+            try (SSTableRewriter rewriter = new SSTableRewriter(txn, 1000, false);
                  AbstractCompactionStrategy.ScannerList scanners = cfs.getCompactionStrategyManager().getScanners(txn.originals());
                  CompactionIterator ci = new CompactionIterator(txn.opType(), scanners.scanners, controller, nowInSec, txn.opId())
             )
             {
                 long lastCheckObsoletion = System.nanoTime();
                 File directory = txn.originals().iterator().next().descriptor.directory;
-                Descriptor desc = cfs.newSSTableDescriptor(directory);
-                TableMetadataRef metadata = Schema.instance.getTableMetadataRef(desc);
+                Descriptor desc = Descriptor.fromFilename(cfs.getSSTablePath(directory));
+                CFMetaData metadata = Schema.instance.getCFMetaData(desc);
                 rewriter.switchWriter(SSTableWriter.create(metadata,
                                                            desc,
                                                            0,
                                                            0,
-                                                           null,
-                                                           false,
                                                            0,
-                                                           SerializationHeader.make(cfs.metadata(), txn.originals()),
-                                                           cfs.indexManager.listIndexes(),
+                                                           SerializationHeader.make(cfs.metadata, txn.originals()),
                                                            txn));
                 while (ci.hasNext())
                 {

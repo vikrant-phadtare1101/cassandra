@@ -18,17 +18,50 @@
 package org.apache.cassandra.db;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.util.Objects;
 
-import com.google.common.hash.Hasher;
-
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.ObjectSizes;
 
 public abstract class AbstractClusteringPrefix implements ClusteringPrefix
 {
+    protected static final ByteBuffer[] EMPTY_VALUES_ARRAY = new ByteBuffer[0];
+
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new Clustering(EMPTY_VALUES_ARRAY));
+
+    protected final Kind kind;
+    protected final ByteBuffer[] values;
+
+    protected AbstractClusteringPrefix(Kind kind, ByteBuffer[] values)
+    {
+        this.kind = kind;
+        this.values = values;
+    }
+
+    public Kind kind()
+    {
+        return kind;
+    }
+
     public ClusteringPrefix clustering()
     {
         return this;
+    }
+
+    public int size()
+    {
+        return values.length;
+    }
+
+    public ByteBuffer get(int i)
+    {
+        return values[i];
+    }
+
+    public ByteBuffer[] getRawValues()
+    {
+        return values;
     }
 
     public int dataSize()
@@ -42,15 +75,25 @@ public abstract class AbstractClusteringPrefix implements ClusteringPrefix
         return size;
     }
 
-    public void digest(Hasher hasher)
+    public void digest(MessageDigest digest)
     {
         for (int i = 0; i < size(); i++)
         {
             ByteBuffer bb = get(i);
             if (bb != null)
-                HashingUtils.updateBytes(hasher, bb.duplicate());
+                digest.update(bb.duplicate());
         }
-        HashingUtils.updateWithByte(hasher, kind().ordinal());
+        FBUtilities.updateWithByte(digest, kind().ordinal());
+    }
+
+    public long unsharedHeapSize()
+    {
+        return EMPTY_SIZE + ObjectSizes.sizeOnHeapOf(values);
+    }
+
+    public long unsharedHeapSizeExcludingData()
+    {
+        return EMPTY_SIZE + ObjectSizes.sizeOnHeapExcludingData(values);
     }
 
     @Override

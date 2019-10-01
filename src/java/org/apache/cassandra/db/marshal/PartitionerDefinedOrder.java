@@ -26,7 +26,6 @@ import org.apache.cassandra.db.PartitionPosition;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.dht.IPartitioner;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -83,7 +82,7 @@ public class PartitionerDefinedOrder extends AbstractType<ByteBuffer>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         throw new UnsupportedOperationException();
     }

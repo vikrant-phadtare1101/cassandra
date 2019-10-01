@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Iterator;
 
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.Lists;
@@ -33,14 +34,12 @@ import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
  * The abstract validator that is the base for maps, sets and lists (both frozen and non-frozen).
  *
- * Please note that this comparator shouldn't be used "manually" (as a custom
- * type for instance).
+ * Please note that this comparator shouldn't be used "manually" (through thrift for instance).
  */
 public abstract class CollectionType<T> extends AbstractType<T>
 {
@@ -134,19 +133,13 @@ public abstract class CollectionType<T> extends AbstractType<T>
         return kind == Kind.MAP;
     }
 
-    @Override
-    public boolean isFreezable()
-    {
-        return true;
-    }
-
     // Overrided by maps
     protected int collectionSize(List<ByteBuffer> values)
     {
         return values.size();
     }
 
-    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, ProtocolVersion version)
+    public ByteBuffer serializeForNativeProtocol(ColumnDefinition def, Iterator<Cell> cells, int version)
     {
         assert isMultiCell();
         List<ByteBuffer> values = serializedValues(cells);
@@ -208,26 +201,6 @@ public abstract class CollectionType<T> extends AbstractType<T>
     public CQL3Type asCQL3Type()
     {
         return new CQL3Type.Collection(this);
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o)
-            return true;
-
-        if (!(o instanceof CollectionType))
-            return false;
-
-        CollectionType other = (CollectionType)o;
-
-        if (kind != other.kind)
-            return false;
-
-        if (isMultiCell() != other.isMultiCell())
-            return false;
-
-        return nameComparator().equals(other.nameComparator()) && valueComparator().equals(other.valueComparator());
     }
 
     @Override

@@ -19,13 +19,13 @@ package org.apache.cassandra.db.partitions;
 
 import java.nio.ByteBuffer;
 import java.util.Iterator;
-import java.util.function.LongPredicate;
+import java.util.function.Predicate;
 
 import com.google.common.collect.Iterators;
 import org.junit.Before;
 import org.junit.Test;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.ClusteringPrefix.Kind;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -33,7 +33,6 @@ import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.junit.Assert.assertEquals;
@@ -46,7 +45,7 @@ public final class PurgeFunctionTest
     private static final String KEYSPACE = "PurgeFunctionTest";
     private static final String TABLE = "table";
 
-    private TableMetadata metadata;
+    private CFMetaData metadata;
     private DecoratedKey key;
 
     private static UnfilteredPartitionIterator withoutPurgeableTombstones(UnfilteredPartitionIterator iterator, int gcBefore)
@@ -55,10 +54,10 @@ public final class PurgeFunctionTest
         {
             private WithoutPurgeableTombstones()
             {
-                super(FBUtilities.nowInSeconds(), gcBefore, Integer.MAX_VALUE, false, false);
+                super(iterator.isForThrift(), FBUtilities.nowInSeconds(), gcBefore, Integer.MAX_VALUE, false, false);
             }
 
-            protected LongPredicate getPurgeEvaluator()
+            protected Predicate<Long> getPurgeEvaluator()
             {
                 return time -> true;
             }
@@ -70,13 +69,12 @@ public final class PurgeFunctionTest
     @Before
     public void setUp()
     {
-        DatabaseDescriptor.setPartitionerUnsafe(Murmur3Partitioner.instance);
-
         metadata =
-            TableMetadata.builder(KEYSPACE, TABLE)
-                         .addPartitionKeyColumn("pk", UTF8Type.instance)
-                         .addClusteringColumn("ck", UTF8Type.instance)
-                         .build();
+            CFMetaData.Builder
+                      .create(KEYSPACE, TABLE)
+                      .addPartitionKey("pk", UTF8Type.instance)
+                      .addClusteringColumn("ck", UTF8Type.instance)
+                      .build();
         key = Murmur3Partitioner.instance.decorateKey(bytes("key"));
     }
 
@@ -218,7 +216,7 @@ public final class PurgeFunctionTest
             new AbstractUnfilteredRowIterator(metadata,
                                               key,
                                               DeletionTime.LIVE,
-                                              metadata.regularAndStaticColumns(),
+                                              metadata.partitionColumns(),
                                               Rows.EMPTY_STATIC_ROW,
                                               isReversedOrder,
                                               EncodingStats.NO_STATS)
@@ -229,7 +227,7 @@ public final class PurgeFunctionTest
             }
         };
 
-        return new SingletonUnfilteredPartitionIterator(rowIter);
+        return new SingletonUnfilteredPartitionIterator(rowIter, false);
     }
 
     private RangeTombstoneBoundMarker bound(ClusteringPrefix.Kind kind,
@@ -240,7 +238,7 @@ public final class PurgeFunctionTest
         ByteBuffer[] clusteringByteBuffers =
             new ByteBuffer[] { decompose(metadata.clusteringColumns().get(0).type, clusteringValue) };
 
-        return new RangeTombstoneBoundMarker(ClusteringBound.create(kind, clusteringByteBuffers),
+        return new RangeTombstoneBoundMarker(new RangeTombstone.Bound(kind, clusteringByteBuffers),
                                              new DeletionTime(timestamp, localDeletionTime));
     }
 
@@ -254,7 +252,7 @@ public final class PurgeFunctionTest
         ByteBuffer[] clusteringByteBuffers =
             new ByteBuffer[] { decompose(metadata.clusteringColumns().get(0).type, clusteringValue) };
 
-        return new RangeTombstoneBoundaryMarker(ClusteringBoundary.create(kind, clusteringByteBuffers),
+        return new RangeTombstoneBoundaryMarker(new RangeTombstone.Bound(kind, clusteringByteBuffers),
                                                 new DeletionTime(closeTimestamp, closeLocalDeletionTime),
                                                 new DeletionTime(openTimestamp, openDeletionTime));
     }

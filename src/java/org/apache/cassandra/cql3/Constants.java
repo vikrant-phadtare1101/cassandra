@@ -17,18 +17,19 @@
  */
 package org.apache.cassandra.cql3;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.db.marshal.CounterColumnType;
+import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.db.marshal.ReversedType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -40,81 +41,8 @@ public abstract class Constants
 
     public enum Type
     {
-        STRING,
-        INTEGER
-        {
-            public AbstractType<?> getPreferedTypeFor(String text)
-            {
-                // We only try to determine the smallest possible type between int, long and BigInteger
-                BigInteger b = new BigInteger(text);
-
-                if (b.equals(BigInteger.valueOf(b.intValue())))
-                    return Int32Type.instance;
-
-                if (b.equals(BigInteger.valueOf(b.longValue())))
-                    return LongType.instance;
-
-                return IntegerType.instance;
-            }
-        },
-        UUID,
-        FLOAT
-        {
-            public AbstractType<?> getPreferedTypeFor(String text)
-            {
-                if ("NaN".equals(text) || "-NaN".equals(text) || "Infinity".equals(text) || "-Infinity".equals(text))
-                    return DoubleType.instance;
-
-                // We only try to determine the smallest possible type between double and BigDecimal
-                BigDecimal b = new BigDecimal(text);
-
-                if (b.compareTo(BigDecimal.valueOf(b.doubleValue())) == 0)
-                    return DoubleType.instance;
-
-                return DecimalType.instance;
-            }
-        },
-        BOOLEAN,
-        HEX,
-        DURATION;
-
-        /**
-         * Returns the exact type for the specified text
-         *
-         * @param text the text for which the type must be determined
-         * @return the exact type or {@code null} if it is not known.
-         */
-        public AbstractType<?> getPreferedTypeFor(String text)
-        {
-            return null;
-        }
+        STRING, INTEGER, UUID, FLOAT, DATE, TIME, BOOLEAN, HEX;
     }
-
-    private static class UnsetLiteral extends Term.Raw
-    {
-        public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
-        {
-            return UNSET_VALUE;
-        }
-
-        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
-        {
-            return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
-        }
-
-        public String getText()
-        {
-            return "";
-        }
-
-        public AbstractType<?> getExactTypeIfKnown(String keyspace)
-        {
-            return null;
-        }
-    }
-
-    // We don't have "unset" literal in the syntax, but it's used implicitely for JSON "DEFAULT UNSET" option
-    public static final UnsetLiteral UNSET_LITERAL = new UnsetLiteral();
 
     public static final Value UNSET_VALUE = new Value(ByteBufferUtil.UNSET_BYTE_BUFFER);
 
@@ -138,11 +66,6 @@ public abstract class Constants
         public String getText()
         {
             return "NULL";
-        }
-
-        public AbstractType<?> getExactTypeIfKnown(String keyspace)
-        {
-            return null;
         }
     }
 
@@ -168,14 +91,12 @@ public abstract class Constants
     {
         private final Type type;
         private final String text;
-        private final AbstractType<?> preferedType;
 
         private Literal(Type type, String text)
         {
             assert type != null && text != null;
             this.type = type;
             this.text = text;
-            this.preferedType = type.getPreferedTypeFor(text);
         }
 
         public static Literal string(String text)
@@ -208,11 +129,6 @@ public abstract class Constants
             return new Literal(Type.HEX, text);
         }
 
-        public static Literal duration(String text)
-        {
-            return new Literal(Type.DURATION, text);
-        }
-
         public Value prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
             if (!testAssignment(keyspace, receiver).isAssignable())
@@ -243,11 +159,10 @@ public abstract class Constants
             }
         }
 
-        @Override
         public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
             CQL3Type receiverType = receiver.type.asCQL3Type();
-            if (receiverType.isCollection() || receiverType.isUDT())
+            if (receiverType.isCollection())
                 return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
 
             if (!(receiverType instanceof CQL3Type.Native))
@@ -255,11 +170,6 @@ public abstract class Constants
                 return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
 
             CQL3Type.Native nt = (CQL3Type.Native)receiverType;
-
-            // If the receiver type match the prefered type we can straight away return an exact match
-            if (nt.getType().equals(preferedType))
-                return AssignmentTestable.TestResult.EXACT_MATCH;
-
             switch (type)
             {
                 case STRING:
@@ -283,7 +193,6 @@ public abstract class Constants
                         case DATE:
                         case DECIMAL:
                         case DOUBLE:
-                        case DURATION:
                         case FLOAT:
                         case INT:
                         case SMALLINT:
@@ -325,25 +234,8 @@ public abstract class Constants
                             return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
                     }
                     break;
-                case DURATION:
-                    switch (nt)
-                    {
-                        case DURATION:
-                            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-                    }
-                    break;
             }
             return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
-        }
-
-        public AbstractType<?> getExactTypeIfKnown(String keyspace)
-        {
-            // Most constant are valid for more than one type (the extreme example being integer constants, which can
-            // be use for any numerical type, including date, time, ...) so they don't have an exact type. And in fact,
-            // for good or bad, any literal is valid for custom types, so we can never claim an exact type.
-            // But really, the reason it's fine to return null here is that getExactTypeIfKnown is only used to
-            // implement testAssignment() in Selectable and that method is overriden above.
-            return null;
         }
 
         public String getRawText()
@@ -369,7 +261,7 @@ public abstract class Constants
             this.bytes = bytes;
         }
 
-        public ByteBuffer get(ProtocolVersion protocolVersion)
+        public ByteBuffer get(int protocolVersion)
         {
             return bytes;
         }
@@ -389,7 +281,8 @@ public abstract class Constants
 
     public static class Marker extends AbstractMarker
     {
-        protected Marker(int bindIndex, ColumnSpecification receiver)
+        // Constructor is public only for the SuperColumn tables support
+        public Marker(int bindIndex, ColumnSpecification receiver)
         {
             super(bindIndex, receiver);
             assert !receiver.type.isCollection();
@@ -424,7 +317,7 @@ public abstract class Constants
 
     public static class Setter extends Operation
     {
-        public Setter(ColumnMetadata column, Term t)
+        public Setter(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -441,7 +334,7 @@ public abstract class Constants
 
     public static class Adder extends Operation
     {
-        public Adder(ColumnMetadata column, Term t)
+        public Adder(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -461,7 +354,7 @@ public abstract class Constants
 
     public static class Substracter extends Operation
     {
-        public Substracter(ColumnMetadata column, Term t)
+        public Substracter(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -486,7 +379,7 @@ public abstract class Constants
     // duplicating this further
     public static class Deleter extends Operation
     {
-        public Deleter(ColumnMetadata column)
+        public Deleter(ColumnDefinition column)
         {
             super(column, null);
         }

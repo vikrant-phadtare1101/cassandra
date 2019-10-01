@@ -176,17 +176,14 @@ public class RepairedDataTombstonesTest extends CQLTester
         Thread.sleep(1000);
         ReadCommand cmd = Util.cmd(getCurrentColumnFamilyStore()).build();
         int partitionsFound = 0;
-        try (ReadExecutionController executionController = cmd.executionController();
-             UnfilteredPartitionIterator iterator = cmd.executeLocally(executionController))
+        try (ReadOrderGroup orderGroup = cmd.startOrderGroup(); UnfilteredPartitionIterator iterator = cmd.executeLocally(orderGroup))
         {
             while (iterator.hasNext())
             {
                 partitionsFound++;
-                try (UnfilteredRowIterator rowIter = iterator.next())
-                {
-                    int val = ByteBufferUtil.toInt(rowIter.partitionKey().getKey());
-                    assertTrue("val=" + val, val >= 10 && val < 20);
-                }
+                UnfilteredRowIterator rowIter = iterator.next();
+                int val = ByteBufferUtil.toInt(rowIter.partitionKey().getKey());
+                assertTrue("val=" + val, val >= 10 && val < 20);
             }
         }
         assertEquals(10, partitionsFound);
@@ -239,10 +236,10 @@ public class RepairedDataTombstonesTest extends CQLTester
     {
         ReadCommand cmd = Util.cmd(getCurrentColumnFamilyStore()).build();
         int foundRows = 0;
-        try (ReadExecutionController executionController = cmd.executionController();
+        try (ReadOrderGroup orderGroup = cmd.startOrderGroup();
              UnfilteredPartitionIterator iterator =
-             includePurgeable ? cmd.queryStorage(getCurrentColumnFamilyStore(), executionController) :
-                                cmd.executeLocally(executionController))
+             includePurgeable ? cmd.queryStorage(getCurrentColumnFamilyStore(), orderGroup) :
+                                cmd.executeLocally(orderGroup))
         {
             while (iterator.hasNext())
             {
@@ -281,10 +278,10 @@ public class RepairedDataTombstonesTest extends CQLTester
     {
         ReadCommand cmd = Util.cmd(getCurrentColumnFamilyStore(), Util.dk(ByteBufferUtil.bytes(key))).build();
         int foundRows = 0;
-        try (ReadExecutionController executionController = cmd.executionController();
+        try (ReadOrderGroup orderGroup = cmd.startOrderGroup();
              UnfilteredPartitionIterator iterator =
-             includePurgeable ? cmd.queryStorage(getCurrentColumnFamilyStore(), executionController) :
-                                cmd.executeLocally(executionController))
+             includePurgeable ? cmd.queryStorage(getCurrentColumnFamilyStore(), orderGroup) :
+                                cmd.executeLocally(orderGroup))
         {
             while (iterator.hasNext())
             {
@@ -308,7 +305,7 @@ public class RepairedDataTombstonesTest extends CQLTester
 
     public static void repair(ColumnFamilyStore cfs, SSTableReader sstable) throws IOException
     {
-        sstable.descriptor.getMetadataSerializer().mutateRepairMetadata(sstable.descriptor, 1, null, false);
+        sstable.descriptor.getMetadataSerializer().mutateRepairedAt(sstable.descriptor, 1);
         sstable.reloadSSTableMetadata();
         cfs.getTracker().notifySSTableRepairedStatusChanged(Collections.singleton(sstable));
     }

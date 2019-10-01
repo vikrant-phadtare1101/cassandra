@@ -29,7 +29,7 @@ public class RegisterMessage extends Message.Request
 {
     public static final Message.Codec<RegisterMessage> codec = new Message.Codec<RegisterMessage>()
     {
-        public RegisterMessage decode(ByteBuf body, ProtocolVersion version)
+        public RegisterMessage decode(ByteBuf body, int version)
         {
             int length = body.readUnsignedShort();
             List<Event.Type> eventTypes = new ArrayList<>(length);
@@ -38,14 +38,14 @@ public class RegisterMessage extends Message.Request
             return new RegisterMessage(eventTypes);
         }
 
-        public void encode(RegisterMessage msg, ByteBuf dest, ProtocolVersion version)
+        public void encode(RegisterMessage msg, ByteBuf dest, int version)
         {
             dest.writeShort(msg.eventTypes.size());
             for (Event.Type type : msg.eventTypes)
                 CBUtil.writeEnumValue(type, dest);
         }
 
-        public int encodedSize(RegisterMessage msg, ProtocolVersion version)
+        public int encodedSize(RegisterMessage msg, int version)
         {
             int size = 2;
             for (Event.Type type : msg.eventTypes)
@@ -62,15 +62,14 @@ public class RegisterMessage extends Message.Request
         this.eventTypes = eventTypes;
     }
 
-    @Override
-    protected Response execute(QueryState state, long queryStartNanoTime, boolean traceRequest)
+    public Response execute(QueryState state)
     {
         assert connection instanceof ServerConnection;
         Connection.Tracker tracker = connection.getTracker();
         assert tracker instanceof Server.ConnectionTracker;
         for (Event.Type type : eventTypes)
         {
-            if (type.minimumVersion.isGreaterThan(connection.getVersion()))
+            if (type.minimumVersion > connection.getVersion())
                 throw new ProtocolException("Event " + type.name() + " not valid for protocol version " + connection.getVersion());
             ((Server.ConnectionTracker) tracker).register(type, connection().channel());
         }

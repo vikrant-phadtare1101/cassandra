@@ -18,17 +18,14 @@
 package org.apache.cassandra.db.rows;
 
 import java.util.*;
-import java.util.function.Consumer;
+import java.security.MessageDigest;
 
-import com.google.common.base.Predicate;
-import com.google.common.hash.Hasher;
-
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.paxos.Commit;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MergeIterator;
 import org.apache.cassandra.utils.SearchIterator;
 import org.apache.cassandra.utils.btree.BTree;
@@ -60,7 +57,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * An in-natural-order collection of the columns for which data (incl. simple tombstones)
      * is present in this row.
      */
-    public Collection<ColumnMetadata> columns();
+    public Collection<ColumnDefinition> columns();
 
 
     /**
@@ -126,7 +123,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * @param c the simple column for which to fetch the cell.
      * @return the corresponding cell or {@code null} if the row has no such cell.
      */
-    public Cell getCell(ColumnMetadata c);
+    public Cell getCell(ColumnDefinition c);
 
     /**
      * Return a cell for a given complex column and cell path.
@@ -135,7 +132,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * @param path the cell path for which to fetch the cell.
      * @return the corresponding cell or {@code null} if the row has no such cell.
      */
-    public Cell getCell(ColumnMetadata c, CellPath path);
+    public Cell getCell(ColumnDefinition c, CellPath path);
 
     /**
      * The data for a complex column.
@@ -145,7 +142,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * @param c the complex column for which to return the complex data.
      * @return the data for {@code c} or {@code null} if the row has no data for this column.
      */
-    public ComplexColumnData getComplexColumnData(ColumnMetadata c);
+    public ComplexColumnData getComplexColumnData(ColumnDefinition c);
 
     /**
      * An iterable over the cells of this row.
@@ -176,7 +173,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * @param reversed if cells should returned in reverse order.
      * @return an iterable over the cells of this row in "legacy order".
      */
-    public Iterable<Cell> cellsInLegacyOrder(TableMetadata metadata, boolean reversed);
+    public Iterable<Cell> cellsInLegacyOrder(CFMetaData metadata, boolean reversed);
 
     /**
      * Whether the row stores any (non-live) complex deletion for any complex column.
@@ -200,14 +197,14 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      *
      * @return a search iterator for the cells of this row.
      */
-    public SearchIterator<ColumnMetadata, ColumnData> searchIterator();
+    public SearchIterator<ColumnDefinition, ColumnData> searchIterator();
 
     /**
      * Returns a copy of this row that:
      *   1) only includes the data for the column included by {@code filter}.
      *   2) doesn't include any data that belongs to a dropped column (recorded in {@code metadata}).
      */
-    public Row filter(ColumnFilter filter, TableMetadata metadata);
+    public Row filter(ColumnFilter filter, CFMetaData metadata);
 
     /**
      * Returns a copy of this row that:
@@ -216,7 +213,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      *   3) doesn't include any data that is shadowed/deleted by {@code activeDeletion}.
      *   4) uses {@code activeDeletion} as row deletion iff {@code setActiveDeletionToRow} and {@code activeDeletion} supersedes the row deletion.
      */
-    public Row filter(ColumnFilter filter, DeletionTime activeDeletion, boolean setActiveDeletionToRow, TableMetadata metadata);
+    public Row filter(ColumnFilter filter, DeletionTime activeDeletion, boolean setActiveDeletionToRow, CFMetaData metadata);
 
     /**
      * Returns a copy of this row without any deletion info that should be purged according to {@code purger}.
@@ -224,7 +221,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * @param purger the {@code DeletionPurger} to use to decide what can be purged.
      * @param nowInSec the current time to decide what is deleted and what isn't (in the case of expired cells).
      * @param enforceStrictLiveness whether the row should be purged if there is no PK liveness info,
-     *                              normally retrieved from {@link TableMetadata#enforceStrictLiveness()}
+     *                              normally retrieved from {@link CFMetaData#enforceStrictLiveness()}
      *
      *        When enforceStrictLiveness is set, rows with empty PK liveness info
      *        and no row deletion are purged.
@@ -234,19 +231,9 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      *        is not live. See CASSANDRA-11500.
      *
      * @return this row but without any deletion info purged by {@code purger}. If the purged row is empty, returns
-     *         {@code null}.
+     * {@code null}.
      */
     public Row purge(DeletionPurger purger, int nowInSec, boolean enforceStrictLiveness);
-
-    /**
-     * Returns a copy of this row which only include the data queried by {@code filter}, excluding anything _fetched_ for
-     * internal reasons but not queried by the user (see {@link ColumnFilter} for details).
-     *
-     * @param filter the {@code ColumnFilter} to use when deciding what is user queried. This should be the filter
-     * that was used when querying the row on which this method is called.
-     * @return the row but with all data that wasn't queried by the user skipped.
-     */
-    public Row withOnlyQueriedData(ColumnFilter filter);
 
     /**
      * Returns a copy of this row where all counter cells have they "local" shard marked for clearing.
@@ -258,6 +245,8 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * timestamp by {@code newTimestamp - 1}.
      *
      * @param newTimestamp the timestamp to use for all live data in the returned row.
+     * @return a copy of this row with timestamp updated using {@code newTimestamp}. This can return {@code null} in the
+     * rare where the row only as a shadowable row deletion and the new timestamp supersedes it.
      *
      * @see Commit for why we need this.
      */
@@ -279,17 +268,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
 
     public long unsharedHeapSizeExcludingData();
 
-    public String toString(TableMetadata metadata, boolean fullDetails);
-
-    /**
-     * Apply a function to every column in a row
-     */
-    public void apply(Consumer<ColumnData> function, boolean reverse);
-
-    /**
-     * Apply a funtion to every column in a row until a stop condition is reached
-     */
-    public void apply(Consumer<ColumnData> function, Predicate<ColumnData> stopCondition, boolean reverse);
+    public String toString(CFMetaData metadata, boolean fullDetails);
 
     /**
      * A row deletion/tombstone.
@@ -298,13 +277,13 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
      * and regular row deletion.
      * <p>
      * A shadowable row deletion only exists if the row has no timestamp. In other words, the deletion is only
-     * valid as long as no newer insert is done (thus setting a row timestamp; note that if the row timestamp set
+     * valid as long as no newer insert is done (thus setting a row timestap; note that if the row timestamp set
      * is lower than the deletion, it is shadowed (and thus ignored) as usual).
      * <p>
-     * That is, if a row has a shadowable deletion with timestamp A and an update is made to that row with a
-     * timestamp B such that {@code B > A} (and that update sets the row timestamp), then the shadowable deletion is 'shadowed'
+     * That is, if a row has a shadowable deletion with timestamp A and an update is madeto that row with a
+     * timestamp B such that B > A (and that update sets the row timestamp), then the shadowable deletion is 'shadowed'
      * by that update. A concrete consequence is that if said update has cells with timestamp lower than A, then those
-     * cells are preserved(since the deletion is removed), and this is contrary to a normal (regular) deletion where the
+     * cells are preserved(since the deletion is removed), and this contrarily to a normal (regular) deletion where the
      * deletion is preserved and such cells are removed.
      * <p>
      * Currently, the only use of shadowable row deletions is Materialized Views, see CASSANDRA-10261.
@@ -391,10 +370,10 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             return time.deletes(cell);
         }
 
-        public void digest(Hasher hasher)
+        public void digest(MessageDigest digest)
         {
-            time.digest(hasher);
-            HashingUtils.updateWithBoolean(hasher, isShadowable);
+            time.digest(digest);
+            FBUtilities.updateWithBoolean(digest, isShadowable);
         }
 
         public int dataSize()
@@ -482,11 +461,11 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
         public Clustering clustering();
 
         /**
-         * Adds the liveness information for the partition key columns of this row.
+         * Adds the liveness information for the primary key columns of this row.
          *
          * This call is optional (skipping it is equivalent to calling {@code addPartitionKeyLivenessInfo(LivenessInfo.NONE)}).
          *
-         * @param info the liveness information for the partition key columns of the built row.
+         * @param info the liveness information for the primary key columns of the built row.
          */
         public void addPrimaryKeyLivenessInfo(LivenessInfo info);
 
@@ -512,111 +491,12 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
          * @param column the column for which to add the {@code complexDeletion}.
          * @param complexDeletion the complex deletion time to add.
          */
-        public void addComplexDeletion(ColumnMetadata column, DeletionTime complexDeletion);
+        public void addComplexDeletion(ColumnDefinition column, DeletionTime complexDeletion);
 
         /**
          * Builds and return built row.
          *
          * @return the last row built by this builder.
-         */
-        public Row build();
-    }
-
-    /**
-     * Row builder interface geared towards human.
-     * <p>
-     * Where the {@link Builder} deals with building rows efficiently from internal objects ({@code Cell}, {@code
-     * LivenessInfo}, ...), the {@code SimpleBuilder} is geared towards building rows from string column name and
-     * 'native' values (string for text, ints for numbers, et...). In particular, it is meant to be convenient, not
-     * efficient, and should be used only in place where performance is not of the utmost importance (it is used to
-     * build schema mutation for instance).
-     * <p>
-     * Also note that contrarily to {@link Builder}, the {@code SimpleBuilder} API has no {@code newRow()} method: it is
-     * expected that the clustering of the row built is provided by the constructor of the builder.
-     */
-    public interface SimpleBuilder
-    {
-        /**
-         * Sets the timestamp to use for the following additions.
-         * <p>
-         * Note that the for non-compact tables, this method must be called before any column addition for this
-         * timestamp to be used for the row {@code LivenessInfo}.
-         *
-         * @param timestamp the timestamp to use for following additions. If that timestamp hasn't been set, the current
-         * time in microseconds will be used.
-         * @return this builder.
-         */
-        public SimpleBuilder timestamp(long timestamp);
-
-        /**
-         * Sets the ttl to use for the following additions.
-         * <p>
-         * Note that the for non-compact tables, this method must be called before any column addition for this
-         * ttl to be used for the row {@code LivenessInfo}.
-         *
-         * @param ttl the ttl to use for following additions. If that ttl hasn't been set, no ttl will be used.
-         * @return this builder.
-         */
-        public SimpleBuilder ttl(int ttl);
-
-        /**
-         * Adds a value to a given column.
-         *
-         * @param columnName the name of the column for which to add a new value.
-         * @param value the value to add, which must be of the proper type for {@code columnName}. This can be {@code
-         * null} in which case the this is equivalent to {@code delete(columnName)}.
-         * @return this builder.
-         */
-        public SimpleBuilder add(String columnName, Object value);
-
-        /**
-         * Appends new values to a given non-frozen collection column.
-         * <p>
-         * This method is similar to {@code add()} but the collection elements added through this method are "appended"
-         * to any pre-exising elements. In other words, this is like {@code add()} except that it doesn't delete the
-         * previous value of the collection. This can only be called on non-frozen collection columns.
-         * <p>
-         * Note that this method can be used in replacement of {@code add()} if you know that there can't be any
-         * pre-existing value for that column, in which case this is slightly less expensive as it avoid the collection
-         * tombstone inherent to {@code add()}.
-         *
-         * @param columnName the name of the column for which to add a new value, which must be a non-frozen collection.
-         * @param value the value to add, which must be of the proper type for {@code columnName} (in other words, it
-         * <b>must</b> be a collection).
-         * @return this builder.
-         *
-         * @throws IllegalArgumentException if columnName is not a non-frozen collection column.
-         */
-        public SimpleBuilder appendAll(String columnName, Object value);
-
-        /**
-         * Deletes the whole row.
-         * <p>
-         * If called, this is generally the only method called on the builder (outside of {@code timestamp()}.
-         *
-         * @return this builder.
-         */
-        public SimpleBuilder delete();
-
-        /**
-         * Removes the value for a given column (creating a tombstone).
-         *
-         * @param columnName the name of the column to delete.
-         * @return this builder.
-         */
-        public SimpleBuilder delete(String columnName);
-
-        /**
-         * Don't include any primary key {@code LivenessInfo} in the built row.
-         *
-         * @return this builder.
-         */
-        public SimpleBuilder noPrimaryKeyLivenessInfo();
-
-        /**
-         * Returns the built row.
-         *
-         * @return the built row.
          */
         public Row build();
     }
@@ -636,11 +516,11 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
         private final List<ColumnData> dataBuffer = new ArrayList<>();
         private final ColumnDataReducer columnDataReducer;
 
-        public Merger(int size, boolean hasComplex)
+        public Merger(int size, int nowInSec, boolean hasComplex)
         {
             this.rows = new Row[size];
             this.columnDataIterators = new ArrayList<>(size);
-            this.columnDataReducer = new ColumnDataReducer(size, hasComplex);
+            this.columnDataReducer = new ColumnDataReducer(size, nowInSec, hasComplex);
         }
 
         public void clear()
@@ -660,7 +540,6 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             lastRowSet = i;
         }
 
-        @SuppressWarnings("resource")
         public Row merge(DeletionTime activeDeletion)
         {
             // If for this clustering we have only one row version and have no activeDeletion (i.e. nothing to filter out),
@@ -726,7 +605,9 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
 
         private static class ColumnDataReducer extends MergeIterator.Reducer<ColumnData, ColumnData>
         {
-            private ColumnMetadata column;
+            private final int nowInSec;
+
+            private ColumnDefinition column;
             private final List<ColumnData> versions;
 
             private DeletionTime activeDeletion;
@@ -735,12 +616,13 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             private final List<Iterator<Cell>> complexCells;
             private final CellReducer cellReducer;
 
-            public ColumnDataReducer(int size, boolean hasComplex)
+            public ColumnDataReducer(int size, int nowInSec, boolean hasComplex)
             {
+                this.nowInSec = nowInSec;
                 this.versions = new ArrayList<>(size);
                 this.complexBuilder = hasComplex ? ComplexColumnData.builder() : null;
                 this.complexCells = hasComplex ? new ArrayList<>(size) : null;
-                this.cellReducer = new CellReducer();
+                this.cellReducer = new CellReducer(nowInSec);
             }
 
             public void setActiveDeletion(DeletionTime activeDeletion)
@@ -750,18 +632,18 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
 
             public void reduce(int idx, ColumnData data)
             {
-                if (useColumnMetadata(data.column()))
+                if (useColumnDefinition(data.column()))
                     column = data.column();
 
                 versions.add(data);
             }
 
             /**
-             * Determines it the {@code ColumnMetadata} is the one that should be used.
-             * @param dataColumn the {@code ColumnMetadata} to use.
-             * @return {@code true} if the {@code ColumnMetadata} is the one that should be used, {@code false} otherwise.
+             * Determines it the {@code ColumnDefinition} is the one that should be used.
+             * @param dataColumn the {@code ColumnDefinition} to use.
+             * @return {@code true} if the {@code ColumnDefinition} is the one that should be used, {@code false} otherwise.
              */
-            private boolean useColumnMetadata(ColumnMetadata dataColumn)
+            private boolean useColumnDefinition(ColumnDefinition dataColumn)
             {
                 if (column == null)
                     return true;
@@ -769,7 +651,6 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
                 return AbstractTypeVersionComparator.INSTANCE.compare(column.type, dataColumn.type) < 0;
             }
 
-            @SuppressWarnings("resource")
             protected ColumnData getReduced()
             {
                 if (column.isSimple())
@@ -779,7 +660,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
                     {
                         Cell cell = (Cell)data;
                         if (!activeDeletion.deletes(cell))
-                            merged = merged == null ? cell : Cells.reconcile(merged, cell);
+                            merged = merged == null ? cell : Cells.reconcile(merged, cell, nowInSec);
                     }
                     return merged;
                 }
@@ -826,8 +707,15 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
 
         private static class CellReducer extends MergeIterator.Reducer<Cell, Cell>
         {
+            private final int nowInSec;
+
             private DeletionTime activeDeletion;
             private Cell merged;
+
+            public CellReducer(int nowInSec)
+            {
+                this.nowInSec = nowInSec;
+            }
 
             public void setActiveDeletion(DeletionTime activeDeletion)
             {
@@ -838,7 +726,7 @@ public interface Row extends Unfiltered, Iterable<ColumnData>
             public void reduce(int idx, Cell cell)
             {
                 if (!activeDeletion.deletes(cell))
-                    merged = merged == null ? cell : Cells.reconcile(merged, cell);
+                    merged = merged == null ? cell : Cells.reconcile(merged, cell, nowInSec);
             }
 
             protected Cell getReduced()

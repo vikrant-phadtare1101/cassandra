@@ -38,23 +38,33 @@ public class LongBloomFilterTest
     @Test
     public void testBigInt()
     {
+        testBigInt(false);
+        testBigInt(true);
+    }
+    private static void testBigInt(boolean oldBfHashOrder)
+    {
         int size = 10 * 1000 * 1000;
-        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement);
+        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement, false, oldBfHashOrder);
         double fp = testFalsePositives(bf,
                                        new KeyGenerator.IntGenerator(size),
                                        new KeyGenerator.IntGenerator(size, size * 2));
-        logger.info("Bloom filter false positive: {}", fp);
+        logger.info("Bloom filter false positive for oldBfHashOrder={}: {}", oldBfHashOrder, fp);
     }
 
     @Test
     public void testBigRandom()
     {
+        testBigRandom(false);
+        testBigRandom(true);
+    }
+    private static void testBigRandom(boolean oldBfHashOrder)
+    {
         int size = 10 * 1000 * 1000;
-        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement);
+        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement, false, oldBfHashOrder);
         double fp = testFalsePositives(bf,
                                        new KeyGenerator.RandomStringGenerator(new Random().nextInt(), size),
                                        new KeyGenerator.RandomStringGenerator(new Random().nextInt(), size));
-        logger.info("Bloom filter false positive: {}", fp);
+        logger.info("Bloom filter false positive for oldBfHashOrder={}: {}", oldBfHashOrder, fp);
     }
 
     /**
@@ -63,21 +73,26 @@ public class LongBloomFilterTest
     @Test
     public void testConstrained()
     {
+        testConstrained(false);
+        testConstrained(true);
+    }
+    private static void testConstrained(boolean oldBfHashOrder)
+    {
         int size = 10 * 1000 * 1000;
-        try (IFilter bf = getFilter(size, 0.01))
+        try (IFilter bf = getFilter(size, 0.01, false, oldBfHashOrder))
         {
             double fp = testFalsePositives(bf,
                                            new KeyGenerator.IntGenerator(size),
                                            new KeyGenerator.IntGenerator(size, size * 2));
-            logger.info("Bloom filter false positive: {}", fp);
+            logger.info("Bloom filter false positive for oldBfHashOrder={}: {}", oldBfHashOrder, fp);
         }
     }
 
-    private static void testConstrained(double targetFp, int elements, int staticBitCount, long ... staticBits)
+    private static void testConstrained(double targetFp, int elements, boolean oldBfHashOrder, int staticBitCount, long ... staticBits)
     {
         for (long bits : staticBits)
         {
-            try (IFilter bf = getFilter(elements, targetFp))
+            try (IFilter bf = getFilter(elements, targetFp, false, oldBfHashOrder);)
             {
                 SequentialHashGenerator gen = new SequentialHashGenerator(staticBitCount, bits);
                 long[] hash = new long[2];
@@ -116,17 +131,23 @@ public class LongBloomFilterTest
     @Test
     public void testBffp()
     {
-        System.out.println("Bloom filter false posiitive");
+        bffp(false);
+        bffp(true);
+    }
+
+    private static void bffp(boolean flipInputs)
+    {
+        System.out.println("Bloom filter false posiitive with flipInputs=" + flipInputs);
         long[] staticBits = staticBits(4, 0);
-        testConstrained(0.01d, 10 << 20, 0, staticBits);
-        testConstrained(0.01d, 1 << 20, 6, staticBits);
-        testConstrained(0.01d, 10 << 20, 6, staticBits);
-        testConstrained(0.01d, 1 << 19, 10, staticBits);
-        testConstrained(0.01d, 1 << 20, 10, staticBits);
-        testConstrained(0.01d, 10 << 20, 10, staticBits);
-        testConstrained(0.1d, 10 << 20, 0, staticBits);
-        testConstrained(0.1d, 10 << 20, 8, staticBits);
-        testConstrained(0.1d, 10 << 20, 10, staticBits);
+        testConstrained(0.01d, 10 << 20, flipInputs, 0, staticBits);
+        testConstrained(0.01d, 1 << 20, flipInputs, 6, staticBits);
+        testConstrained(0.01d, 10 << 20, flipInputs, 6, staticBits);
+        testConstrained(0.01d, 1 << 19, flipInputs, 10, staticBits);
+        testConstrained(0.01d, 1 << 20, flipInputs, 10, staticBits);
+        testConstrained(0.01d, 10 << 20, flipInputs, 10, staticBits);
+        testConstrained(0.1d, 10 << 20, flipInputs, 0, staticBits);
+        testConstrained(0.1d, 10 << 20, flipInputs, 8, staticBits);
+        testConstrained(0.1d, 10 << 20, flipInputs, 10, staticBits);
     }
 
     static long[] staticBits(int random, long ... fixed)
@@ -159,8 +180,13 @@ public class LongBloomFilterTest
     @Test
     public void timeit()
     {
+        timeit(false);
+        timeit(true);
+    }
+    private static void timeit(boolean oldBfHashOrder)
+    {
         int size = 300 * FilterTestHelper.ELEMENTS;
-        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement);
+        IFilter bf = getFilter(size, FilterTestHelper.spec.bucketsPerElement, false, oldBfHashOrder);
         double sumfp = 0;
         for (int i = 0; i < 10; i++)
         {
@@ -170,6 +196,6 @@ public class LongBloomFilterTest
 
             bf.clear();
         }
-        logger.info("Bloom filter mean false positive: {}", sumfp / 10);
+        logger.info("Bloom filter mean false positive for oldBfHashOrder={}: {}", oldBfHashOrder, sumfp / 10);
     }
 }

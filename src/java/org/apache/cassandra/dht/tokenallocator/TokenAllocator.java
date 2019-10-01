@@ -23,5 +23,5 @@ import org.apache.cassandra.dht.Token;
 
 public interface TokenAllocator<Unit>
 {
-    Collection<Token> addUnit(Unit newUnit, int numTokens);
+    public Collection<Token> addUnit(Unit newUnit, int numTokens);
 }

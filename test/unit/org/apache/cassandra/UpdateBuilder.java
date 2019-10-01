@@ -17,10 +17,13 @@
  */
 package org.apache.cassandra;
 
-import org.apache.cassandra.schema.TableMetadata;
+import java.nio.ByteBuffer;
+
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.service.StorageService;
 
 
 /**
@@ -31,30 +34,32 @@ import org.apache.cassandra.db.partitions.*;
  */
 public class UpdateBuilder
 {
-    private final PartitionUpdate.SimpleBuilder updateBuilder;
-    private Row.SimpleBuilder currentRow;
+    private final PartitionUpdate update;
+    private RowUpdateBuilder currentRow;
+    private long timestamp = FBUtilities.timestampMicros();
 
-    private UpdateBuilder(PartitionUpdate.SimpleBuilder updateBuilder)
+    private UpdateBuilder(CFMetaData metadata, DecoratedKey partitionKey)
     {
-        this.updateBuilder = updateBuilder;
+        this.update = new PartitionUpdate(metadata, partitionKey, metadata.partitionColumns(), 4);
     }
 
-    public static UpdateBuilder create(TableMetadata metadata, Object... partitionKey)
+    public static UpdateBuilder create(CFMetaData metadata, Object... partitionKey)
     {
-        return new UpdateBuilder(PartitionUpdate.simpleBuilder(metadata, partitionKey));
+        return new UpdateBuilder(metadata, makeKey(metadata, partitionKey));
     }
 
     public UpdateBuilder withTimestamp(long timestamp)
     {
-        updateBuilder.timestamp(timestamp);
-        if (currentRow != null)
-            currentRow.timestamp(timestamp);
+        this.timestamp = timestamp;
         return this;
     }
 
     public UpdateBuilder newRow(Object... clustering)
     {
-        currentRow = updateBuilder.row(clustering);
+        maybeBuildCurrentRow();
+        currentRow = new RowUpdateBuilder(update, timestamp, 0);
+        if (clustering.length > 0)
+            currentRow.clustering(clustering);
         return this;
     }
 
@@ -67,25 +72,48 @@ public class UpdateBuilder
 
     public PartitionUpdate build()
     {
-        return updateBuilder.build();
+        maybeBuildCurrentRow();
+        return update;
     }
 
     public IMutation makeMutation()
     {
-        Mutation m = updateBuilder.buildAsMutation();
-        return updateBuilder.metadata().isCounter()
+        Mutation m = new Mutation(build());
+        return update.metadata().isCounter()
              ? new CounterMutation(m, ConsistencyLevel.ONE)
              : m;
     }
 
     public void apply()
     {
-        makeMutation().apply();
+        Mutation m = new Mutation(build());
+        if (update.metadata().isCounter())
+            new CounterMutation(m, ConsistencyLevel.ONE).apply();
+        else
+            m.apply();
     }
 
     public void applyUnsafe()
     {
-        assert !updateBuilder.metadata().isCounter() : "Counters have currently no applyUnsafe() option";
-        updateBuilder.buildAsMutation().applyUnsafe();
+        assert !update.metadata().isCounter() : "Counters have currently no applyUnsafe() option";
+        new Mutation(build()).applyUnsafe();
+    }
+
+    private void maybeBuildCurrentRow()
+    {
+        if (currentRow != null)
+        {
+            currentRow.build();
+            currentRow = null;
+        }
+    }
+
+    private static DecoratedKey makeKey(CFMetaData metadata, Object[] partitionKey)
+    {
+        if (partitionKey.length == 1 && partitionKey[0] instanceof DecoratedKey)
+            return (DecoratedKey)partitionKey[0];
+
+        ByteBuffer key = CFMetaData.serializePartitionKey(metadata.getKeyValidatorAsClusteringComparator().make(partitionKey));
+        return metadata.decorateKey(key);
     }
 }

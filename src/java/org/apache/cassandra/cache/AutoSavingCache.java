@@ -34,19 +34,18 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.schema.SchemaConstants;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.compaction.CompactionInfo.Unit;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.*;
-import org.apache.cassandra.io.util.CorruptFileException;
+import org.apache.cassandra.io.util.ChecksummedRandomAccessReader.CorruptFileException;
 import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.utils.JVMStabilityInspector;
@@ -79,28 +78,19 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
      * a minor version letter.
      *
      * Sticking with "d" is fine for 3.0 since it has never been released or used by another version
-     *
-     * "e" introduced with CASSANDRA-11206, omits IndexInfo from key-cache, stores offset into index-file
-     *
-     * "f" introduced with CASSANDRA-9425, changes "keyspace.table.index" in cache keys to TableMetadata.id+TableMetadata.indexName
      */
-    private static final String CURRENT_VERSION = "f";
+    private static final String CURRENT_VERSION = "d";
 
     private static volatile IStreamFactory streamFactory = new IStreamFactory()
     {
-        private final SequentialWriterOption writerOption = SequentialWriterOption.newBuilder()
-                                                                    .trickleFsync(DatabaseDescriptor.getTrickleFsync())
-                                                                    .trickleFsyncByteInterval(DatabaseDescriptor.getTrickleFsyncIntervalInKb() * 1024)
-                                                                    .finishOnClose(true).build();
-
         public InputStream getInputStream(File dataPath, File crcPath) throws IOException
         {
-            return ChecksummedRandomAccessReader.open(dataPath, crcPath);
+            return new ChecksummedRandomAccessReader.Builder(dataPath, crcPath).build();
         }
 
         public OutputStream getOutputStream(File dataPath, File crcPath)
         {
-            return new ChecksummedSequentialWriter(dataPath, crcPath, null, writerOption);
+            return SequentialWriter.open(dataPath, crcPath).finishOnClose();
         }
     };
 
@@ -163,13 +153,12 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
         ListenableFuture<Integer> cacheLoad = es.submit(new Callable<Integer>()
         {
             @Override
-            public Integer call()
+            public Integer call() throws Exception
             {
                 return loadSaved();
             }
         });
-        cacheLoad.addListener(new Runnable()
-        {
+        cacheLoad.addListener(new Runnable() {
             @Override
             public void run()
             {
@@ -198,31 +187,27 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
             DataInputStreamPlus in = null;
             try
             {
-                logger.info("reading saved cache {}", dataPath);
+                logger.info(String.format("reading saved cache %s", dataPath));
                 in = new DataInputStreamPlus(new LengthAvailableInputStream(new BufferedInputStream(streamFactory.getInputStream(dataPath, crcPath)), dataPath.length()));
 
                 //Check the schema has not changed since CFs are looked up by name which is ambiguous
                 UUID schemaVersion = new UUID(in.readLong(), in.readLong());
                 if (!schemaVersion.equals(Schema.instance.getVersion()))
                     throw new RuntimeException("Cache schema version "
-                                              + schemaVersion
+                                              + schemaVersion.toString()
                                               + " does not match current schema version "
                                               + Schema.instance.getVersion());
 
                 ArrayDeque<Future<Pair<K, V>>> futures = new ArrayDeque<Future<Pair<K, V>>>();
                 while (in.available() > 0)
                 {
-                    //tableId and indexName are serialized by the serializers in CacheService
+                    //ksname and cfname are serialized by the serializers in CacheService
                     //That is delegated there because there are serializer specific conditions
                     //where a cache key is skipped and not written
-                    TableId tableId = TableId.deserialize(in);
-                    String indexName = in.readUTF();
-                    if (indexName.isEmpty())
-                        indexName = null;
+                    String ksname = in.readUTF();
+                    String cfname = in.readUTF();
 
-                    ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(tableId);
-                    if (indexName != null && cfs != null)
-                        cfs = cfs.indexManager.getIndexByName(indexName).getBackingTable().orElse(null);
+                    ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreIncludingIndexes(Pair.create(ksname, cfname));
 
                     Future<Pair<K, V>> entryFuture = cacheLoader.deserialize(in, cfs);
                     // Key cache entry can return null, if the SSTable doesn't exist.
@@ -316,12 +301,12 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
             else
                 type = OperationType.UNKNOWN;
 
-            info = CompactionInfo.withoutSSTables(TableMetadata.minimal(SchemaConstants.SYSTEM_KEYSPACE_NAME, cacheType.toString()),
-                                                  type,
-                                                  0,
-                                                  keysEstimate,
-                                                  Unit.KEYS,
-                                                  UUIDGen.getTimeUUID());
+            info = new CompactionInfo(CFMetaData.createFake(SystemKeyspace.NAME, cacheType.toString()),
+                                      type,
+                                      0,
+                                      keysEstimate,
+                                      Unit.KEYS,
+                                      UUIDGen.getTimeUUID());
         }
 
         public CacheService.CacheType cacheType()
@@ -367,11 +352,9 @@ public class AutoSavingCache<K extends CacheKey, V> extends InstrumentingCache<K
                 {
                     K key = keyIterator.next();
 
-                    ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreInstance(key.tableId);
+                    ColumnFamilyStore cfs = Schema.instance.getColumnFamilyStoreIncludingIndexes(key.ksAndCFName);
                     if (cfs == null)
                         continue; // the table or 2i has been dropped.
-                    if (key.indexName != null)
-                        cfs = cfs.indexManager.getIndexByName(key.indexName).getBackingTable().orElse(null);
 
                     cacheLoader.serialize(key, writer, cfs);
 

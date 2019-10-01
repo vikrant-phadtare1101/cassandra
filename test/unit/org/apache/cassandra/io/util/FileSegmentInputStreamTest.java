@@ -88,56 +88,44 @@ public class FileSegmentInputStreamTest
     @Test(expected = UnsupportedOperationException.class)
     public void testMarkNotSupported() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0))
-        {
-            assertFalse(reader.markSupported());
-            assertEquals(0, reader.bytesPastMark(null));
-            reader.mark();
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0);
+        assertFalse(reader.markSupported());
+        assertEquals(0, reader.bytesPastMark(null));
+        reader.mark();
     }
 
     @Test(expected = UnsupportedOperationException.class)
     public void testResetNotSupported() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0))
-        {
-            reader.reset(null);
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0);
+        reader.reset(null);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testSeekNegative() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0))
-        {
-            reader.seek(-1);
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 0);
+        reader.seek(-1);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testSeekBeforeOffset() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024))
-        {
-            reader.seek(1023);
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024);
+        reader.seek(1023);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testSeekPastLength() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024))
-        {
-            reader.seek(2049);
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024);
+        reader.seek(2049);
     }
 
     @Test(expected = EOFException.class)
     public void testReadBytesTooMany() throws Exception
     {
-        try (FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024))
-        {
-            ByteBufferUtil.read(reader, 2049);
-        }
+        FileSegmentInputStream reader = new FileSegmentInputStream(allocateBuffer(1024), "", 1024);
+        ByteBufferUtil.read(reader, 2049);
     }
 }

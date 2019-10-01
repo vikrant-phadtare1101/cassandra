@@ -28,16 +28,15 @@ import com.google.common.collect.Iterators;
 import org.junit.Assert;
 import org.junit.Test;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.Lists.PrecisionTime;
 import org.apache.cassandra.db.Clustering;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
 public class ListsTest extends CQLTester
@@ -133,17 +132,16 @@ public class ListsTest extends CQLTester
     private void testPrepender_execute(List<ByteBuffer> terms)
     {
         createTable("CREATE TABLE %s (k int PRIMARY KEY, l list<text>)");
-        TableMetadata metaData = currentTableMetadata();
+        CFMetaData metaData = currentTableMetadata();
 
-        ColumnMetadata columnMetadata = metaData.getColumn(ByteBufferUtil.bytes("l"));
+        ColumnDefinition columnDefinition = metaData.getColumnDefinition(ByteBufferUtil.bytes("l"));
         Term term = new Lists.Value(terms);
-        Lists.Prepender prepender = new Lists.Prepender(columnMetadata, term);
+        Lists.Prepender prepender = new Lists.Prepender(columnDefinition, term);
 
         ByteBuffer keyBuf = ByteBufferUtil.bytes("key");
         DecoratedKey key = Murmur3Partitioner.instance.decorateKey(keyBuf);
-        UpdateParameters parameters =
-            new UpdateParameters(metaData, null, QueryOptions.DEFAULT, System.currentTimeMillis(), FBUtilities.nowInSeconds(), 1000, Collections.emptyMap());
-        Clustering clustering = Clustering.make(ByteBufferUtil.bytes(1));
+        UpdateParameters parameters = new UpdateParameters(metaData, null, null, System.currentTimeMillis(), 1000, Collections.emptyMap());
+        Clustering clustering = new Clustering(ByteBufferUtil.bytes(1));
         parameters.newRow(clustering);
         prepender.execute(key, parameters);
 
