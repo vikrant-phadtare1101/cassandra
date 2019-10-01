@@ -61,7 +61,7 @@ class RateBasedBackPressureState extends IntervalLock implements BackPressureSta
     }
 
     @Override
-    public void onMessageSent(Message<?> message) {}
+    public void onMessageSent(MessageOut<?> message) {}
 
     @Override
     public void onResponseReceived()

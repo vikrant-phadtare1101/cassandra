@@ -29,7 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.QueryProcessor;
@@ -65,7 +64,7 @@ public class PasswordAuthenticator implements IAuthenticator
     public static final String USERNAME_KEY = "username";
     public static final String PASSWORD_KEY = "password";
 
-    static final byte NUL = 0;
+    private static final byte NUL = 0;
     private SelectStatement authenticateStatement;
 
     private CredentialsCache cache;
@@ -101,30 +100,23 @@ public class PasswordAuthenticator implements IAuthenticator
 
     private String queryHashedPassword(String username)
     {
-        try
-        {
-            ResultMessage.Rows rows =
-            authenticateStatement.execute(QueryState.forInternalCalls(),
-                                            QueryOptions.forInternalCalls(consistencyForRole(username),
-                                                                          Lists.newArrayList(ByteBufferUtil.bytes(username))),
-                                            System.nanoTime());
+        ResultMessage.Rows rows =
+        authenticateStatement.execute(QueryState.forInternalCalls(),
+                                        QueryOptions.forInternalCalls(consistencyForRole(username),
+                                                                      Lists.newArrayList(ByteBufferUtil.bytes(username))),
+                                        System.nanoTime());
 
-            // If either a non-existent role name was supplied, or no credentials
-            // were found for that role we don't want to cache the result so we throw
-            // an exception.
-            if (rows.result.isEmpty())
-                throw new AuthenticationException(String.format("Provided username %s and/or password are incorrect", username));
+        // If either a non-existent role name was supplied, or no credentials
+        // were found for that role we don't want to cache the result so we throw
+        // a specific, but unchecked, exception to keep LoadingCache happy.
+        if (rows.result.isEmpty())
+            throw new AuthenticationException(String.format("Provided username %s and/or password are incorrect", username));
 
-            UntypedResultSet result = UntypedResultSet.create(rows.result);
-            if (!result.one().has(SALTED_HASH))
-                throw new AuthenticationException(String.format("Provided username %s and/or password are incorrect", username));
+        UntypedResultSet result = UntypedResultSet.create(rows.result);
+        if (!result.one().has(SALTED_HASH))
+            throw new AuthenticationException(String.format("Provided username %s and/or password are incorrect", username));
 
-            return result.one().getString(SALTED_HASH);
-        }
-        catch (RequestExecutionException e)
-        {
-            throw new AuthenticationException("Unable to perform authentication: " + e.getMessage(), e);
-        }
+        return result.one().getString(SALTED_HASH);
     }
 
     public Set<DataResource> protectedResources()
@@ -214,7 +206,7 @@ public class PasswordAuthenticator implements IAuthenticator
             byte[] user = null;
             byte[] pass = null;
             int end = bytes.length;
-            for (int i = bytes.length - 1; i >= 0; i--)
+            for (int i = bytes.length - 1 ; i >= 0; i--)
             {
                 if (bytes[i] == NUL)
                 {
@@ -222,16 +214,13 @@ public class PasswordAuthenticator implements IAuthenticator
                         pass = Arrays.copyOfRange(bytes, i + 1, end);
                     else if (user == null)
                         user = Arrays.copyOfRange(bytes, i + 1, end);
-                    else
-                        throw new AuthenticationException("Credential format error: username or password is empty or contains NUL(\\0) character");
-
                     end = i;
                 }
             }
 
-            if (pass == null || pass.length == 0)
+            if (pass == null)
                 throw new AuthenticationException("Password must not be null");
-            if (user == null || user.length == 0)
+            if (user == null)
                 throw new AuthenticationException("Authentication ID must not be null");
 
             username = new String(user, StandardCharsets.UTF_8);
