@@ -19,17 +19,17 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
-import com.google.common.collect.Iterables;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.ImmutableBTreePartition;
 import org.apache.cassandra.db.rows.Row;
@@ -121,7 +121,7 @@ public class CompactionsPurgeTest
 
         // major compact and test that all columns but the resurrected one is completely gone
         FBUtilities.waitOnFutures(CompactionManager.instance.submitMaximal(cfs, Integer.MAX_VALUE, false));
-        cfs.invalidateCachedPartition(dk(key));
+        cfs.getCacheHandler().invalidateCachedPartition(dk(key));
 
         ImmutableBTreePartition partition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs, key).build());
         assertEquals(1, partition.rowCount());
@@ -166,7 +166,7 @@ public class CompactionsPurgeTest
 
         cfs.forceBlockingFlush();
 
-        cfs.invalidateCachedPartition(dk(key));
+        cfs.getCacheHandler().invalidateCachedPartition(dk(key));
 
         ImmutableBTreePartition partition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs, key).build());
         assertEquals(1, partition.rowCount());
@@ -210,7 +210,7 @@ public class CompactionsPurgeTest
 
         cfs.forceBlockingFlush();
 
-        cfs.invalidateCachedPartition(dk(key));
+        cfs.getCacheHandler().invalidateCachedPartition(dk(key));
 
         ImmutableBTreePartition partition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs, key).build());
         assertEquals(1, partition.rowCount());
@@ -252,7 +252,7 @@ public class CompactionsPurgeTest
 
         cfs.forceBlockingFlush();
 
-        cfs.invalidateCachedPartition(dk(key));
+        cfs.getCacheHandler().invalidateCachedPartition(dk(key));
 
         ImmutableBTreePartition partition = Util.getOnlyPartitionUnfiltered(Util.cmd(cfs, key).build());
         assertEquals(1, partition.rowCount());
@@ -303,10 +303,9 @@ public class CompactionsPurgeTest
                 .build().applyUnsafe();
 
         cfs.forceBlockingFlush();
-        try (CompactionTasks tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstablesIncomplete, Integer.MAX_VALUE))
-        {
-            Iterables.getOnlyElement(tasks).execute(ActiveCompactionsTracker.NOOP);
-        }
+        List<AbstractCompactionTask> tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstablesIncomplete, Integer.MAX_VALUE);
+        assertEquals(1, tasks.size());
+        tasks.get(0).execute(null);
 
         // verify that minor compaction does GC when key is provably not
         // present in a non-compacted sstable
@@ -355,10 +354,9 @@ public class CompactionsPurgeTest
         cfs.forceBlockingFlush();
 
         // compact the sstables with the c1/c2 data and the c1 tombstone
-        try (CompactionTasks tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstablesIncomplete, Integer.MAX_VALUE))
-        {
-            Iterables.getOnlyElement(tasks).execute(ActiveCompactionsTracker.NOOP);
-        }
+        List<AbstractCompactionTask> tasks = cfs.getCompactionStrategyManager().getUserDefinedTasks(sstablesIncomplete, Integer.MAX_VALUE);
+        assertEquals(1, tasks.size());
+        tasks.get(0).execute(null);
 
         // We should have both the c1 and c2 tombstones still. Since the min timestamp in the c2 tombstone
         // sstable is older than the c1 tombstone, it is invalid to throw out the c1 tombstone.

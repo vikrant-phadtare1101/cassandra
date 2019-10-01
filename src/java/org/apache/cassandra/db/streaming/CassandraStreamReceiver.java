@@ -26,9 +26,6 @@ import java.util.Set;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
-import org.apache.cassandra.io.sstable.SSTable;
-import org.apache.cassandra.streaming.StreamReceiveTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,6 +80,11 @@ public class CassandraStreamReceiver implements StreamReceiver
         this.requiresWritePath = requiresWritePath(cfs);
     }
 
+    public LifecycleTransaction getTransaction()
+    {
+        return txn;
+    }
+
     public static CassandraStreamReceiver fromReceiver(StreamReceiver receiver)
     {
         Preconditions.checkArgument(receiver instanceof CassandraStreamReceiver);
@@ -96,8 +98,7 @@ public class CassandraStreamReceiver implements StreamReceiver
     }
 
     @Override
-    @SuppressWarnings("resource")
-    public synchronized void received(IncomingStream stream)
+    public void received(IncomingStream stream)
     {
         CassandraIncomingFile file = getFile(stream);
 
@@ -122,41 +123,8 @@ public class CassandraStreamReceiver implements StreamReceiver
         Throwables.maybeFail(file.getSSTable().abort(null));
     }
 
-    /**
-     * @return a LifecycleNewTracker whose operations are synchronised on this StreamReceiveTask.
-     */
-    public synchronized LifecycleNewTracker createLifecycleNewTracker()
-    {
-        return new LifecycleNewTracker()
-        {
-            @Override
-            public void trackNew(SSTable table)
-            {
-                synchronized (CassandraStreamReceiver.this)
-                {
-                    txn.trackNew(table);
-                }
-            }
-
-            @Override
-            public void untrackNew(SSTable table)
-            {
-                synchronized (CassandraStreamReceiver.this)
-                {
-                    txn.untrackNew(table);
-                }
-            }
-
-            public OperationType opType()
-            {
-                return txn.opType();
-            }
-        };
-    }
-
-
     @Override
-    public synchronized void abort()
+    public void abort()
     {
         sstables.clear();
         txn.abort();
@@ -212,7 +180,7 @@ public class CassandraStreamReceiver implements StreamReceiver
         }
     }
 
-    public synchronized  void finishTransaction()
+    private synchronized void finishTransaction()
     {
         txn.finish();
     }
@@ -246,7 +214,7 @@ public class CassandraStreamReceiver implements StreamReceiver
 
                     if (cfs.isRowCacheEnabled())
                     {
-                        int invalidatedKeys = cfs.invalidateRowCache(nonOverlappingBounds);
+                        int invalidatedKeys = cfs.getCacheHandler().invalidateRowCache(nonOverlappingBounds);
                         if (invalidatedKeys > 0)
                             logger.debug("[Stream #{}] Invalidated {} row cache entries on table {}.{} after stream " +
                                          "receive task completed.", session.planId(), invalidatedKeys,

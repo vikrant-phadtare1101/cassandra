@@ -27,7 +27,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.utils.memory.MemoryUtil;
 
 import static org.junit.Assert.assertEquals;

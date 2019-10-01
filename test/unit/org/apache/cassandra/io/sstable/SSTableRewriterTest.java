@@ -60,6 +60,7 @@ import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.streaming.StreamSession;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.UUIDGen;
 
 import static org.junit.Assert.*;
@@ -171,14 +172,14 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
                         {
                             SSTableReader c = txn.current(sstables.iterator().next());
                             Collection<Range<Token>> r = Arrays.asList(new Range<>(cfs.getPartitioner().getMinimumToken(), cfs.getPartitioner().getMinimumToken()));
-                            List<SSTableReader.PartitionPositionBounds> tmplinkPositions = sstable.getPositionsForRanges(r);
-                            List<SSTableReader.PartitionPositionBounds> compactingPositions = c.getPositionsForRanges(r);
+                            List<Pair<Long, Long>> tmplinkPositions = sstable.getPositionsForRanges(r);
+                            List<Pair<Long, Long>> compactingPositions = c.getPositionsForRanges(r);
                             assertEquals(1, tmplinkPositions.size());
                             assertEquals(1, compactingPositions.size());
-                            assertEquals(0, tmplinkPositions.get(0).lowerPosition);
+                            assertEquals(0, tmplinkPositions.get(0).left.longValue());
                             // make sure we have no overlap between the early opened file and the compacting one:
-                            assertEquals(tmplinkPositions.get(0).upperPosition, compactingPositions.get(0).lowerPosition);
-                            assertEquals(c.uncompressedLength(), compactingPositions.get(0).upperPosition);
+                            assertEquals(tmplinkPositions.get(0).right.longValue(), compactingPositions.get(0).left.longValue());
+                            assertEquals(c.uncompressedLength(), compactingPositions.get(0).right.longValue());
                         }
                     }
                 }
@@ -877,7 +878,7 @@ public class SSTableRewriterTest extends SSTableWriterTestBase
             File dir = cfs.getDirectories().getDirectoryForNewSSTables();
             Descriptor desc = cfs.newSSTableDescriptor(dir);
 
-            try (SSTableTxnWriter writer = SSTableTxnWriter.create(cfs, desc, 0, 0, null, false, new SerializationHeader(true, cfs.metadata(), cfs.metadata().regularAndStaticColumns(), EncodingStats.NO_STATS)))
+            try (SSTableTxnWriter writer = SSTableTxnWriter.create(cfs, desc, 0, 0, null, new SerializationHeader(true, cfs.metadata(), cfs.metadata().regularAndStaticColumns(), EncodingStats.NO_STATS)))
             {
                 int end = f == fileCount - 1 ? partitionCount : ((f + 1) * partitionCount) / fileCount;
                 for ( ; i < end ; i++)

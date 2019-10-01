@@ -22,7 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -30,9 +29,6 @@ import org.apache.commons.lang3.ArrayUtils;
 import com.datastax.driver.core.ProtocolVersion;
 import com.datastax.driver.core.TypeCodec;
 import org.antlr.runtime.RecognitionException;
-import org.apache.cassandra.cql3.CQLStatement;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
-import org.apache.cassandra.cql3.statements.schema.CreateTypeStatement;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -43,9 +39,13 @@ import org.apache.cassandra.cql3.CqlParser;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.UpdateParameters;
 import org.apache.cassandra.cql3.functions.UDHelper;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
+import org.apache.cassandra.cql3.statements.CreateTypeStatement;
+import org.apache.cassandra.cql3.statements.ParsedStatement;
 import org.apache.cassandra.cql3.statements.UpdateStatement;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.UserType;
+import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.exceptions.InvalidRequestException;
@@ -58,6 +58,7 @@ import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.schema.Types;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * Utility to write SSTables.
@@ -246,16 +247,15 @@ public class StressCQLSSTableWriter implements Closeable
         List<ByteBuffer> keys = insert.buildPartitionKeyNames(options);
         SortedSet<Clustering> clusterings = insert.createClustering(options);
 
-        long now = System.currentTimeMillis();
+        long now = System.currentTimeMillis() * 1000;
         // Note that we asks indexes to not validate values (the last 'false' arg below) because that triggers a 'Keyspace.open'
         // and that forces a lot of initialization that we don't want.
         UpdateParameters params = new UpdateParameters(insert.metadata(),
                                                        insert.updatedColumns(),
                                                        options,
-                                                       insert.getTimestamp(TimeUnit.MILLISECONDS.toMicros(now), options),
-                                                       (int) TimeUnit.MILLISECONDS.toSeconds(now),
+                                                       insert.getTimestamp(now, options),
                                                        insert.getTimeToLive(options),
-                                                       Collections.emptyMap());
+                                                       Collections.<DecoratedKey, Partition>emptyMap());
 
         try
         {
@@ -359,8 +359,8 @@ public class StressCQLSSTableWriter implements Closeable
 
         private Boolean makeRangeAware = false;
 
-        private CreateTableStatement.Raw schemaStatement;
-        private final List<CreateTypeStatement.Raw> typeStatements;
+        private CreateTableStatement.RawStatement schemaStatement;
+        private final List<CreateTypeStatement> typeStatements;
         private UpdateStatement.ParsedInsert insertStatement;
         private IPartitioner partitioner;
 
@@ -430,7 +430,7 @@ public class StressCQLSSTableWriter implements Closeable
 
         public Builder withType(String typeDefinition) throws SyntaxException
         {
-            typeStatements.add(parseStatement(typeDefinition, CreateTypeStatement.Raw.class, "CREATE TYPE"));
+            typeStatements.add(parseStatement(typeDefinition, CreateTypeStatement.class, "CREATE TYPE"));
             return this;
         }
 
@@ -450,7 +450,7 @@ public class StressCQLSSTableWriter implements Closeable
          */
         public Builder forTable(String schema)
         {
-            this.schemaStatement = parseStatement(schema, CreateTableStatement.Raw.class, "CREATE TABLE");
+            this.schemaStatement = parseStatement(schema, CreateTableStatement.RawStatement.class, "CREATE TABLE");
             return this;
         }
 
@@ -567,25 +567,25 @@ public class StressCQLSSTableWriter implements Closeable
                 if (partitioner == null)
                     partitioner = cfs.getPartitioner();
 
-                UpdateStatement preparedInsert = prepareInsert();
+                Pair<UpdateStatement, List<ColumnSpecification>> preparedInsert = prepareInsert();
                 AbstractSSTableSimpleWriter writer = sorted
-                                                     ? new SSTableSimpleWriter(cfs.getDirectories().getDirectoryForNewSSTables(), cfs.metadata, preparedInsert.updatedColumns())
-                                                     : new SSTableSimpleUnsortedWriter(cfs.getDirectories().getDirectoryForNewSSTables(), cfs.metadata, preparedInsert.updatedColumns(), bufferSizeInMB);
+                                                     ? new SSTableSimpleWriter(cfs.getDirectories().getDirectoryForNewSSTables(), cfs.metadata, preparedInsert.left.updatedColumns())
+                                                     : new SSTableSimpleUnsortedWriter(cfs.getDirectories().getDirectoryForNewSSTables(), cfs.metadata, preparedInsert.left.updatedColumns(), bufferSizeInMB);
 
                 if (formatType != null)
                     writer.setSSTableFormatType(formatType);
 
                 writer.setRangeAwareWriting(makeRangeAware);
 
-                return new StressCQLSSTableWriter(cfs, writer, preparedInsert, preparedInsert.getBindVariables());
+                return new StressCQLSSTableWriter(cfs, writer, preparedInsert.left, preparedInsert.right);
             }
         }
 
-        private static void createTypes(String keyspace, List<CreateTypeStatement.Raw> typeStatements)
+        private static void createTypes(String keyspace, List<CreateTypeStatement> typeStatements)
         {
             KeyspaceMetadata ksm = Schema.instance.getKeyspaceMetadata(keyspace);
             Types.RawBuilder builder = Types.rawBuilder(keyspace);
-            for (CreateTypeStatement.Raw st : typeStatements)
+            for (CreateTypeStatement st : typeStatements)
                 st.addToRawBuilder(builder);
 
             ksm = ksm.withSwapped(builder.build());
@@ -594,14 +594,14 @@ public class StressCQLSSTableWriter implements Closeable
 
         public static ColumnFamilyStore createOfflineTable(String schema, List<File> directoryList)
         {
-            return createOfflineTable(parseStatement(schema, CreateTableStatement.Raw.class, "CREATE TABLE"), Collections.EMPTY_LIST, directoryList);
+            return createOfflineTable(parseStatement(schema, CreateTableStatement.RawStatement.class, "CREATE TABLE"), Collections.EMPTY_LIST, directoryList);
         }
 
         /**
          * Creates the table according to schema statement
          * with specified data directories
          */
-        public static ColumnFamilyStore createOfflineTable(CreateTableStatement.Raw schemaStatement, List<CreateTypeStatement.Raw> typeStatements, List<File> directoryList)
+        public static ColumnFamilyStore createOfflineTable(CreateTableStatement.RawStatement schemaStatement, List<CreateTypeStatement> typeStatements, List<File> directoryList)
         {
             String keyspace = schemaStatement.keyspace();
 
@@ -612,17 +612,16 @@ public class StressCQLSSTableWriter implements Closeable
 
             KeyspaceMetadata ksm = Schema.instance.getKeyspaceMetadata(keyspace);
 
-            TableMetadata tableMetadata = ksm.tables.getNullable(schemaStatement.table());
+            TableMetadata tableMetadata = ksm.tables.getNullable(schemaStatement.columnFamily());
             if (tableMetadata != null)
                 return Schema.instance.getColumnFamilyStoreInstance(tableMetadata.id);
 
-            ClientState state = ClientState.forInternalCalls();
-            CreateTableStatement statement = schemaStatement.prepare(state);
-            statement.validate(state);
+            CreateTableStatement statement = (CreateTableStatement) schemaStatement.prepare(ksm.types).statement;
+            statement.validate(ClientState.forInternalCalls());
 
             //Build metadata with a portable tableId
-            tableMetadata = statement.builder(ksm.types)
-                                     .id(deterministicId(schemaStatement.keyspace(), schemaStatement.table()))
+            tableMetadata = statement.builder()
+                                     .id(deterministicId(statement.keyspace(), statement.columnFamily()))
                                      .build();
 
             Keyspace.setInitialized();
@@ -647,29 +646,28 @@ public class StressCQLSSTableWriter implements Closeable
          *
          * @return prepared Insert statement and it's bound names
          */
-        private UpdateStatement prepareInsert()
+        private Pair<UpdateStatement, List<ColumnSpecification>> prepareInsert()
         {
-            ClientState state = ClientState.forInternalCalls();
-            CQLStatement cqlStatement = insertStatement.prepare(state);
-            UpdateStatement insert = (UpdateStatement) cqlStatement;
-            insert.validate(state);
+            ParsedStatement.Prepared cqlStatement = insertStatement.prepare();
+            UpdateStatement insert = (UpdateStatement) cqlStatement.statement;
+            insert.validate(ClientState.forInternalCalls());
 
             if (insert.hasConditions())
                 throw new IllegalArgumentException("Conditional statements are not supported");
             if (insert.isCounter())
                 throw new IllegalArgumentException("Counter update statements are not supported");
-            if (insert.getBindVariables().isEmpty())
+            if (cqlStatement.boundNames.isEmpty())
                 throw new IllegalArgumentException("Provided insert statement has no bind variables");
 
-            return insert;
+            return Pair.create(insert, cqlStatement.boundNames);
         }
     }
 
-    public static <T extends CQLStatement.Raw> T parseStatement(String query, Class<T> klass, String type)
+    public static <T extends ParsedStatement> T parseStatement(String query, Class<T> klass, String type)
     {
         try
         {
-            CQLStatement.Raw stmt = CQLFragmentParser.parseAnyUnhandled(CqlParser::query, query);
+            ParsedStatement stmt = CQLFragmentParser.parseAnyUnhandled(CqlParser::query, query);
 
             if (!stmt.getClass().equals(klass))
                 throw new IllegalArgumentException("Invalid query, must be a " + type + " statement but was: " + stmt.getClass());

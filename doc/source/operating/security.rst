@@ -182,8 +182,6 @@ See also: :ref:`setting-credentials-for-internal-authentication`, :ref:`CREATE R
 :ref:`ALTER ROLE <alter-role-statement>`, :ref:`ALTER KEYSPACE <alter-keyspace-statement>` and :ref:`GRANT PERMISSION
 <grant-permission-statement>`,
 
-.. _authorization:
-
 Authorization
 ^^^^^^^^^^^^^
 
@@ -234,8 +232,6 @@ The following assumes that authentication has already been enabled via the proce
 
 See also: :ref:`GRANT PERMISSION <grant-permission-statement>`, `GRANT ALL <grant-all>` and :ref:`REVOKE PERMISSION
 <revoke-permission-statement>`
-
-.. _auth-caching:
 
 Caching
 ^^^^^^^
@@ -382,10 +378,6 @@ jconsole or jmc in read-only mode would be defined as:
     GRANT DESCRIBE ON ALL MBEANS TO jmx;
     GRANT EXECUTE ON MBEAN 'java.lang:type=Threading' TO jmx;
     GRANT EXECUTE ON MBEAN 'com.sun.management:type=HotSpotDiagnostic' TO jmx;
-
-    # Grant the role with necessary permissions to use nodetool commands (including nodetool status) in read-only mode
-    GRANT EXECUTE ON MBEAN 'org.apache.cassandra.db:type=EndpointSnitchInfo' TO jmx;
-    GRANT EXECUTE ON MBEAN 'org.apache.cassandra.db:type=StorageService' TO jmx;
 
     # Grant the jmx role to one with login permissions so that it can access the JMX tooling
     CREATE ROLE ks_user WITH PASSWORD = 'password' AND LOGIN = true AND SUPERUSER = false;

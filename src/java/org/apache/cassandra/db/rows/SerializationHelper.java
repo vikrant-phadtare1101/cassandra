@@ -51,7 +51,6 @@ public class SerializationHelper
     private final ColumnFilter columnsToFetch;
     private ColumnFilter.Tester tester;
 
-    private final boolean hasDroppedColumns;
     private final Map<ByteBuffer, DroppedColumn> droppedColumns;
     private DroppedColumn currentDroppedComplex;
 
@@ -62,7 +61,6 @@ public class SerializationHelper
         this.version = version;
         this.columnsToFetch = columnsToFetch;
         this.droppedColumns = metadata.droppedColumns;
-        this.hasDroppedColumns = droppedColumns.size() > 0;
     }
 
     public SerializationHelper(TableMetadata metadata, int version, Flag flag)
@@ -128,9 +126,6 @@ public class SerializationHelper
 
     public boolean isDropped(Cell cell, boolean isComplex)
     {
-        if (!hasDroppedColumns)
-            return false;
-
         DroppedColumn dropped = isComplex ? currentDroppedComplex : droppedColumns.get(cell.column().name.bytes);
         return dropped != null && cell.timestamp() <= dropped.droppedTime;
     }

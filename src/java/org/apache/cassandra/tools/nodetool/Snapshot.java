@@ -71,7 +71,7 @@ public class Snapshot extends NodeToolCmd
                 else
                 {
                     throw new IOException(
-                            "When specifying the Keyspace table list (using -kt,--kt-list,-kc,--kc.list), you must not also specify keyspaces to snapshot");
+                            "When specifying the Keyspace columfamily list for a snapshot, you should not specify columnfamily");
                 }
                 if (!snapshotName.isEmpty())
                     sb.append(" with snapshot name [").append(snapshotName).append("]");

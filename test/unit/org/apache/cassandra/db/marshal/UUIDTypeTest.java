@@ -30,7 +30,7 @@ import java.util.UUID;
 
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
