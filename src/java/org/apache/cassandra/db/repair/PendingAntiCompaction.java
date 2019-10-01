@@ -25,8 +25,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -37,7 +35,6 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableFutureTask;
 import com.google.common.util.concurrent.MoreExecutors;
-import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +63,6 @@ import static org.apache.cassandra.service.ActiveRepairService.UNREPAIRED_SSTABL
 public class PendingAntiCompaction
 {
     private static final Logger logger = LoggerFactory.getLogger(PendingAntiCompaction.class);
-    private static final int ACQUIRE_SLEEP_MS = Integer.getInteger("cassandra.acquire_sleep_ms", 1000);
-    private static final int ACQUIRE_RETRY_SECONDS = Integer.getInteger("cassandra.acquire_retry_seconds", 60);
 
     static class AcquireResult
     {
@@ -141,8 +136,8 @@ public class PendingAntiCompaction
             {
                 // todo: start tracking the parent repair session id that created the anticompaction to be able to give a better error messsage here:
                 String message = String.format("Prepare phase for incremental repair session %s has failed because it encountered " +
-                                               "intersecting sstables (%s) belonging to another incremental repair session. This is " +
-                                               "caused by starting multiple conflicting incremental repairs at the same time", prsid, ci.getSSTables());
+                                               "intersecting sstables belonging to another incremental repair session. This is " +
+                                               "caused by starting multiple conflicting incremental repairs at the same time", prsid);
                 throw new SSTableAcquisitionException(message);
             }
             return true;
@@ -154,22 +149,12 @@ public class PendingAntiCompaction
         private final ColumnFamilyStore cfs;
         private final UUID sessionID;
         private final AntiCompactionPredicate predicate;
-        private final int acquireRetrySeconds;
-        private final int acquireSleepMillis;
 
-        AcquisitionCallable(ColumnFamilyStore cfs, Collection<Range<Token>> ranges, UUID sessionID, int acquireRetrySeconds, int acquireSleepMillis)
-        {
-            this(cfs, sessionID, acquireRetrySeconds, acquireSleepMillis, new AntiCompactionPredicate(ranges, sessionID));
-        }
-
-        @VisibleForTesting
-        AcquisitionCallable(ColumnFamilyStore cfs, UUID sessionID, int acquireRetrySeconds, int acquireSleepMillis, AntiCompactionPredicate predicate)
+        public AcquisitionCallable(ColumnFamilyStore cfs, Collection<Range<Token>> ranges, UUID sessionID)
         {
             this.cfs = cfs;
             this.sessionID = sessionID;
-            this.predicate = predicate;
-            this.acquireRetrySeconds = acquireRetrySeconds;
-            this.acquireSleepMillis = acquireSleepMillis;
+            predicate = new AntiCompactionPredicate(ranges, sessionID);
         }
 
         @SuppressWarnings("resource")
@@ -186,8 +171,6 @@ public class PendingAntiCompaction
                 LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
                 if (txn != null)
                     return new AcquireResult(cfs, Refs.ref(sstables), txn);
-                else
-                    logger.error("Could not mark compacting for {} (sstables = {}, compacting = {})", sessionID, sstables, cfs.getTracker().getCompacting());
             }
             catch (SSTableAcquisitionException e)
             {
@@ -203,39 +186,17 @@ public class PendingAntiCompaction
             logger.debug("acquiring sstables for pending anti compaction on session {}", sessionID);
             // try to modify after cancelling running compactions. This will attempt to cancel in flight compactions including the given sstables for
             // up to a minute, after which point, null will be returned
-            long start = System.currentTimeMillis();
-            long delay = TimeUnit.SECONDS.toMillis(acquireRetrySeconds);
-            // Note that it is `predicate` throwing SSTableAcquisitionException if it finds a conflicting sstable
-            // and we only retry when runWithCompactionsDisabled throws when uses the predicate, not when acquireTuple is.
-            // This avoids the case when we have an sstable [0, 100] and a user starts a repair on [0, 50] and then [51, 100] before
-            // anticompaction has finished but not when the second repair is [25, 75] for example - then we will fail it without retry.
-            do
+            try
             {
-                try
-                {
-                    // Note that anticompactions are not disabled when running this. This is safe since runWithCompactionsDisabled
-                    // is synchronized - acquireTuple and predicate can only be run by a single thread (for the given cfs).
-                    return cfs.runWithCompactionsDisabled(this::acquireTuple, predicate, false, false, false);
-                }
-                catch (SSTableAcquisitionException e)
-                {
-                    logger.warn("Session {} failed acquiring sstables: {}, retrying every {}ms for another {}s",
-                                sessionID,
-                                e.getMessage(),
-                                acquireSleepMillis,
-                                TimeUnit.SECONDS.convert(delay + start - System.currentTimeMillis(), TimeUnit.MILLISECONDS));
-                    Uninterruptibles.sleepUninterruptibly(acquireSleepMillis, TimeUnit.MILLISECONDS);
-
-                    if (System.currentTimeMillis() - start > delay)
-                        logger.warn("{} Timed out waiting to acquire sstables", sessionID, e);
-
-                }
-                catch (Throwable t)
-                {
-                    logger.error("Got exception disabling compactions for session {}", sessionID, t);
-                    throw t;
-                }
-            } while (System.currentTimeMillis() - start < delay);
+                // Note that anticompactions are not disabled when running this. This is safe since runWithCompactionsDisabled
+                // is synchronized - acquireTuple and predicate can only be run by a single thread (for the given cfs).
+                return cfs.runWithCompactionsDisabled(this::acquireTuple, predicate, false, false);
+            }
+            catch (SSTableAcquisitionException e)
+            {
+                logger.warn(e.getMessage());
+                logger.debug("Got exception trying to acquire sstables", e);
+            }
             return null;
         }
     }
@@ -244,18 +205,16 @@ public class PendingAntiCompaction
     {
         private final UUID parentRepairSession;
         private final RangesAtEndpoint tokenRanges;
-        private final BooleanSupplier isCancelled;
 
-        public AcquisitionCallback(UUID parentRepairSession, RangesAtEndpoint tokenRanges, BooleanSupplier isCancelled)
+        public AcquisitionCallback(UUID parentRepairSession, RangesAtEndpoint tokenRanges)
         {
             this.parentRepairSession = parentRepairSession;
             this.tokenRanges = tokenRanges;
-            this.isCancelled = isCancelled;
         }
 
         ListenableFuture<?> submitPendingAntiCompaction(AcquireResult result)
         {
-            return CompactionManager.instance.submitPendingAntiCompaction(result.cfs, tokenRanges, result.refs, result.txn, parentRepairSession, isCancelled);
+            return CompactionManager.instance.submitPendingAntiCompaction(result.cfs, tokenRanges, result.refs, result.txn, parentRepairSession);
         }
 
         private static boolean shouldAbort(AcquireResult result)
@@ -313,35 +272,16 @@ public class PendingAntiCompaction
     private final Collection<ColumnFamilyStore> tables;
     private final RangesAtEndpoint tokenRanges;
     private final ExecutorService executor;
-    private final int acquireRetrySeconds;
-    private final int acquireSleepMillis;
-    private final BooleanSupplier isCancelled;
 
     public PendingAntiCompaction(UUID prsId,
                                  Collection<ColumnFamilyStore> tables,
                                  RangesAtEndpoint tokenRanges,
-                                 ExecutorService executor,
-                                 BooleanSupplier isCancelled)
-    {
-        this(prsId, tables, tokenRanges, ACQUIRE_RETRY_SECONDS, ACQUIRE_SLEEP_MS, executor, isCancelled);
-    }
-
-    @VisibleForTesting
-    PendingAntiCompaction(UUID prsId,
-                          Collection<ColumnFamilyStore> tables,
-                          RangesAtEndpoint tokenRanges,
-                          int acquireRetrySeconds,
-                          int acquireSleepMillis,
-                          ExecutorService executor,
-                          BooleanSupplier isCancelled)
+                                 ExecutorService executor)
     {
         this.prsId = prsId;
         this.tables = tables;
         this.tokenRanges = tokenRanges;
         this.executor = executor;
-        this.acquireRetrySeconds = acquireRetrySeconds;
-        this.acquireSleepMillis = acquireSleepMillis;
-        this.isCancelled = isCancelled;
     }
 
     public ListenableFuture run()
@@ -350,7 +290,7 @@ public class PendingAntiCompaction
         for (ColumnFamilyStore cfs : tables)
         {
             cfs.forceBlockingFlush();
-            ListenableFutureTask<AcquireResult> task = ListenableFutureTask.create(getAcquisitionCallable(cfs, tokenRanges.ranges(), prsId, acquireRetrySeconds, acquireSleepMillis));
+            ListenableFutureTask<AcquireResult> task = ListenableFutureTask.create(getAcquisitionCallable(cfs, tokenRanges.ranges(), prsId));
             executor.submit(task);
             tasks.add(task);
         }
@@ -360,14 +300,14 @@ public class PendingAntiCompaction
     }
 
     @VisibleForTesting
-    protected AcquisitionCallable getAcquisitionCallable(ColumnFamilyStore cfs, Set<Range<Token>> ranges, UUID prsId, int acquireRetrySeconds, int acquireSleepMillis)
+    protected AcquisitionCallable getAcquisitionCallable(ColumnFamilyStore cfs, Set<Range<Token>> ranges, UUID prsId)
     {
-        return new AcquisitionCallable(cfs, ranges, prsId, acquireRetrySeconds, acquireSleepMillis);
+        return new AcquisitionCallable(cfs, ranges, prsId);
     }
 
     @VisibleForTesting
     protected AcquisitionCallback getAcquisitionCallback(UUID prsId, RangesAtEndpoint tokenRanges)
     {
-        return new AcquisitionCallback(prsId, tokenRanges, isCancelled);
+        return new AcquisitionCallback(prsId, tokenRanges);
     }
 }

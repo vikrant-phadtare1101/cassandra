@@ -35,7 +35,6 @@ import org.apache.cassandra.gms.ApplicationState;
 import org.apache.cassandra.gms.EndpointState;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.gms.VersionedValue;
-import org.apache.cassandra.net.LatencySubscribers;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
@@ -44,7 +43,7 @@ import org.apache.cassandra.utils.MBeanWrapper;
 /**
  * A dynamic snitch that sorts endpoints by latency with an adapted phi failure detector
  */
-public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements LatencySubscribers.Subscriber, DynamicEndpointSnitchMBean
+public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILatencySubscriber, DynamicEndpointSnitchMBean
 {
     private static final boolean USE_SEVERITY = !Boolean.getBoolean("cassandra.ignore_dynamic_snitch_severity");
 
@@ -254,7 +253,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
         throw new UnsupportedOperationException("You shouldn't wrap the DynamicEndpointSnitch (within itself or otherwise)");
     }
 
-    public void receiveTiming(InetAddressAndPort host, long latency, TimeUnit unit) // this is cheap
+    public void receiveTiming(InetAddressAndPort host, long latency) // this is cheap
     {
         ExponentiallyDecayingReservoir sample = samples.get(host);
         if (sample == null)
@@ -264,7 +263,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
             if (sample == null)
                 sample = maybeNewSample;
         }
-        sample.update(unit.toMillis(latency));
+        sample.update(latency);
     }
 
     private void updateScores() // this is expensive
@@ -275,7 +274,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements Lat
         {
             if (MessagingService.instance() != null)
             {
-                MessagingService.instance().latencySubscribers.subscribe(this);
+                MessagingService.instance().register(this);
                 registered = true;
             }
 

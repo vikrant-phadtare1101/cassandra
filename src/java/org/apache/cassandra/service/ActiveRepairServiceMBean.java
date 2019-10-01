@@ -27,10 +27,4 @@ public interface ActiveRepairServiceMBean
 
     public List<Map<String, String>> getSessions(boolean all);
     public void failSession(String session, boolean force);
-
-    public void setRepairSessionSpaceInMegabytes(int sizeInMegabytes);
-    public int getRepairSessionSpaceInMegabytes();
-
-    public boolean getUseOffheapMerkleTrees();
-    public void setUseOffheapMerkleTrees(boolean value);
 }

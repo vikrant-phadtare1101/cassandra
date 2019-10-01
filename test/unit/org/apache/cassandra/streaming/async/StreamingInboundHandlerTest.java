@@ -31,8 +31,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.AsyncStreamingInputPlus;
+import org.apache.cassandra.net.async.RebufferingByteBufDataInputPlus;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.streaming.StreamManager;
@@ -43,16 +42,17 @@ import org.apache.cassandra.streaming.async.StreamingInboundHandler.SessionIdent
 import org.apache.cassandra.streaming.messages.CompleteMessage;
 import org.apache.cassandra.streaming.messages.IncomingStreamMessage;
 import org.apache.cassandra.streaming.messages.StreamInitMessage;
+import org.apache.cassandra.streaming.messages.StreamMessage;
 import org.apache.cassandra.streaming.messages.StreamMessageHeader;
 
 public class StreamingInboundHandlerTest
 {
-    private static final int VERSION = MessagingService.current_version;
+    private static final int VERSION = StreamMessage.CURRENT_VERSION;
     private static final InetAddressAndPort REMOTE_ADDR = InetAddressAndPort.getByAddressOverrideDefaults(InetAddresses.forString("127.0.0.2"), 0);
 
     private StreamingInboundHandler handler;
     private EmbeddedChannel channel;
-    private AsyncStreamingInputPlus buffers;
+    private RebufferingByteBufDataInputPlus buffers;
     private ByteBuf buf;
 
     @BeforeClass
@@ -66,7 +66,7 @@ public class StreamingInboundHandlerTest
     {
         handler = new StreamingInboundHandler(REMOTE_ADDR, VERSION, null);
         channel = new EmbeddedChannel(handler);
-        buffers = new AsyncStreamingInputPlus(channel);
+        buffers = new RebufferingByteBufDataInputPlus(channel);
         handler.setPendingBuffers(buffers);
     }
 
@@ -127,7 +127,7 @@ public class StreamingInboundHandlerTest
 
     private StreamSession createSession(SessionIdentifier sid)
     {
-        return new StreamSession(StreamOperation.BOOTSTRAP, sid.from, (template, messagingVersion) -> null, sid.sessionIndex, UUID.randomUUID(), PreviewKind.ALL);
+        return new StreamSession(StreamOperation.BOOTSTRAP, sid.from, (connectionId, protocolVersion) -> null, sid.sessionIndex, UUID.randomUUID(), PreviewKind.ALL);
     }
 
     @Test (expected = IllegalStateException.class)
