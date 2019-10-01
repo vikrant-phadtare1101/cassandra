@@ -312,7 +312,7 @@ public final class FileUtils
 
     public static void close(Iterable<? extends Closeable> cs) throws IOException
     {
-        Throwable e = null;
+        IOException e = null;
         for (Closeable c : cs)
         {
             try
@@ -320,14 +320,14 @@ public final class FileUtils
                 if (c != null)
                     c.close();
             }
-            catch (Throwable ex)
+            catch (IOException ex)
             {
-                if (e == null) e = ex;
-                else e.addSuppressed(ex);
+                e = ex;
                 logger.warn("Failed closing stream {}", c, ex);
             }
         }
-        maybeFail(e, IOException.class);
+        if (e != null)
+            throw e;
     }
 
     public static void closeQuietly(Iterable<? extends AutoCloseable> cs)
