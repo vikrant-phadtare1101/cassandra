@@ -171,15 +171,6 @@ public class FBUtilities
     }
 
     /**
-     * <b>THIS IS FOR TESTING ONLY!!</b>
-     */
-    public static void setBroadcastInetAddressAndPort(InetAddressAndPort addr)
-    {
-        broadcastInetAddress = addr.address;
-        broadcastInetAddressAndPort = addr;
-    }
-
-    /**
      * This returns the address that is bound to for the native protocol for communicating with clients. This is ambiguous
      * because it doesn't include the port and it's almost always the wrong thing to be using you want getBroadcastNativeAddressAndPort
      */
@@ -263,6 +254,30 @@ public class FBUtilities
     public static int compareUnsigned(byte[] bytes1, byte[] bytes2)
     {
         return compareUnsigned(bytes1, bytes2, 0, 0, bytes1.length, bytes2.length);
+    }
+
+    /**
+     * @return The bitwise XOR of the inputs. The output will be the same length as the
+     * longer input, but if either input is null, the output will be null.
+     */
+    public static byte[] xor(byte[] left, byte[] right)
+    {
+        if (left == null || right == null)
+            return null;
+        if (left.length > right.length)
+        {
+            byte[] swap = left;
+            left = right;
+            right = swap;
+        }
+
+        // left.length is now <= right.length
+        byte[] out = Arrays.copyOf(right, right.length);
+        for (int i = 0; i < left.length; i++)
+        {
+            out[i] = (byte)((left[i] & 0xFF) ^ (right[i] & 0xFF));
+        }
+        return out;
     }
 
     public static void sortSampledKeys(List<DecoratedKey> keys, Range<Token> range)
@@ -368,37 +383,28 @@ public class FBUtilities
 
     public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures)
     {
-        return waitOnFutures(futures, -1, null);
+        return waitOnFutures(futures, -1);
     }
 
     /**
-     * Block for a collection of futures, with optional timeout.
+     * Block for a collection of futures, with an optional timeout for each future.
      *
      * @param futures
-     * @param timeout The number of units to wait in total. If this value is less than or equal to zero,
+     * @param ms The number of milliseconds to wait on each future. If this value is less than or equal to zero,
      *           no tiemout value will be passed to {@link Future#get()}.
-     * @param units The units of timeout.
      */
-    public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures, long timeout, TimeUnit units)
+    public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures, long ms)
     {
-        long endNanos = 0;
-        if (timeout > 0)
-            endNanos = System.nanoTime() + units.toNanos(timeout);
         List<T> results = new ArrayList<>();
         Throwable fail = null;
         for (Future<? extends T> f : futures)
         {
             try
             {
-                if (endNanos == 0)
-                {
+                if (ms <= 0)
                     results.add(f.get());
-                }
                 else
-                {
-                    long waitFor = Math.max(1, endNanos - System.nanoTime());
-                    results.add(f.get(waitFor, TimeUnit.NANOSECONDS));
-                }
+                    results.add(f.get(ms, TimeUnit.MILLISECONDS));
             }
             catch (Throwable t)
             {
@@ -423,6 +429,12 @@ public class FBUtilities
         {
             throw new AssertionError(ie);
         }
+    }
+
+    public static void waitOnFutures(List<AsyncOneResponse> results, long ms) throws TimeoutException
+    {
+        for (AsyncOneResponse result : results)
+            result.get(ms, TimeUnit.MILLISECONDS);
     }
 
     public static <T> Future<? extends T> waitOnFirstFuture(Iterable<? extends Future<? extends T>> futures)
@@ -889,7 +901,7 @@ public class FBUtilities
         return historyDir;
     }
 
-    public static void closeAll(Collection<? extends AutoCloseable> l) throws Exception
+    public static void closeAll(List<? extends AutoCloseable> l) throws Exception
     {
         Exception toThrow = null;
         for (AutoCloseable c : l)
