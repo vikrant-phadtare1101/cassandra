@@ -27,7 +27,6 @@ import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.locator.NetworkTopologyStrategy;
 import org.apache.cassandra.transport.ProtocolException;
 
-import static org.apache.cassandra.locator.Replicas.addToCountPerDc;
 import static org.apache.cassandra.locator.Replicas.countInOurDc;
 
 public enum ConsistencyLevel
@@ -93,24 +92,12 @@ public enum ConsistencyLevel
              : quorumFor(keyspace);
     }
 
-    public static int localQuorumForOurDc(Keyspace keyspace)
-    {
-        return localQuorumFor(keyspace, DatabaseDescriptor.getLocalDataCenter());
-    }
-
-    public static ObjectIntOpenHashMap<String> eachQuorumForRead(Keyspace keyspace)
+    public static ObjectIntOpenHashMap<String> eachQuorumFor(Keyspace keyspace)
     {
         NetworkTopologyStrategy strategy = (NetworkTopologyStrategy) keyspace.getReplicationStrategy();
         ObjectIntOpenHashMap<String> perDc = new ObjectIntOpenHashMap<>(strategy.getDatacenters().size());
         for (String dc : strategy.getDatacenters())
             perDc.put(dc, ConsistencyLevel.localQuorumFor(keyspace, dc));
-        return perDc;
-    }
-
-    public static ObjectIntOpenHashMap<String> eachQuorumForWrite(Keyspace keyspace, Endpoints<?> pendingWithDown)
-    {
-        ObjectIntOpenHashMap<String> perDc = eachQuorumForRead(keyspace);
-        addToCountPerDc(perDc, pendingWithDown, 1);
         return perDc;
     }
 
@@ -134,7 +121,7 @@ public enum ConsistencyLevel
                 return keyspace.getReplicationStrategy().getReplicationFactor().allReplicas;
             case LOCAL_QUORUM:
             case LOCAL_SERIAL:
-                return localQuorumForOurDc(keyspace);
+                return localQuorumFor(keyspace, DatabaseDescriptor.getLocalDataCenter());
             case EACH_QUORUM:
                 if (keyspace.getReplicationStrategy() instanceof NetworkTopologyStrategy)
                 {
@@ -177,7 +164,6 @@ public enum ConsistencyLevel
 
     /**
      * Determine if this consistency level meets or exceeds the consistency requirements of the given cl for the given keyspace
-     * WARNING: this is not locality aware; you cannot safely use this with mixed locality consistency levels (e.g. LOCAL_QUORUM and QUORUM)
      */
     public boolean satisfies(ConsistencyLevel other, Keyspace keyspace)
     {

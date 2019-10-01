@@ -18,6 +18,7 @@
 package org.apache.cassandra.hints;
 
 import java.io.File;
+import java.lang.management.ManagementFactory;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Collections;
@@ -27,6 +28,9 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
@@ -47,7 +51,6 @@ import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.utils.MBeanWrapper;
 
 import static com.google.common.collect.Iterables.transform;
 
@@ -135,7 +138,15 @@ public final class HintsService implements HintsServiceMBean
 
     public void registerMBean()
     {
-        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
+        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+        try
+        {
+            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
@@ -256,7 +267,6 @@ public final class HintsService implements HintsServiceMBean
         writeExecutor.shutdownBlocking();
 
         HintsServiceDiagnostics.dispatchingShutdown(this);
-        bufferPool.close();
     }
 
     /**

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.service.reads;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -35,15 +36,14 @@ import org.apache.cassandra.exceptions.ReadTimeoutException;
 import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.RequestCallback;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.Verb;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
-public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>> implements RequestCallback<ReadResponse>
+public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>> implements IAsyncCallbackWithFailure<ReadResponse>
 {
     protected static final Logger logger = LoggerFactory.getLogger( ReadCallback.class );
 
@@ -98,7 +98,7 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
 
     public void awaitResults() throws ReadFailureException, ReadTimeoutException
     {
-        boolean signaled = await(command.getTimeout(MILLISECONDS), TimeUnit.MILLISECONDS);
+        boolean signaled = await(command.getTimeout(), TimeUnit.MILLISECONDS);
         boolean failed = failures > 0 && blockFor + failures > replicaPlan().contacts().size();
         if (signaled && !failed)
             return;
@@ -125,10 +125,10 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
         return blockFor;
     }
 
-    public void onResponse(Message<ReadResponse> message)
+    public void response(MessageIn<ReadResponse> message)
     {
         resolver.preprocess(message);
-        int n = waitingFor(message.from())
+        int n = waitingFor(message.from)
               ? recievedUpdater.incrementAndGet(this)
               : received;
 
@@ -146,14 +146,15 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
 
     public void response(ReadResponse result)
     {
-        Verb kind = command.isRangeRequest() ? Verb.RANGE_RSP : Verb.READ_RSP;
-        Message<ReadResponse> message = Message.internalResponse(kind, result);
-        onResponse(message);
+        MessageIn<ReadResponse> message = MessageIn.create(FBUtilities.getBroadcastAddressAndPort(),
+                                                           result,
+                                                           Collections.emptyMap(),
+                                                           MessagingService.Verb.INTERNAL_RESPONSE,
+                                                           MessagingService.current_version);
+        response(message);
     }
 
-
-    @Override
-    public boolean trackLatencyForSnitch()
+    public boolean isLatencyForSnitch()
     {
         return true;
     }
@@ -169,11 +170,5 @@ public class ReadCallback<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<
 
         if (blockFor + n > replicaPlan().contacts().size())
             condition.signalAll();
-    }
-
-    @Override
-    public boolean invokeOnFailure()
-    {
-        return true;
     }
 }
