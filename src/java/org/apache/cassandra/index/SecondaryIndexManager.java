@@ -48,7 +48,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.concurrent.StageManager;
+import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.statements.schema.IndexTarget;
 import org.apache.cassandra.db.*;
@@ -153,7 +153,7 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
     // executes tasks returned by Indexer#addIndexColumn which may require index(es) to be (re)built
     private static final ListeningExecutorService asyncExecutor = MoreExecutors.listeningDecorator(
     new JMXEnabledThreadPoolExecutor(1,
-                                     StageManager.KEEPALIVE,
+                                     Stage.KEEPALIVE,
                                      TimeUnit.SECONDS,
                                      new LinkedBlockingQueue<>(),
                                      new NamedThreadFactory("SecondaryIndexManagement"),
@@ -927,7 +927,7 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
         if (meanPartitionSize <= 0)
             return DEFAULT_PAGE_SIZE;
 
-        int meanCellsPerPartition = baseCfs.getMeanEstimatedCellPerPartitionCount();
+        int meanCellsPerPartition = baseCfs.getMeanColumns();
         if (meanCellsPerPartition <= 0)
             return DEFAULT_PAGE_SIZE;
 
