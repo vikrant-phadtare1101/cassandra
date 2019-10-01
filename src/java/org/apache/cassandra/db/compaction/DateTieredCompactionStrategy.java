@@ -105,14 +105,10 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
      */
     private synchronized List<SSTableReader> getNextBackgroundSSTables(final int gcBefore)
     {
-        Set<SSTableReader> uncompacting;
-        synchronized (sstables)
-        {
-            if (sstables.isEmpty())
-                return Collections.emptyList();
+        if (sstables.isEmpty())
+            return Collections.emptyList();
 
-            uncompacting = ImmutableSet.copyOf(filter(cfs.getUncompactingSSTables(), sstables::contains));
-        }
+        Set<SSTableReader> uncompacting = ImmutableSet.copyOf(filter(cfs.getUncompactingSSTables(), sstables::contains));
 
         Set<SSTableReader> expired = Collections.emptySet();
         // we only check for expired sstables every 10 minutes (by default) due to it being an expensive operation
@@ -215,6 +211,11 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
         });
     }
 
+    /**
+     *
+     * @param sstables
+     * @return
+     */
     public static List<Pair<SSTableReader, Long>> createSSTableAndMinTimestampPairs(Iterable<SSTableReader> sstables)
     {
         List<Pair<SSTableReader, Long>> sstableMinTimestampPairs = Lists.newArrayListWithCapacity(Iterables.size(sstables));
@@ -222,15 +223,14 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
             sstableMinTimestampPairs.add(Pair.create(sstable, sstable.getMinTimestamp()));
         return sstableMinTimestampPairs;
     }
-
     @Override
-    public synchronized void addSSTable(SSTableReader sstable)
+    public void addSSTable(SSTableReader sstable)
     {
         sstables.add(sstable);
     }
 
     @Override
-    public synchronized void removeSSTable(SSTableReader sstable)
+    public void removeSSTable(SSTableReader sstable)
     {
         sstables.remove(sstable);
     }

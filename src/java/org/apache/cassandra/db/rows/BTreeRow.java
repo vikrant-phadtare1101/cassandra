@@ -194,12 +194,7 @@ public class BTreeRow extends AbstractRow
 
     public Collection<ColumnMetadata> columns()
     {
-        return Collections2.transform(columnData(), ColumnData::column);
-    }
-
-    public int columnCount()
-    {
-        return BTree.size(btree);
+        return Collections2.transform(this, ColumnData::column);
     }
 
     public LivenessInfo primaryKeyLivenessInfo()
@@ -240,14 +235,9 @@ public class BTreeRow extends AbstractRow
         return (ComplexColumnData) BTree.<Object>find(btree, ColumnMetadata.asymmetricColumnDataComparator, c);
     }
 
-    @Override
-    public Collection<ColumnData> columnData()
+    public int size()
     {
-        return new AbstractCollection<ColumnData>()
-        {
-            @Override public Iterator<ColumnData> iterator() { return BTreeRow.this.iterator(); }
-            @Override public int size() { return BTree.size(btree); }
-        };
+        return BTree.size(btree);
     }
 
     public Iterator<ColumnData> iterator()

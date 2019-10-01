@@ -23,16 +23,12 @@ import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
-import org.apache.cassandra.utils.ExecutorUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import com.google.common.annotations.VisibleForTesting;
 
 public class PendingRangeCalculatorService
 {
@@ -120,11 +116,5 @@ public class PendingRangeCalculatorService
     public static void calculatePendingRanges(AbstractReplicationStrategy strategy, String keyspaceName)
     {
         StorageService.instance.getTokenMetadata().calculatePendingRanges(strategy, keyspaceName);
-    }
-
-    @VisibleForTesting
-    public void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, executor);
     }
 }

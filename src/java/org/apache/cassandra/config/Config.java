@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Sets;
@@ -86,10 +85,6 @@ public class Config
     public int num_tokens = 1;
     /** Triggers automatic allocation of tokens if set, using the replication strategy of the referenced keyspace */
     public String allocate_tokens_for_keyspace = null;
-    /** Triggers automatic allocation of tokens if set, based on the provided replica count for a datacenter */
-    public Integer allocate_tokens_for_local_replication_factor = null;
-
-    public long native_transport_idle_timeout_in_ms = 0L;
 
     public volatile long request_timeout_in_ms = 10000L;
 
@@ -127,13 +122,6 @@ public class Config
     public Integer memtable_offheap_space_in_mb;
     public Float memtable_cleanup_threshold = null;
 
-    // Limit the maximum depth of repair session merkle trees
-    @Deprecated
-    public volatile Integer repair_session_max_tree_depth = null;
-    public volatile Integer repair_session_space_in_mb = null;
-
-    public volatile boolean use_offheap_merkle_trees = true;
-
     public int storage_port = 7000;
     public int ssl_storage_port = 7001;
     public String listen_address;
@@ -155,29 +143,8 @@ public class Config
     public boolean rpc_interface_prefer_ipv6 = false;
     public String broadcast_rpc_address;
     public boolean rpc_keepalive = true;
-
-    public Integer internode_max_message_size_in_bytes;
-
-    public int internode_socket_send_buffer_size_in_bytes = 0;
-    public int internode_socket_receive_buffer_size_in_bytes = 0;
-
-    // TODO: derive defaults from system memory settings?
-    public int internode_application_send_queue_capacity_in_bytes = 1 << 22; // 4MiB
-    public int internode_application_send_queue_reserve_endpoint_capacity_in_bytes = 1 << 27; // 128MiB
-    public int internode_application_send_queue_reserve_global_capacity_in_bytes = 1 << 29; // 512MiB
-
-    public int internode_application_receive_queue_capacity_in_bytes = 1 << 22; // 4MiB
-    public int internode_application_receive_queue_reserve_endpoint_capacity_in_bytes = 1 << 27; // 128MiB
-    public int internode_application_receive_queue_reserve_global_capacity_in_bytes = 1 << 29; // 512MiB
-
-    // Defensive settings for protecting Cassandra from true network partitions. See (CASSANDRA-14358) for details.
-    // The amount of time to wait for internode tcp connections to establish.
-    public int internode_tcp_connect_timeout_in_ms = 2000;
-    // The amount of time unacknowledged data is allowed on a connection before we throw out the connection
-    // Note this is only supported on Linux + epoll, and it appears to behave oddly above a setting of 30000
-    // (it takes much longer than 30s) as of Linux 4.12. If you want something that high set this to 0
-    // (which picks up the OS default) and configure the net.ipv4.tcp_retries2 sysctl to be ~8.
-    public int internode_tcp_user_timeout_in_ms = 30000;
+    public int internode_send_buff_size_in_bytes = 0;
+    public int internode_recv_buff_size_in_bytes = 0;
 
     public boolean start_native_transport = true;
     public int native_transport_port = 9042;
@@ -189,9 +156,6 @@ public class Config
     public boolean native_transport_flush_in_batches_legacy = false;
     public volatile boolean native_transport_allow_older_protocols = true;
     public int native_transport_frame_block_size_in_kb = 32;
-    public volatile long native_transport_max_concurrent_requests_in_bytes_per_ip = -1L;
-    public volatile long native_transport_max_concurrent_requests_in_bytes = -1L;
-
 
     /**
      * Max size of values in SSTables, in MegaBytes.
@@ -275,14 +239,12 @@ public class Config
     public int hints_flush_period_in_ms = 10000;
     public int max_hints_file_size_in_mb = 128;
     public ParameterizedClass hints_compression;
+    public int sstable_preemptive_open_interval_in_mb = 50;
 
     public volatile boolean incremental_backups = false;
     public boolean trickle_fsync = false;
     public int trickle_fsync_interval_in_kb = 10240;
 
-    public volatile int sstable_preemptive_open_interval_in_mb = 50;
-
-    public volatile boolean key_cache_migrate_during_compaction = true;
     public Long key_cache_size_in_mb = null;
     public volatile int key_cache_save_period = 14400;
     public volatile int key_cache_keys_to_save = Integer.MAX_VALUE;
@@ -297,7 +259,6 @@ public class Config
     public volatile int counter_cache_keys_to_save = Integer.MAX_VALUE;
 
     private static boolean isClientMode = false;
-    private static Supplier<Config> overrideLoadConfig = null;
 
     public Integer file_cache_size_in_mb;
 
@@ -344,7 +305,7 @@ public class Config
     public volatile ConsistencyLevel ideal_consistency_level = null;
 
     /*
-     * Strategy to use for coalescing messages in {@link OutboundConnections}.
+     * Strategy to use for coalescing messages in {@link OutboundMessagingPool}.
      * Can be fixed, movingaverage, timehorizon, disabled. Setting is case and leading/trailing
      * whitespace insensitive. You can also specify a subclass of
      * {@link org.apache.cassandra.utils.CoalescingStrategies.CoalescingStrategy} by name.
@@ -361,6 +322,12 @@ public class Config
     public int otc_coalescing_window_us = otc_coalescing_window_us_default;
     public int otc_coalescing_enough_coalesced_messages = 8;
 
+    /**
+     * Backlog expiration interval in milliseconds for the OutboundTcpConnection.
+     */
+    public static final int otc_backlog_expiration_interval_ms_default = 200;
+    public volatile int otc_backlog_expiration_interval_ms = otc_backlog_expiration_interval_ms_default;
+
     public int windows_timer_interval = 0;
 
     /**
@@ -372,11 +339,9 @@ public class Config
     public boolean enable_user_defined_functions = false;
     public boolean enable_scripted_user_defined_functions = false;
 
-    public boolean enable_materialized_views = false;
+    public boolean enable_materialized_views = true;
 
     public boolean enable_transient_replication = false;
-
-    public boolean enable_sasi_indexes = false;
 
     /**
      * Optionally disable asynchronous UDF execution.
@@ -415,28 +380,9 @@ public class Config
     public RepairCommandPoolFullStrategy repair_command_pool_full_strategy = RepairCommandPoolFullStrategy.queue;
     public int repair_command_pool_size = concurrent_validations;
 
-    /**
-     * When a node first starts up it intially considers all other peers as DOWN and is disconnected from all of them.
-     * To be useful as a coordinator (and not introduce latency penalties on restart) this node must have successfully
-     * opened all three internode TCP connections (gossip, small, and large messages) before advertising to clients.
-     * Due to this, by default, Casssandra will prime these internode TCP connections and wait for all but a single
-     * node to be DOWN/disconnected in the local datacenter before offering itself as a coordinator, subject to a
-     * timeout. See CASSANDRA-13993 and CASSANDRA-14297 for more details.
-     *
-     * We provide two tunables to control this behavior as some users may want to block until all datacenters are
-     * available (global QUORUM/EACH_QUORUM), some users may not want to block at all (clients that already work
-     * around the problem), and some users may want to prime the connections but not delay startup.
-     *
-     * block_for_peers_timeout_in_secs: controls how long this node will wait to connect to peers. To completely disable
-     * any startup connectivity checks set this to -1. To trigger the internode connections but immediately continue
-     * startup, set this to to 0. The default is 10 seconds.
-     *
-     * block_for_peers_in_remote_dcs: controls if this node will consider remote datacenters to wait for. The default
-     * is to _not_ wait on remote datacenters.
-     */
+    // parameters to adjust how much to delay startup until a certain amount of the cluster is connect to and marked alive
+    public int block_for_peers_percentage = 70;
     public int block_for_peers_timeout_in_secs = 10;
-    public boolean block_for_peers_in_remote_dcs = false;
-
     public volatile boolean automatic_sstable_upgrade = false;
     public volatile int max_concurrent_automatic_sstable_upgrades = 1;
     public boolean stream_entire_sstables = true;
@@ -487,16 +433,6 @@ public class Config
     public static void setClientMode(boolean clientMode)
     {
         isClientMode = clientMode;
-    }
-
-    public static Supplier<Config> getOverrideLoadConfig()
-    {
-        return overrideLoadConfig;
-    }
-
-    public static void setOverrideLoadConfig(Supplier<Config> loadConfig)
-    {
-        overrideLoadConfig = loadConfig;
     }
 
     public enum CommitLogSync
