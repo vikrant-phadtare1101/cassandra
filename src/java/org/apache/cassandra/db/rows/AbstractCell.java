@@ -154,13 +154,6 @@ public abstract class AbstractCell extends Cell
         column().validateCell(this);
     }
 
-    public boolean hasInvalidDeletions()
-    {
-        if (ttl() < 0 || localDeletionTime() < 0 || (isExpiring() && localDeletionTime() == NO_DELETION_TIME))
-            return true;
-        return false;
-    }
-
     public long maxTimestamp()
     {
         return timestamp();

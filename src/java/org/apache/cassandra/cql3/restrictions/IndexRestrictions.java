@@ -21,11 +21,9 @@ package org.apache.cassandra.cql3.restrictions;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.cassandra.cql3.QualifiedName;
 import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.cql3.IndexName;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
 
 public class IndexRestrictions
 {
@@ -63,29 +61,23 @@ public class IndexRestrictions
         return customExpressions;
     }
 
-    static InvalidRequestException invalidIndex(QualifiedName indexName, TableMetadata table)
+    static InvalidRequestException invalidIndex(IndexName indexName, TableMetadata table)
     {
-        return new InvalidRequestException(String.format(INVALID_INDEX, indexName.getName(), table));
+        return new InvalidRequestException(String.format(INVALID_INDEX, indexName.getIdx(), table.toString()));
     }
 
-    static InvalidRequestException indexNotFound(QualifiedName indexName, TableMetadata table)
+    static InvalidRequestException indexNotFound(IndexName indexName, TableMetadata table)
     {
-        return new InvalidRequestException(String.format(INDEX_NOT_FOUND, indexName.getName(), table));
+        return new InvalidRequestException(String.format(INDEX_NOT_FOUND, indexName.getIdx(), table.toString()));
     }
 
-    static InvalidRequestException nonCustomIndexInExpression(QualifiedName indexName)
+    static InvalidRequestException nonCustomIndexInExpression(IndexName indexName)
     {
-        return new InvalidRequestException(String.format(NON_CUSTOM_INDEX_IN_EXPRESSION, indexName.getName()));
+        return new InvalidRequestException(String.format(NON_CUSTOM_INDEX_IN_EXPRESSION, indexName.getIdx()));
     }
 
-    static InvalidRequestException customExpressionNotSupported(QualifiedName indexName)
+    static InvalidRequestException customExpressionNotSupported(IndexName indexName)
     {
-        return new InvalidRequestException(String.format(CUSTOM_EXPRESSION_NOT_SUPPORTED, indexName.getName()));
-    }
-    
-    @Override
-    public String toString()
-    {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
+        return new InvalidRequestException(String.format(CUSTOM_EXPRESSION_NOT_SUPPORTED, indexName.getIdx()));
     }
 }

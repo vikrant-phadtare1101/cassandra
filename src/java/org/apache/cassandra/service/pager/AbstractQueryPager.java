@@ -26,9 +26,9 @@ import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.transport.ProtocolVersion;
 
-abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
+abstract class AbstractQueryPager implements QueryPager
 {
-    protected final T query;
+    protected final ReadCommand command;
     protected final DataLimits limits;
     protected final ProtocolVersion protocolVersion;
     private final boolean enforceStrictLiveness;
@@ -43,12 +43,12 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
 
     private boolean exhausted;
 
-    protected AbstractQueryPager(T query, ProtocolVersion protocolVersion)
+    protected AbstractQueryPager(ReadCommand command, ProtocolVersion protocolVersion)
     {
-        this.query = query;
+        this.command = command;
         this.protocolVersion = protocolVersion;
-        this.limits = query.limits();
-        this.enforceStrictLiveness = query.metadata().enforceStrictLiveness();
+        this.limits = command.limits();
+        this.enforceStrictLiveness = command.metadata().enforceStrictLiveness();
 
         this.remaining = limits.count();
         this.remainingInPartition = limits.perPartitionCount();
@@ -56,7 +56,7 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
 
     public ReadExecutionController executionController()
     {
-        return query.executionController();
+        return command.executionController();
     }
 
     public PartitionIterator fetchPage(int pageSize, ConsistencyLevel consistency, ClientState clientState, long queryStartNanoTime)
@@ -65,8 +65,8 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
             return EmptyIterators.partition();
 
         pageSize = Math.min(pageSize, remaining);
-        Pager pager = new RowPager(limits.forPaging(pageSize), query.nowInSec());
-        return Transformation.apply(nextPageReadQuery(pageSize).execute(consistency, clientState, queryStartNanoTime), pager);
+        Pager pager = new RowPager(limits.forPaging(pageSize), command.nowInSec());
+        return Transformation.apply(nextPageReadCommand(pageSize).execute(consistency, clientState, queryStartNanoTime), pager);
     }
 
     public PartitionIterator fetchPageInternal(int pageSize, ReadExecutionController executionController)
@@ -75,8 +75,8 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
             return EmptyIterators.partition();
 
         pageSize = Math.min(pageSize, remaining);
-        RowPager pager = new RowPager(limits.forPaging(pageSize), query.nowInSec());
-        return Transformation.apply(nextPageReadQuery(pageSize).executeInternal(executionController), pager);
+        RowPager pager = new RowPager(limits.forPaging(pageSize), command.nowInSec());
+        return Transformation.apply(nextPageReadCommand(pageSize).executeInternal(executionController), pager);
     }
 
     public UnfilteredPartitionIterator fetchPageUnfiltered(TableMetadata metadata, int pageSize, ReadExecutionController executionController)
@@ -85,9 +85,9 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
             return EmptyIterators.unfilteredPartition(metadata);
 
         pageSize = Math.min(pageSize, remaining);
-        UnfilteredPager pager = new UnfilteredPager(limits.forPaging(pageSize), query.nowInSec());
+        UnfilteredPager pager = new UnfilteredPager(limits.forPaging(pageSize), command.nowInSec());
 
-        return Transformation.apply(nextPageReadQuery(pageSize).executeLocally(executionController), pager);
+        return Transformation.apply(nextPageReadCommand(pageSize).executeLocally(executionController), pager);
     }
 
     private class UnfilteredPager extends Pager<Unfiltered>
@@ -128,7 +128,7 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
 
         private Pager(DataLimits pageLimits, int nowInSec)
         {
-            this.counter = pageLimits.newCounter(nowInSec, true, query.selectsFullPartition(), enforceStrictLiveness);
+            this.counter = pageLimits.newCounter(nowInSec, true, command.selectsFullPartition(), enforceStrictLiveness);
             this.pageLimits = pageLimits;
         }
 
@@ -228,7 +228,7 @@ abstract class AbstractQueryPager<T extends ReadQuery> implements QueryPager
         return remainingInPartition;
     }
 
-    protected abstract T nextPageReadQuery(int pageSize);
+    protected abstract ReadCommand nextPageReadCommand(int pageSize);
     protected abstract void recordLast(DecoratedKey key, Row row);
     protected abstract boolean isPreviouslyReturnedPartition(DecoratedKey key);
 }
