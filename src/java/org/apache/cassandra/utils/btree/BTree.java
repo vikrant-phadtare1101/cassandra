@@ -19,11 +19,8 @@
 package org.apache.cassandra.utils.btree;
 
 import java.util.*;
-import java.util.function.Consumer;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
-import com.google.common.base.Predicate;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Ordering;
 
@@ -34,7 +31,6 @@ import static com.google.common.collect.Iterables.filter;
 import static com.google.common.collect.Iterables.transform;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
-import static java.util.Comparator.naturalOrder;
 
 public class BTree
 {
@@ -58,44 +54,18 @@ public class BTree
 
     // The maximum fan factor used for B-Trees
     static final int FAN_SHIFT;
-
-    // The maximun tree size for certain heigth of tree
-    static final int[] TREE_SIZE;
-
-    // NB we encode Path indexes as Bytes, so this needs to be less than Byte.MAX_VALUE / 2
-    static final int FAN_FACTOR;
-
-    static final int MAX_TREE_SIZE = Integer.MAX_VALUE;
-
     static
     {
-        int fanfactor = Integer.parseInt(System.getProperty("cassandra.btree.fanfactor", "32"));
-        assert fanfactor >= 2 : "the minimal btree fanfactor is 2";
+        int fanfactor = 32;
+        if (System.getProperty("cassandra.btree.fanfactor") != null)
+            fanfactor = Integer.parseInt(System.getProperty("cassandra.btree.fanfactor"));
         int shift = 1;
         while (1 << shift < fanfactor)
             shift += 1;
-
         FAN_SHIFT = shift;
-        FAN_FACTOR = 1 << FAN_SHIFT;
-
-        // For current FAN_FACTOR, calculate the maximum height of the tree we could build
-        int maxHeight = 0;
-        for (long maxSize = 0; maxSize < MAX_TREE_SIZE; maxHeight++)
-            // each tree node could have (FAN_FACTOR + 1) children,
-            // plus current node could have FAN_FACTOR number of values
-            maxSize = maxSize * (FAN_FACTOR + 1) + FAN_FACTOR;
-
-        TREE_SIZE = new int[maxHeight];
-
-        TREE_SIZE[0] = FAN_FACTOR;
-        for (int i = 1; i < maxHeight - 1; i++)
-            TREE_SIZE[i] = TREE_SIZE[i - 1] * (FAN_FACTOR + 1) + FAN_FACTOR;
-
-        TREE_SIZE[maxHeight - 1] = MAX_TREE_SIZE;
     }
-
-
-    static final int MINIMAL_NODE_SIZE = FAN_FACTOR >> 1;
+    // NB we encode Path indexes as Bytes, so this needs to be less than Byte.MAX_VALUE / 2
+    static final int FAN_FACTOR = 1 << FAN_SHIFT;
 
     // An empty BTree Leaf - which is the same as an empty BTree
     static final Object[] EMPTY_LEAF = new Object[1];
@@ -127,6 +97,11 @@ public class BTree
         return buildInternal(source, source.size(), updateF);
     }
 
+    public static <C, K extends C, V extends C> Object[] build(Iterable<K> source, UpdateFunction<K, V> updateF)
+    {
+        return buildInternal(source, -1, updateF);
+    }
+
     /**
      * Creates a BTree containing all of the objects in the provided collection
      *
@@ -141,73 +116,34 @@ public class BTree
         return buildInternal(source, size, updateF);
     }
 
-    private static <C, K extends C, V extends C> Object[] buildLeaf(Iterator<K> it, int size, UpdateFunction<K, V> updateF)
-    {
-        V[] values = (V[]) new Object[size | 1];
-
-        for (int i = 0; i < size; i++)
-        {
-            K k = it.next();
-            values[i] = updateF.apply(k);
-        }
-        if (updateF != UpdateFunction.noOp())
-            updateF.allocated(ObjectSizes.sizeOfArray(values));
-        return values;
-    }
-
-    private static <C, K extends C, V extends C> Object[] buildInternal(Iterator<K> it, int size, int level, UpdateFunction<K, V> updateF)
-    {
-        assert size > 0;
-        assert level >= 0;
-        if (level == 0)
-            return buildLeaf(it, size, updateF);
-
-        // calcuate child num: (size - (childNum - 1)) / maxChildSize <= childNum
-        int childNum = size / (TREE_SIZE[level - 1] + 1) + 1;
-
-        V[] values = (V[]) new Object[childNum * 2];
-        if (updateF != UpdateFunction.noOp())
-            updateF.allocated(ObjectSizes.sizeOfArray(values));
-
-        int[] indexOffsets = new int[childNum];
-        int childPos = childNum - 1;
-
-        int index = 0;
-        for (int i = 0; i < childNum - 1; i++)
-        {
-            // Calculate the next childSize by splitting the remaining values to the remaining child nodes.
-            // The performance could be improved by pre-compute the childSize (see #9989 comments).
-            int childSize = (size - index) / (childNum - i);
-            // Build the tree with inorder traversal
-            values[childPos + i] = (V) buildInternal(it, childSize, level - 1, updateF);
-            index += childSize;
-            indexOffsets[i] = index;
-
-            K k = it.next();
-            values[i] = updateF.apply(k);
-            index++;
-        }
-
-        values[childPos + childNum - 1] = (V) buildInternal(it, size - index, level - 1, updateF);
-        indexOffsets[childNum - 1] = size;
-
-        values[childPos + childNum] = (V) indexOffsets;
-
-        return values;
-    }
-
+    /**
+     * As build(), except:
+     * @param size    < 0 if size is unknown
+     */
     private static <C, K extends C, V extends C> Object[] buildInternal(Iterable<K> source, int size, UpdateFunction<K, V> updateF)
     {
-        assert size >= 0;
-        if (size == 0)
-            return EMPTY_LEAF;
+        if ((size >= 0) & (size < FAN_FACTOR))
+        {
+            if (size == 0)
+                return EMPTY_LEAF;
+            // pad to odd length to match contract that all leaf nodes are odd
+            V[] values = (V[]) new Object[size | 1];
+            {
+                int i = 0;
+                for (K k : source)
+                    values[i++] = updateF.apply(k);
+            }
+            updateF.allocated(ObjectSizes.sizeOfArray(values));
+            return values;
+        }
 
-        // find out the height of the tree
-        int level = 0;
-        while (size > TREE_SIZE[level])
-            level++;
-        Iterator<K> it = source.iterator();
-        return buildInternal(it, size, level, updateF);
+        Queue<TreeBuilder> queue = modifier.get();
+        TreeBuilder builder = queue.poll();
+        if (builder == null)
+            builder = new TreeBuilder();
+        Object[] btree = builder.build(source, updateF, size);
+        queue.add(builder);
+        return btree;
     }
 
     public static <C, K extends C, V extends C> Object[] update(Object[] btree,
@@ -238,9 +174,12 @@ public class BTree
         if (isEmpty(btree))
             return build(updateWith, updateWithLength, updateF);
 
-
-        TreeBuilder builder = TreeBuilder.newInstance();
+        Queue<TreeBuilder> queue = modifier.get();
+        TreeBuilder builder = queue.poll();
+        if (builder == null)
+            builder = new TreeBuilder();
         btree = builder.update(btree, comparator, updateWith, updateF);
+        queue.add(builder);
         return btree;
     }
 
@@ -252,7 +191,7 @@ public class BTree
             tree1 = tree2;
             tree2 = tmp;
         }
-        return update(tree1, comparator, new BTreeSet<>(tree2, comparator), updateF);
+        return update(tree1, comparator, new BTreeSet<K>(tree2, comparator), updateF);
     }
 
     public static <V> Iterator<V> iterator(Object[] btree)
@@ -262,14 +201,12 @@ public class BTree
 
     public static <V> Iterator<V> iterator(Object[] btree, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, null, dir)
-                             : new FullBTreeSearchIterator<>(btree, null, dir);
+        return new BTreeSearchIterator<V, V>(btree, null, dir);
     }
 
     public static <V> Iterator<V> iterator(Object[] btree, int lb, int ub, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, null, dir, lb, ub)
-                             : new FullBTreeSearchIterator<>(btree, null, dir, lb, ub);
+        return new BTreeSearchIterator<V, V>(btree, null, dir, lb, ub);
     }
 
     public static <V> Iterable<V> iterable(Object[] btree)
@@ -297,8 +234,7 @@ public class BTree
      */
     public static <K, V> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir);
+        return new BTreeSearchIterator<>(btree, comparator, dir);
     }
 
     /**
@@ -312,20 +248,6 @@ public class BTree
     public static <K, V extends K> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, K start, K end, Dir dir)
     {
         return slice(btree, comparator, start, true, end, false, dir);
-    }
-
-    /**
-     * @param btree      the tree to iterate over
-     * @param comparator the comparator that defines the ordering over the items in the tree
-     * @param startIndex      the start index of the range to return, inclusive
-     * @param endIndex        the end index of the range to return, inclusive
-     * @param dir   if false, the iterator will start at the last item and move backwards
-     * @return           an Iterator over the defined sub-range of the tree
-     */
-    public static <K, V extends K> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, int startIndex, int endIndex, Dir dir)
-    {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir, startIndex, endIndex)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir, startIndex, endIndex);
     }
 
     /**
@@ -348,8 +270,7 @@ public class BTree
                                       end == null ? Integer.MAX_VALUE
                                                   : endInclusive ? floorIndex(btree, comparator, end)
                                                                  : lowerIndex(btree, comparator, end));
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound);
+        return new BTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound);
     }
 
     /**
@@ -371,40 +292,6 @@ public class BTree
             i = -1 - i;
             node = (Object[]) node[keyEnd + i];
         }
-    }
-
-    /**
-     * Modifies the provided btree directly. THIS SHOULD NOT BE USED WITHOUT EXTREME CARE as BTrees are meant to be immutable.
-     * Finds and replaces the item provided by index in the tree.
-     */
-    public static <V> void replaceInSitu(Object[] tree, int index, V replace)
-    {
-        // WARNING: if semantics change, see also InternalCursor.seekTo, which mirrors this implementation
-        if ((index < 0) | (index >= size(tree)))
-            throw new IndexOutOfBoundsException(index + " not in range [0.." + size(tree) + ")");
-
-        while (!isLeaf(tree))
-        {
-            final int[] sizeMap = getSizeMap(tree);
-            int boundary = Arrays.binarySearch(sizeMap, index);
-            if (boundary >= 0)
-            {
-                // exact match, in this branch node
-                assert boundary < sizeMap.length - 1;
-                tree[boundary] = replace;
-                return;
-            }
-
-            boundary = -1 -boundary;
-            if (boundary > 0)
-            {
-                assert boundary < sizeMap.length;
-                index -= (1 + sizeMap[boundary - 1]);
-            }
-            tree = (Object[]) tree[getChildStart(tree) + boundary];
-        }
-        assert index < getLeafKeyEnd(tree);
-        tree[index] = replace;
     }
 
     /**
@@ -753,11 +640,7 @@ public class BTree
         remainder = filter(transform(remainder, function), (x) -> x != null);
         Iterable<V> build = concat(head, remainder);
 
-        Builder<V> builder = builder((Comparator<? super V>) naturalOrder());
-        builder.auto(false);
-        for (V v : build)
-            builder.add(v);
-        return builder.build();
+        return buildInternal(build, -1, UpdateFunction.<V>noOp());
     }
 
     private static <V> Object[] transformAndFilter(Object[] btree, FiltrationTracker<V> function)
@@ -852,6 +735,15 @@ public class BTree
         return 1 + lookupSizeMap(root, childIndex - 1);
     }
 
+    private static final ThreadLocal<Queue<TreeBuilder>> modifier = new ThreadLocal<Queue<TreeBuilder>>()
+    {
+        @Override
+        protected Queue<TreeBuilder> initialValue()
+        {
+            return new ArrayDeque<>();
+        }
+    };
+
     public static <V> Builder<V> builder(Comparator<? super V> comparator)
     {
         return new Builder<>(comparator);
@@ -859,11 +751,12 @@ public class BTree
 
     public static <V> Builder<V> builder(Comparator<? super V> comparator, int initialCapacity)
     {
-        return new Builder<>(comparator, initialCapacity);
+        return new Builder<>(comparator);
     }
 
     public static class Builder<V>
     {
+
         // a user-defined bulk resolution, to be applied manually via resolve()
         public static interface Resolver
         {
@@ -896,16 +789,8 @@ public class BTree
 
         protected Builder(Comparator<? super V> comparator, int initialCapacity)
         {
-            if (initialCapacity == 0)
-                initialCapacity = 16;
             this.comparator = comparator;
             this.values = new Object[initialCapacity];
-        }
-
-        @VisibleForTesting
-        public Builder()
-        {
-            this.values = new Object[16];
         }
 
         private Builder(Builder<V> builder)
@@ -941,7 +826,6 @@ public class BTree
         public void reuse(Comparator<? super V> comparator)
         {
             this.comparator = comparator;
-            Arrays.fill(values, null);
             count = 0;
             detected = true;
         }
@@ -1208,20 +1092,11 @@ public class BTree
             return node.length >= FAN_FACTOR / 2 && node.length <= FAN_FACTOR + 1;
         }
 
-        final int keyCount = getBranchKeyEnd(node);
-        if ((!isRoot && keyCount < FAN_FACTOR / 2) || keyCount > FAN_FACTOR + 1)
-            return false;
-
         int type = 0;
-        int size = -1;
-        int[] sizeMap = getSizeMap(node);
         // compare each child node with the branch element at the head of this node it corresponds with
         for (int i = getChildStart(node); i < getChildEnd(node) ; i++)
         {
             Object[] child = (Object[]) node[i];
-            size += size(child) + 1;
-            if (sizeMap[i - getChildStart(node)] != size)
-                return false;
             Object localmax = i < node.length - 2 ? node[i - getChildStart(node)] : max;
             if (!isWellFormed(cmp, child, false, min, localmax))
                 return false;
@@ -1243,129 +1118,5 @@ public class BTree
             previous = current;
         }
         return compare(cmp, previous, max) < 0;
-    }
-
-    /**
-     * Simple method to walk the btree forwards or reversed and apply a function to each element
-     *
-     * Public method
-     *
-     */
-    public static <V> void apply(Object[] btree, Consumer<V> function, boolean reversed)
-    {
-        if (reversed)
-            applyReverse(btree, function, null);
-        else
-            applyForwards(btree, function, null);
-    }
-
-    /**
-     * Simple method to walk the btree forwards or reversed and apply a function till a stop condition is reached
-     *
-     * Public method
-     *
-     */
-    public static <V> void apply(Object[] btree, Consumer<V> function, Predicate<V> stopCondition, boolean reversed)
-    {
-        if (reversed)
-            applyReverse(btree, function, stopCondition);
-        else
-            applyForwards(btree, function, stopCondition);
-    }
-
-
-
-
-    /**
-     * Simple method to walk the btree forwards and apply a function till a stop condition is reached
-     *
-     * Private method
-     *
-     * @param btree
-     * @param function
-     * @param stopCondition
-     */
-    private static <V> boolean applyForwards(Object[] btree, Consumer<V> function, Predicate<V> stopCondition)
-    {
-        boolean isLeaf = isLeaf(btree);
-        int childOffset = isLeaf ? Integer.MAX_VALUE : getChildStart(btree);
-        int limit = isLeaf ? getLeafKeyEnd(btree) : btree.length - 1;
-        for (int i = 0 ; i < limit ; i++)
-        {
-            // we want to visit in iteration order, so we visit our key nodes inbetween our children
-            int idx = isLeaf ? i : (i / 2) + (i % 2 == 0 ? childOffset : 0);
-            Object current = btree[idx];
-            if (idx < childOffset)
-            {
-                V castedCurrent = (V) current;
-                if (stopCondition != null && stopCondition.apply(castedCurrent))
-                    return true;
-
-                function.accept(castedCurrent);
-            }
-            else
-            {
-                if (applyForwards((Object[]) current, function, stopCondition))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Simple method to walk the btree in reverse and apply a function till a stop condition is reached
-     *
-     * Private method
-     *
-     * @param btree
-     * @param function
-     * @param stopCondition
-     */
-    private static <V> boolean applyReverse(Object[] btree, Consumer<V> function, Predicate<V> stopCondition)
-    {
-        boolean isLeaf = isLeaf(btree);
-        int childOffset = isLeaf ? 0 : getChildStart(btree);
-        int limit = isLeaf ? getLeafKeyEnd(btree)  : btree.length - 1;
-        for (int i = limit - 1, visited = 0; i >= 0 ; i--, visited++)
-        {
-            int idx = i;
-
-            // we want to visit in reverse iteration order, so we visit our children nodes inbetween our keys
-            if (!isLeaf)
-            {
-                int typeOffset = visited / 2;
-
-                if (i % 2 == 0)
-                {
-                    // This is a child branch. Since children are in the second half of the array, we must
-                    // adjust for the key's we've visited along the way
-                    idx += typeOffset;
-                }
-                else
-                {
-                    // This is a key. Since the keys are in the first half of the array and we are iterating
-                    // in reverse we subtract the childOffset and adjust for children we've walked so far
-                    idx = i - childOffset + typeOffset;
-                }
-            }
-
-            Object current = btree[idx];
-            if (isLeaf || idx < childOffset)
-            {
-                V castedCurrent = (V) current;
-                if (stopCondition != null && stopCondition.apply(castedCurrent))
-                    return true;
-
-                function.accept(castedCurrent);
-            }
-            else
-            {
-                if (applyReverse((Object[]) current, function, stopCondition))
-                    return true;
-            }
-        }
-
-        return false;
     }
 }

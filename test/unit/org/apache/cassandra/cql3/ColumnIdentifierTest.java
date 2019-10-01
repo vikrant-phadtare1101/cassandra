@@ -23,12 +23,11 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import static org.junit.Assert.assertEquals;
 
 public class ColumnIdentifierTest
 {
@@ -59,24 +58,6 @@ public class ColumnIdentifierTest
     private static int compareResult(int v)
     {
         return v < 0 ? -1 : v > 0 ? 1 : 0;
-    }
-    
-    @Test
-    public void testMaybeQuote()
-    {
-        String unquotable = "a";
-        assertEquals(unquotable, ColumnIdentifier.maybeQuote(unquotable));
-        unquotable = "z4";
-        assertEquals(unquotable, ColumnIdentifier.maybeQuote(unquotable));
-        unquotable = "m_4_";
-        assertEquals(unquotable, ColumnIdentifier.maybeQuote(unquotable));
-        unquotable = "f__";
-        assertEquals(unquotable, ColumnIdentifier.maybeQuote(unquotable));
-        
-        assertEquals("\"A\"", ColumnIdentifier.maybeQuote("A"));
-        assertEquals("\"4b\"", ColumnIdentifier.maybeQuote("4b"));
-        assertEquals("\"\"\"\"", ColumnIdentifier.maybeQuote("\""));
-        assertEquals("\"\"\"a\"\"b\"\"\"", ColumnIdentifier.maybeQuote("\"a\"b\""));
     }
 
     @Test

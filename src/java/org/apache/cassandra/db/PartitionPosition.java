@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public interface PartitionPosition extends RingPosition<PartitionPosition>

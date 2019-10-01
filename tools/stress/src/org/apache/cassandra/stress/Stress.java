@@ -21,9 +21,7 @@ import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.stress.settings.StressSettings;
-import org.apache.cassandra.stress.util.MultiResultLogger;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WindowsTimer;
 
@@ -56,49 +54,25 @@ public final class Stress
 
     public static void main(String[] arguments) throws Exception
     {
-        if (FBUtilities.isWindows)
+        if (FBUtilities.isWindows())
             WindowsTimer.startTimerPeriod(1);
 
-        int exitCode = run(arguments);
-
-        if (FBUtilities.isWindows)
-            WindowsTimer.endTimerPeriod(1);
-
-        System.exit(exitCode);
-    }
-
-
-    private static int run(String[] arguments)
-    {
         try
         {
-            DatabaseDescriptor.clientInitialization();
 
             final StressSettings settings;
             try
             {
                 settings = StressSettings.parse(arguments);
-                if (settings == null)
-                    return 0; // special settings action
             }
             catch (IllegalArgumentException e)
             {
-                System.out.printf("%s%n", e.getMessage());
                 printHelpMessage();
-                return 1;
+                e.printStackTrace();
+                return;
             }
 
-            MultiResultLogger logout = settings.log.getOutput();
-
-            if (! settings.log.noSettings)
-            {
-                settings.printSettings(logout);
-            }
-
-            if (settings.graph.inGraphMode())
-            {
-                logout.addStream(new PrintStream(settings.graph.temporaryLogFile));
-            }
+            PrintStream logout = settings.log.getOutput();
 
             if (settings.sendToDaemon != null)
             {
@@ -141,19 +115,20 @@ public final class Stress
             {
                 StressAction stressAction = new StressAction(settings, logout);
                 stressAction.run();
-                logout.flush();
-                if (settings.graph.inGraphMode())
-                    new StressGraph(settings, arguments).generateGraph();
             }
 
         }
         catch (Throwable t)
         {
             t.printStackTrace();
-            return 1;
+        }
+        finally
+        {
+            if (FBUtilities.isWindows())
+                WindowsTimer.endTimerPeriod(1);
+            System.exit(0);
         }
 
-        return 0;
     }
 
     /**

@@ -23,7 +23,7 @@ import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 
 import org.apache.cassandra.Util;
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.RowFilter;
@@ -31,6 +31,7 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.index.transactions.IndexTransaction;
@@ -53,7 +54,6 @@ public class StubIndex implements Index
     public List<Row> rowsInserted = new ArrayList<>();
     public List<Row> rowsDeleted = new ArrayList<>();
     public List<Pair<Row,Row>> rowsUpdated = new ArrayList<>();
-    public volatile boolean preJoinInvocation;
     private IndexMetadata indexMetadata;
     private ColumnFamilyStore baseCfs;
 
@@ -77,12 +77,12 @@ public class StubIndex implements Index
         return false;
     }
 
-    public boolean dependsOn(ColumnMetadata column)
+    public boolean dependsOn(ColumnDefinition column)
     {
         return false;
     }
 
-    public boolean supportsExpression(ColumnMetadata column, Operator operator)
+    public boolean supportsExpression(ColumnDefinition column, Operator operator)
     {
         return operator == Operator.EQ;
     }
@@ -98,9 +98,9 @@ public class StubIndex implements Index
     }
 
     public Indexer indexerFor(final DecoratedKey key,
-                              RegularAndStaticColumns columns,
+                              PartitionColumns columns,
                               int nowInSec,
-                              WriteContext ctx,
+                              OpOrder.Group opGroup,
                               IndexTransaction.Type transactionType)
     {
         return new Indexer()
@@ -161,7 +161,7 @@ public class StubIndex implements Index
         return Optional.empty();
     }
 
-    public Collection<ColumnMetadata> getIndexedColumns()
+    public Collection<ColumnDefinition> getIndexedColumns()
     {
         return Collections.emptySet();
     }
@@ -174,14 +174,6 @@ public class StubIndex implements Index
     public Callable<?> getTruncateTask(long truncatedAt)
     {
         return null;
-    }
-
-    public Callable<?> getPreJoinTask(boolean hadBootstrap)
-    {
-        return () -> {
-            preJoinInvocation = true;
-            return null;
-        };
     }
 
     public Callable<?> getInvalidateTask()
@@ -206,7 +198,7 @@ public class StubIndex implements Index
 
     public Searcher searcherFor(final ReadCommand command)
     {
-        return (controller) -> Util.executeLocally((PartitionRangeReadCommand)command, baseCfs, controller);
+        return (orderGroup) -> Util.executeLocally((PartitionRangeReadCommand)command, baseCfs, orderGroup);
     }
 
     public BiFunction<PartitionIterator, ReadCommand, PartitionIterator> postProcessorFor(ReadCommand readCommand)

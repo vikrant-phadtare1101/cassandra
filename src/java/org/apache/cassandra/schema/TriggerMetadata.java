@@ -18,7 +18,6 @@
  */
 package org.apache.cassandra.schema;
 
-import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 
 public final class TriggerMetadata
@@ -65,9 +64,9 @@ public final class TriggerMetadata
     @Override
     public String toString()
     {
-        return MoreObjects.toStringHelper(this)
-                          .add("name", name)
-                          .add("class", classOption)
-                          .toString();
+        return Objects.toStringHelper(this)
+                      .add("name", name)
+                      .add("class", classOption)
+                      .toString();
     }
 }

@@ -20,243 +20,170 @@ package org.apache.cassandra.db.filter;
 import java.io.IOException;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Iterators;
 import com.google.common.collect.SortedSetMultimap;
 import com.google.common.collect.TreeMultimap;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.CellPath;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
 
 /**
  * Represents which (non-PK) columns (and optionally which sub-part of a column for complex columns) are selected
  * by a query.
  *
- * We distinguish 2 sets of columns in practice: the _fetched_ columns, which are the columns that we (may, see
- * below) need to fetch internally, and the _queried_ columns, which are the columns that the user has selected
- * in its request.
+ * In practice, this class cover 2 main cases:
+ *   1) most user queries have to internally query all columns, because the CQL semantic requires us to know if
+ *      a row is live or not even if it has no values for the columns requested by the user (see #6588for more
+ *      details). However, while we need to know for columns if it has live values, we can actually save from
+ *      sending the values for those columns that will not be returned to the user.
+ *   2) for some internal queries (and for queries using #6588 if we introduce it), we're actually fine only
+ *      actually querying some of the columns.
  *
- * The reason for distinguishing those 2 sets is that due to the CQL semantic (see #6588 for more details), we
- * often need to internally fetch all regular columns for the queried table, but can still do some optimizations for
- * those columns that are not directly queried by the user (see #10657 for more details).
- *
- * Note that in practice:
- *   - the _queried_ columns set is always included in the _fetched_ one.
- *   - whenever those sets are different, we know 1) the _fetched_ set contains all regular columns for the table and 2)
- *     _fetched_ == _queried_ for static columns, so we don't have to record this set, we just keep a pointer to the
- *     table metadata. The only set we concretely store is thus the _queried_ one.
- *   - in the special case of a {@code SELECT *} query, we want to query all columns, and _fetched_ == _queried.
- *     As this is a common case, we special case it by keeping the _queried_ set {@code null} (and we retrieve
- *     the columns through the metadata pointer).
- *
- * For complex columns, this class optionally allows to specify a subset of the cells to query for each column.
- * We can either select individual cells by path name, or a slice of them. Note that this is a sub-selection of
- * _queried_ cells, so if _fetched_ != _queried_, then the cell selected by this sub-selection are considered
- * queried and the other ones are considered fetched (and if a column has some sub-selection, it must be a queried
- * column, which is actually enforced by the Builder below).
+ * For complex columns, this class allows to be more fine grained than the column by only selection some of the
+ * cells of the complex column (either individual cell by path name, or some slice).
  */
 public class ColumnFilter
 {
-    public static final ColumnFilter NONE = selection(RegularAndStaticColumns.NONE);
-
     public static final Serializer serializer = new Serializer();
 
-    // True if _fetched_ includes all regular columns (and any static in _queried_), in which case metadata must not be
-    // null. If false, then _fetched_ == _queried_ and we only store _queried_.
-    final boolean fetchAllRegulars;
+    // Distinguish between the 2 cases described above: if 'isFetchAll' is true, then all columns will be retrieved
+    // by the query, but the values for column/cells not selected by 'queried' and 'subSelections' will be skipped.
+    // Otherwise, only the column/cells returned by 'queried' and 'subSelections' will be returned at all.
+    private final boolean isFetchAll;
 
-    final RegularAndStaticColumns fetched;
-    final RegularAndStaticColumns queried; // can be null if fetchAllRegulars, to represent a wildcard query (all
-                                           // static and regular columns are both _fetched_ and _queried_).
+    private final PartitionColumns queried; // can be null if isFetchAll and we don't want to skip any value
+    private final PartitionColumns fetched;
     private final SortedSetMultimap<ColumnIdentifier, ColumnSubselection> subSelections; // can be null
-
-    private ColumnFilter(boolean fetchAllRegulars,
-                         TableMetadata metadata,
-                         RegularAndStaticColumns queried,
-                         SortedSetMultimap<ColumnIdentifier, ColumnSubselection> subSelections)
-    {
-        assert !fetchAllRegulars || metadata != null;
-        assert fetchAllRegulars || queried != null;
-        this.fetchAllRegulars = fetchAllRegulars;
-
-        if (fetchAllRegulars)
-        {
-            RegularAndStaticColumns all = metadata.regularAndStaticColumns();
-
-            this.fetched = (all.statics.isEmpty() || queried == null)
-                           ? all
-                           : new RegularAndStaticColumns(queried.statics, all.regulars);
-        }
-        else
-        {
-            this.fetched = queried;
-        }
-
-        this.queried = queried;
-        this.subSelections = subSelections;
-    }
 
     /**
      * Used on replica for deserialisation
      */
-    private ColumnFilter(boolean fetchAllRegulars,
-                         RegularAndStaticColumns fetched,
-                         RegularAndStaticColumns queried,
+    private ColumnFilter(boolean isFetchAll,
+                         PartitionColumns fetched,
+                         PartitionColumns queried,
                          SortedSetMultimap<ColumnIdentifier, ColumnSubselection> subSelections)
     {
-        assert !fetchAllRegulars || fetched != null;
-        assert fetchAllRegulars || queried != null;
-        this.fetchAllRegulars = fetchAllRegulars;
-        this.fetched = fetchAllRegulars ? fetched : queried;
+        assert !isFetchAll || fetched != null;
+        assert isFetchAll || queried != null;
+        this.isFetchAll = isFetchAll;
+        this.fetched = isFetchAll ? fetched : queried;
         this.queried = queried;
         this.subSelections = subSelections;
     }
 
     /**
-     * A filter that includes all columns for the provided table.
+     * A selection that includes all columns (and their values).
      */
-    public static ColumnFilter all(TableMetadata metadata)
+    public static ColumnFilter all(CFMetaData metadata)
     {
-        return new ColumnFilter(true, metadata, null, null);
+        return new ColumnFilter(true, metadata.partitionColumns(), null, null);
     }
 
     /**
-     * A filter that only fetches/queries the provided columns.
+     * A selection that only fetch the provided columns.
      * <p>
      * Note that this shouldn't be used for CQL queries in general as all columns should be queried to
      * preserve CQL semantic (see class javadoc). This is ok for some internal queries however (and
      * for #6588 if/when we implement it).
      */
-    public static ColumnFilter selection(RegularAndStaticColumns columns)
+    public static ColumnFilter selection(PartitionColumns columns)
     {
-        return new ColumnFilter(false, (TableMetadata) null, columns, null);
+        return new ColumnFilter(false, null, columns, null);
     }
 
 	/**
      * A filter that fetches all columns for the provided table, but returns
      * only the queried ones.
      */
-    public static ColumnFilter selection(TableMetadata metadata, RegularAndStaticColumns queried)
+    public static ColumnFilter selection(CFMetaData metadata, PartitionColumns queried)
     {
-        return new ColumnFilter(true, metadata, queried, null);
+        return new ColumnFilter(true, metadata.partitionColumns(), queried, null);
     }
 
     /**
-     * The columns that needs to be fetched internally for this filter.
+     * The columns that needs to be fetched internally for this selection.
+     * <p>
+     * This is the columns that must be present in the internal rows returned by queries using this selection,
+     * not the columns that are actually queried by the user (see the class javadoc for details).
      *
-     * @return the columns to fetch for this filter.
+     * @return the column to fetch for this selection.
      */
-    public RegularAndStaticColumns fetchedColumns()
+    public PartitionColumns fetchedColumns()
     {
         return fetched;
     }
 
-    /**
-     * The columns actually queried by the user.
-     * <p>
-     * Note that this is in general not all the columns that are fetched internally (see {@link #fetchedColumns}).
-     */
-    public RegularAndStaticColumns queriedColumns()
+    public boolean includesAllColumns()
     {
-        return queried == null ? fetched : queried;
+        return isFetchAll;
     }
 
     /**
-     * Wether all the (regular or static) columns are fetched by this filter.
-     * <p>
-     * Note that this method is meant as an optimization but a negative return
-     * shouldn't be relied upon strongly: this can return {@code false} but
-     * still have all the columns fetches if those were manually selected by the
-     * user. The goal here is to cheaply avoid filtering things on wildcard
-     * queries, as those are common.
-     *
-     * @param isStatic whether to check for static columns or not. If {@code true},
-     * the method returns if all static columns are fetched, otherwise it checks
-     * regular columns.
+     * Whether the provided column is selected by this selection.
      */
-    public boolean fetchesAllColumns(boolean isStatic)
+    public boolean includes(ColumnDefinition column)
     {
-        return isStatic ? queried == null : fetchAllRegulars;
+        return isFetchAll || queried.contains(column);
     }
 
     /**
-     * Whether _fetched_ == _queried_ for this filter, and so if the {@code isQueried()} methods
-     * can return {@code false} for some column/cell.
+     * Whether we can skip the value for the provided selected column.
      */
-    public boolean allFetchedColumnsAreQueried()
+    public boolean canSkipValue(ColumnDefinition column)
     {
-        return !fetchAllRegulars || queried == null;
+        // We don't use that currently, see #10655 for more details.
+        return false;
     }
 
     /**
-     * Whether the provided column is fetched by this filter.
+     * Whether the provided cell of a complex column is selected by this selection.
      */
-    public boolean fetches(ColumnMetadata column)
+    public boolean includes(Cell cell)
     {
-        // For statics, it is included only if it's part of _queried_, or if _queried_ is null (wildcard query).
-        if (column.isStatic())
-            return queried == null || queried.contains(column);
-
-        // For regulars, if 'fetchAllRegulars', then it's included automatically. Otherwise, it depends on _queried_.
-        return fetchAllRegulars || queried.contains(column);
-    }
-
-    /**
-     * Whether the provided column, which is assumed to be _fetched_ by this filter (so the caller must guarantee
-     * that {@code fetches(column) == true}, is also _queried_ by the user.
-     *
-     * !WARNING! please be sure to understand the difference between _fetched_ and _queried_
-     * columns that this class made before using this method. If unsure, you probably want
-     * to use the {@link #fetches} method.
-     */
-    public boolean fetchedColumnIsQueried(ColumnMetadata column)
-    {
-        return !fetchAllRegulars || queried == null || queried.contains(column);
-    }
-
-    /**
-     * Whether the provided complex cell (identified by its column and path), which is assumed to be _fetched_ by
-     * this filter, is also _queried_ by the user.
-     *
-     * !WARNING! please be sure to understand the difference between _fetched_ and _queried_
-     * columns that this class made before using this method. If unsure, you probably want
-     * to use the {@link #fetches} method.
-     */
-    public boolean fetchedCellIsQueried(ColumnMetadata column, CellPath path)
-    {
-        assert path != null;
-        if (!fetchAllRegulars || subSelections == null)
+        if (isFetchAll || subSelections == null || !cell.column().isComplex())
             return true;
 
-        SortedSet<ColumnSubselection> s = subSelections.get(column.name);
-        // No subsection for this column means everything is queried
+        SortedSet<ColumnSubselection> s = subSelections.get(cell.column().name);
         if (s.isEmpty())
             return true;
 
         for (ColumnSubselection subSel : s)
-            if (subSel.compareInclusionOf(path) == 0)
+            if (subSel.compareInclusionOf(cell.path()) == 0)
                 return true;
 
         return false;
     }
 
     /**
+     * Whether we can skip the value of the cell of a complex column.
+     */
+    public boolean canSkipValue(ColumnDefinition column, CellPath path)
+    {
+        if (!isFetchAll || subSelections == null || !column.isComplex())
+            return false;
+
+        SortedSet<ColumnSubselection> s = subSelections.get(column.name);
+        if (s.isEmpty())
+            return false;
+
+        for (ColumnSubselection subSel : s)
+            if (subSel.compareInclusionOf(path) == 0)
+                return false;
+
+        return true;
+    }
+
+    /**
      * Creates a new {@code Tester} to efficiently test the inclusion of cells of complex column
      * {@code column}.
-     *
-     * @param column for complex column for which to create a tester.
-     * @return the created tester or {@code null} if all the cells from the provided column
-     * are queried.
      */
-    public Tester newTester(ColumnMetadata column)
+    public Tester newTester(ColumnDefinition column)
     {
         if (subSelections == null || !column.isComplex())
             return null;
@@ -265,37 +192,21 @@ public class ColumnFilter
         if (s.isEmpty())
             return null;
 
-        return new Tester(!column.isStatic() && fetchAllRegulars, s.iterator());
+        return new Tester(isFetchAll, s.iterator());
     }
 
     /**
-     * Given an iterator on the cell of a complex column, returns an iterator that only include the cells selected by
-     * this filter.
-     *
-     * @param column the (complex) column for which the cells are.
-     * @param cells the cells to filter.
-     * @return a filtered iterator that only include the cells from {@code cells} that are included by this filter.
+     * Returns a {@code ColumnFilter}} builder that includes all columns (so the selections
+     * added to the builder are the columns/cells for which we shouldn't skip the values).
      */
-    public Iterator<Cell> filterComplexCells(ColumnMetadata column, Iterator<Cell> cells)
-    {
-        Tester tester = newTester(column);
-        if (tester == null)
-            return cells;
-
-        return Iterators.filter(cells, cell -> tester.fetchedCellIsQueried(cell.path()));
-    }
-
-    /**
-     * Returns a {@code ColumnFilter}} builder that fetches all regular columns (and queries the columns
-     * added to the builder, or everything if no column is added).
-     */
-    public static Builder allRegularColumnsBuilder(TableMetadata metadata)
+    public static Builder allColumnsBuilder(CFMetaData metadata)
     {
         return new Builder(metadata);
     }
 
     /**
-     * Returns a {@code ColumnFilter} builder that only fetches the columns/cells added to the builder.
+     * Returns a {@code ColumnFilter}} builder that includes only the columns/cells
+     * added to the builder.
      */
     public static Builder selectionBuilder()
     {
@@ -304,30 +215,27 @@ public class ColumnFilter
 
     public static class Tester
     {
-        private final boolean isFetched;
+        private final boolean isFetchAll;
         private ColumnSubselection current;
         private final Iterator<ColumnSubselection> iterator;
 
-        private Tester(boolean isFetched, Iterator<ColumnSubselection> iterator)
+        private Tester(boolean isFetchAll, Iterator<ColumnSubselection> iterator)
         {
-            this.isFetched = isFetched;
+            this.isFetchAll = isFetchAll;
             this.iterator = iterator;
         }
 
-        public boolean fetches(CellPath path)
+        public boolean includes(CellPath path)
         {
-            return isFetched || hasSubselection(path);
+            return isFetchAll || includedBySubselection(path);
         }
 
-        /**
-         * Must only be called if {@code fetches(path) == true}.
-         */
-        public boolean fetchedCellIsQueried(CellPath path)
+        public boolean canSkipValue(CellPath path)
         {
-            return !isFetched || hasSubselection(path);
+            return isFetchAll && !includedBySubselection(path);
         }
 
-        private boolean hasSubselection(CellPath path)
+        private boolean includedBySubselection(CellPath path)
         {
             while (current != null || iterator.hasNext())
             {
@@ -347,83 +255,48 @@ public class ColumnFilter
         }
     }
 
-    /**
-     * A builder for a {@code ColumnFilter} object.
-     *
-     * Note that the columns added to this build are the _queried_ column. Whether or not all columns
-     * are _fetched_ depends on which constructor you've used to obtained this builder, allColumnsBuilder (all
-     * columns are fetched) or selectionBuilder (only the queried columns are fetched).
-     *
-     * Note that for a allColumnsBuilder, if no queried columns are added, this is interpreted as querying
-     * all columns, not querying none (but if you know you want to query all columns, prefer
-     * {@link ColumnFilter#all(TableMetadata)}. For selectionBuilder, adding no queried columns means no column will be
-     * fetched (so the builder will return {@code PartitionColumns.NONE}).
-     *
-     * Also, if only a subselection of a complex column should be queried, then only the corresponding
-     * subselection method of the builder ({@link #slice} or {@link #select}) should be called for the
-     * column, but {@link #add} shouldn't. if {@link #add} is also called, the whole column will be
-     * queried and the subselection(s) will be ignored. This is done for correctness of CQL where
-     * if you do "SELECT m, m[2..5]", you are really querying the whole collection.
-     */
     public static class Builder
     {
-        private final TableMetadata metadata; // null if we don't fetch all columns
-        private RegularAndStaticColumns.Builder queriedBuilder;
+        private final CFMetaData metadata;
+        private PartitionColumns.Builder selection;
         private List<ColumnSubselection> subSelections;
 
-        private Set<ColumnMetadata> fullySelectedComplexColumns;
-
-        private Builder(TableMetadata metadata)
+        private Builder(CFMetaData metadata)
         {
             this.metadata = metadata;
         }
 
-        public Builder add(ColumnMetadata c)
+        public Builder add(ColumnDefinition c)
         {
-            if (c.isComplex() && c.type.isMultiCell())
-            {
-                if (fullySelectedComplexColumns == null)
-                    fullySelectedComplexColumns = new HashSet<>();
-                fullySelectedComplexColumns.add(c);
-            }
-            return addInternal(c);
-        }
-
-        public Builder addAll(Iterable<ColumnMetadata> columns)
-        {
-            for (ColumnMetadata column : columns)
-                add(column);
+            if (selection == null)
+                selection = PartitionColumns.builder();
+            selection.add(c);
             return this;
         }
 
-        private Builder addInternal(ColumnMetadata c)
+        public Builder addAll(Iterable<ColumnDefinition> columns)
         {
-            if (c.isPrimaryKeyColumn())
-                return this;
-
-            if (queriedBuilder == null)
-                queriedBuilder = RegularAndStaticColumns.builder();
-            queriedBuilder.add(c);
+            if (selection == null)
+                selection = PartitionColumns.builder();
+            selection.addAll(columns);
             return this;
         }
 
         private Builder addSubSelection(ColumnSubselection subSelection)
         {
-            ColumnMetadata column = subSelection.column();
-            assert column.isComplex() && column.type.isMultiCell();
-            addInternal(column);
+            add(subSelection.column());
             if (subSelections == null)
                 subSelections = new ArrayList<>();
             subSelections.add(subSelection);
             return this;
         }
 
-        public Builder slice(ColumnMetadata c, CellPath from, CellPath to)
+        public Builder slice(ColumnDefinition c, CellPath from, CellPath to)
         {
             return addSubSelection(ColumnSubselection.slice(c, from, to));
         }
 
-        public Builder select(ColumnMetadata c, CellPath elt)
+        public Builder select(ColumnDefinition c, CellPath elt)
         {
             return addSubSelection(ColumnSubselection.element(c, elt));
         }
@@ -432,24 +305,21 @@ public class ColumnFilter
         {
             boolean isFetchAll = metadata != null;
 
-            RegularAndStaticColumns queried = queriedBuilder == null ? null : queriedBuilder.build();
-            // It's only ok to have queried == null in ColumnFilter if isFetchAll. So deal with the case of a selectionBuilder
+            PartitionColumns selectedColumns = selection == null ? null : selection.build();
+            // It's only ok to have queried == null in ColumnFilter if isFetchAll. So deal with the case of a "selection" builder
             // with nothing selected (we can at least happen on some backward compatible queries - CASSANDRA-10471).
-            if (!isFetchAll && queried == null)
-                queried = RegularAndStaticColumns.NONE;
+            if (!isFetchAll && selectedColumns == null)
+                selectedColumns = PartitionColumns.NONE;
 
             SortedSetMultimap<ColumnIdentifier, ColumnSubselection> s = null;
             if (subSelections != null)
             {
                 s = TreeMultimap.create(Comparator.<ColumnIdentifier>naturalOrder(), Comparator.<ColumnSubselection>naturalOrder());
                 for (ColumnSubselection subSelection : subSelections)
-                {
-                    if (fullySelectedComplexColumns == null || !fullySelectedComplexColumns.contains(subSelection.column()))
-                        s.put(subSelection.column().name, subSelection);
-                }
+                    s.put(subSelection.column().name, subSelection);
             }
 
-            return new ColumnFilter(isFetchAll, metadata, queried, s);
+            return new ColumnFilter(isFetchAll, isFetchAll ? metadata.partitionColumns() : selectedColumns, selectedColumns, s);
         }
     }
 
@@ -464,36 +334,33 @@ public class ColumnFilter
 
         ColumnFilter otherCf = (ColumnFilter) other;
 
-        return otherCf.fetchAllRegulars == this.fetchAllRegulars &&
+        return otherCf.isFetchAll == this.isFetchAll &&
                Objects.equals(otherCf.fetched, this.fetched) &&
                Objects.equals(otherCf.queried, this.queried) &&
                Objects.equals(otherCf.subSelections, this.subSelections);
-    }
 
+    }
     @Override
     public String toString()
     {
-        if (fetchAllRegulars && queried == null)
+        if (isFetchAll)
             return "*";
 
         if (queried.isEmpty())
             return "";
 
-        Iterator<ColumnMetadata> defs = queried.selectOrderIterator();
+        Iterator<ColumnDefinition> defs = queried.selectOrderIterator();
         if (!defs.hasNext())
             return "<none>";
 
         StringBuilder sb = new StringBuilder();
+        appendColumnDef(sb, defs.next());
         while (defs.hasNext())
-        {
-            appendColumnDef(sb, defs.next());
-            if (defs.hasNext())
-                sb.append(", ");
-        }
+            appendColumnDef(sb.append(", "), defs.next());
         return sb.toString();
     }
 
-    private void appendColumnDef(StringBuilder sb, ColumnMetadata column)
+    private void appendColumnDef(StringBuilder sb, ColumnDefinition column)
     {
         if (subSelections == null)
         {
@@ -515,45 +382,22 @@ public class ColumnFilter
 
     public static class Serializer
     {
-        private static final int FETCH_ALL_MASK          = 0x01;
-        private static final int HAS_QUERIED_MASK        = 0x02;
+        private static final int IS_FETCH_ALL_MASK       = 0x01;
+        private static final int HAS_SELECTION_MASK      = 0x02;
         private static final int HAS_SUB_SELECTIONS_MASK = 0x04;
 
         private static int makeHeaderByte(ColumnFilter selection)
         {
-            return (selection.fetchAllRegulars ? FETCH_ALL_MASK : 0)
-                 | (selection.queried != null ? HAS_QUERIED_MASK : 0)
+            return (selection.isFetchAll ? IS_FETCH_ALL_MASK : 0)
+                 | (selection.queried != null ? HAS_SELECTION_MASK : 0)
                  | (selection.subSelections != null ? HAS_SUB_SELECTIONS_MASK : 0);
-        }
-
-        @VisibleForTesting
-        public static ColumnFilter maybeUpdateForBackwardCompatility(ColumnFilter selection, int version)
-        {
-            if (version > MessagingService.VERSION_3014 || !selection.fetchAllRegulars || selection.queried == null)
-                return selection;
-
-            // The meaning of fetchAllRegulars changed (at least when queried != null) due to CASSANDRA-12768: in
-            // pre-4.0 it means that *all* columns are fetched, not just the regular ones, and so 3.0/3.X nodes
-            // would send us more than we'd like. So instead recreating a filter that correspond to what we
-            // actually want (it's a tiny bit less efficient as we include all columns manually and will mark as
-            // queried some columns that are actually only fetched, but it's fine during upgrade).
-            // More concretely, we replace our filter by a non-fetch-all one that queries every columns that our
-            // current filter fetches.
-            Set<ColumnMetadata> queriedStatic = new HashSet<>();
-            Iterables.addAll(queriedStatic, Iterables.filter(selection.queried, ColumnMetadata::isStatic));
-            return new ColumnFilter(false,
-                                    (TableMetadata) null,
-                                    new RegularAndStaticColumns(Columns.from(queriedStatic), selection.fetched.regulars),
-                                    selection.subSelections);
         }
 
         public void serialize(ColumnFilter selection, DataOutputPlus out, int version) throws IOException
         {
-            selection = maybeUpdateForBackwardCompatility(selection, version);
-
             out.writeByte(makeHeaderByte(selection));
 
-            if (version >= MessagingService.VERSION_3014 && selection.fetchAllRegulars)
+            if (version >= MessagingService.VERSION_3014 && selection.isFetchAll)
             {
                 Columns.serializer.serialize(selection.fetched.statics, out);
                 Columns.serializer.serialize(selection.fetched.regulars, out);
@@ -573,15 +417,15 @@ public class ColumnFilter
             }
         }
 
-        public ColumnFilter deserialize(DataInputPlus in, int version, TableMetadata metadata) throws IOException
+        public ColumnFilter deserialize(DataInputPlus in, int version, CFMetaData metadata) throws IOException
         {
             int header = in.readUnsignedByte();
-            boolean isFetchAll = (header & FETCH_ALL_MASK) != 0;
-            boolean hasQueried = (header & HAS_QUERIED_MASK) != 0;
+            boolean isFetchAll = (header & IS_FETCH_ALL_MASK) != 0;
+            boolean hasSelection = (header & HAS_SELECTION_MASK) != 0;
             boolean hasSubSelections = (header & HAS_SUB_SELECTIONS_MASK) != 0;
 
-            RegularAndStaticColumns fetched = null;
-            RegularAndStaticColumns queried = null;
+            PartitionColumns fetched = null;
+            PartitionColumns selection = null;
 
             if (isFetchAll)
             {
@@ -589,19 +433,19 @@ public class ColumnFilter
                 {
                     Columns statics = Columns.serializer.deserialize(in, metadata);
                     Columns regulars = Columns.serializer.deserialize(in, metadata);
-                    fetched = new RegularAndStaticColumns(statics, regulars);
+                    fetched = new PartitionColumns(statics, regulars);
                 }
                 else
                 {
-                    fetched = metadata.regularAndStaticColumns();
+                    fetched = metadata.partitionColumns();
                 }
             }
 
-            if (hasQueried)
+            if (hasSelection)
             {
                 Columns statics = Columns.serializer.deserialize(in, metadata);
                 Columns regulars = Columns.serializer.deserialize(in, metadata);
-                queried = new RegularAndStaticColumns(statics, regulars);
+                selection = new PartitionColumns(statics, regulars);
             }
 
             SortedSetMultimap<ColumnIdentifier, ColumnSubselection> subSelections = null;
@@ -616,25 +460,14 @@ public class ColumnFilter
                 }
             }
 
-            // Same concern than in serialize/serializedSize: we should be wary of the change in meaning for isFetchAll.
-            // If we get a filter with isFetchAll from 3.0/3.x, it actually expects all static columns to be fetched,
-            // make sure we do that (note that if queried == null, that's already what we do).
-            // Note that here again this will make us do a bit more work that necessary, namely we'll _query_ all
-            // statics even though we only care about _fetching_ them all, but that's a minor inefficiency, so fine
-            // during upgrade.
-            if (version <= MessagingService.VERSION_30 && isFetchAll && queried != null)
-                queried = new RegularAndStaticColumns(metadata.staticColumns(), queried.regulars);
-
-            return new ColumnFilter(isFetchAll, fetched, queried, subSelections);
+            return new ColumnFilter(isFetchAll, fetched, selection, subSelections);
         }
 
         public long serializedSize(ColumnFilter selection, int version)
         {
-            selection = maybeUpdateForBackwardCompatility(selection, version);
-
             long size = 1; // header byte
 
-            if (version >= MessagingService.VERSION_3014 && selection.fetchAllRegulars)
+            if (version >= MessagingService.VERSION_3014 && selection.isFetchAll)
             {
                 size += Columns.serializer.serializedSize(selection.fetched.statics);
                 size += Columns.serializer.serializedSize(selection.fetched.regulars);

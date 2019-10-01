@@ -21,7 +21,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.BiFunction;
-import java.util.function.BiPredicate;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
 import com.google.common.collect.*;
@@ -29,8 +29,7 @@ import com.google.common.collect.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.io.sstable.SSTable;
@@ -56,7 +55,7 @@ import static org.apache.cassandra.utils.concurrent.Refs.selfRefs;
  * action to occur at the beginning of the commit phase, but also *requires* that the prepareToCommit() phase only take
  * actions that can be rolled back.
  */
-public class LifecycleTransaction extends Transactional.AbstractTransactional implements ILifecycleTransaction
+public class LifecycleTransaction extends Transactional.AbstractTransactional implements LifecycleNewTracker
 {
     private static final Logger logger = LoggerFactory.getLogger(LifecycleTransaction.class);
 
@@ -281,6 +280,11 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
     public boolean isOffline()
     {
         return tracker.isDummy();
+    }
+
+    public void permitRedundantTransitions()
+    {
+        super.permitRedundantTransitions();
     }
 
     /**
@@ -534,14 +538,9 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
         log.untrackNew(table);
     }
 
-    public static boolean removeUnfinishedLeftovers(ColumnFamilyStore cfs)
+    public static void removeUnfinishedLeftovers(CFMetaData metadata)
     {
-        return LogTransaction.removeUnfinishedLeftovers(cfs.getDirectories().getCFDirectories());
-    }
-
-    public static boolean removeUnfinishedLeftovers(TableMetadata metadata)
-    {
-        return LogTransaction.removeUnfinishedLeftovers(metadata);
+        LogTransaction.removeUnfinishedLeftovers(metadata);
     }
 
     /**
@@ -556,7 +555,7 @@ public class LifecycleTransaction extends Transactional.AbstractTransactional im
      * @param filter - A function that receives each file and its type, it should return true to have the file returned
      * @return - the list of files that were scanned and for which the filter returned true
      */
-    public static List<File> getFiles(Path folder, BiPredicate<File, Directories.FileType> filter, Directories.OnTxnErr onTxnErr)
+    public static List<File> getFiles(Path folder, BiFunction<File, Directories.FileType, Boolean> filter, Directories.OnTxnErr onTxnErr)
     {
         return new LogAwareFileLister(folder, filter, onTxnErr).list();
     }

@@ -20,23 +20,15 @@ package org.apache.cassandra.tracing;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.Mutation;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.db.RowUpdateBuilder;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.SchemaConstants;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.schema.Tables;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
-
-import static java.lang.String.format;
 
 public final class TraceKeyspace
 {
@@ -44,50 +36,46 @@ public final class TraceKeyspace
     {
     }
 
+    public static final String NAME = "system_traces";
+
     public static final String SESSIONS = "sessions";
     public static final String EVENTS = "events";
 
-    private static final TableMetadata Sessions =
-        parse(SESSIONS,
+    private static final CFMetaData Sessions =
+        compile(SESSIONS,
                 "tracing sessions",
                 "CREATE TABLE %s ("
                 + "session_id uuid,"
                 + "command text,"
                 + "client inet,"
                 + "coordinator inet,"
-                + "coordinator_port int,"
                 + "duration int,"
                 + "parameters map<text, text>,"
                 + "request text,"
                 + "started_at timestamp,"
                 + "PRIMARY KEY ((session_id)))");
 
-    private static final TableMetadata Events =
-        parse(EVENTS,
+    private static final CFMetaData Events =
+        compile(EVENTS,
                 "tracing events",
                 "CREATE TABLE %s ("
                 + "session_id uuid,"
                 + "event_id timeuuid,"
                 + "activity text,"
                 + "source inet,"
-                + "source_port int,"
                 + "source_elapsed int,"
                 + "thread text,"
                 + "PRIMARY KEY ((session_id), event_id))");
 
-    private static TableMetadata parse(String table, String description, String cql)
+    private static CFMetaData compile(String name, String description, String schema)
     {
-        return CreateTableStatement.parse(format(cql, table), SchemaConstants.TRACE_KEYSPACE_NAME)
-                                   .id(TableId.forSystemTable(SchemaConstants.TRACE_KEYSPACE_NAME, table))
-                                   .gcGraceSeconds(0)
-                                   .memtableFlushPeriod((int) TimeUnit.HOURS.toMillis(1))
-                                   .comment(description)
-                                   .build();
+        return CFMetaData.compile(String.format(schema, name), NAME)
+                         .comment(description);
     }
 
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(SchemaConstants.TRACE_KEYSPACE_NAME, KeyspaceParams.simple(2), Tables.of(Sessions, Events));
+        return KeyspaceMetadata.create(NAME, KeyspaceParams.simple(2), Tables.of(Sessions, Events));
     }
 
     static Mutation makeStartSessionMutation(ByteBuffer sessionId,
@@ -98,45 +86,36 @@ public final class TraceKeyspace
                                              String command,
                                              int ttl)
     {
-        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Sessions, sessionId);
-        Row.SimpleBuilder rb = builder.row();
-        rb.ttl(ttl)
-          .add("client", client)
-          .add("coordinator", FBUtilities.getBroadcastAddressAndPort().address);
-        if (!Gossiper.instance.haveMajorVersion3Nodes())
-            rb.add("coordinator_port", FBUtilities.getBroadcastAddressAndPort().port);
-        rb.add("request", request)
-          .add("started_at", new Date(startedAt))
-          .add("command", command)
-          .appendAll("parameters", parameters);
+        RowUpdateBuilder adder = new RowUpdateBuilder(Sessions, FBUtilities.timestampMicros(), ttl, sessionId)
+                                 .clustering()
+                                 .add("client", client)
+                                 .add("coordinator", FBUtilities.getBroadcastAddress())
+                                 .add("request", request)
+                                 .add("started_at", new Date(startedAt))
+                                 .add("command", command);
 
-        return builder.buildAsMutation();
+        for (Map.Entry<String, String> entry : parameters.entrySet())
+            adder.addMapEntry("parameters", entry.getKey(), entry.getValue());
+        return adder.build();
     }
 
     static Mutation makeStopSessionMutation(ByteBuffer sessionId, int elapsed, int ttl)
     {
-        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Sessions, sessionId);
-        builder.row()
-               .ttl(ttl)
-               .add("duration", elapsed);
-        return builder.buildAsMutation();
+        return new RowUpdateBuilder(Sessions, FBUtilities.timestampMicros(), ttl, sessionId)
+               .clustering()
+               .add("duration", elapsed)
+               .build();
     }
 
     static Mutation makeEventMutation(ByteBuffer sessionId, String message, int elapsed, String threadName, int ttl)
     {
-        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Events, sessionId);
-        Row.SimpleBuilder rowBuilder = builder.row(UUIDGen.getTimeUUID())
-                                              .ttl(ttl);
-
-        rowBuilder.add("activity", message)
-                  .add("source", FBUtilities.getBroadcastAddressAndPort().address);
-        if (!Gossiper.instance.haveMajorVersion3Nodes())
-            rowBuilder.add("source_port", FBUtilities.getBroadcastAddressAndPort().port);
-        rowBuilder.add("thread", threadName);
-
+        RowUpdateBuilder adder = new RowUpdateBuilder(Events, FBUtilities.timestampMicros(), ttl, sessionId)
+                                 .clustering(UUIDGen.getTimeUUID());
+        adder.add("activity", message);
+        adder.add("source", FBUtilities.getBroadcastAddress());
+        adder.add("thread", threadName);
         if (elapsed >= 0)
-            rowBuilder.add("source_elapsed", elapsed);
-
-        return builder.buildAsMutation();
+            adder.add("source_elapsed", elapsed);
+        return adder.build();
     }
 }

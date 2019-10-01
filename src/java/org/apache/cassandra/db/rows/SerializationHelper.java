@@ -20,12 +20,11 @@ package org.apache.cassandra.db.rows;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.schema.ColumnMetadata;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.filter.ColumnFilter;
-import org.apache.cassandra.schema.DroppedColumn;
 
 public class SerializationHelper
 {
@@ -51,71 +50,54 @@ public class SerializationHelper
     private final ColumnFilter columnsToFetch;
     private ColumnFilter.Tester tester;
 
-    private final boolean hasDroppedColumns;
-    private final Map<ByteBuffer, DroppedColumn> droppedColumns;
-    private DroppedColumn currentDroppedComplex;
+    private final Map<ByteBuffer, CFMetaData.DroppedColumn> droppedColumns;
+    private CFMetaData.DroppedColumn currentDroppedComplex;
 
 
-    public SerializationHelper(TableMetadata metadata, int version, Flag flag, ColumnFilter columnsToFetch)
+    public SerializationHelper(CFMetaData metadata, int version, Flag flag, ColumnFilter columnsToFetch)
     {
         this.flag = flag;
         this.version = version;
         this.columnsToFetch = columnsToFetch;
-        this.droppedColumns = metadata.droppedColumns;
-        this.hasDroppedColumns = droppedColumns.size() > 0;
+        this.droppedColumns = metadata.getDroppedColumns();
     }
 
-    public SerializationHelper(TableMetadata metadata, int version, Flag flag)
+    public SerializationHelper(CFMetaData metadata, int version, Flag flag)
     {
         this(metadata, version, flag, null);
     }
 
-    public boolean includes(ColumnMetadata column)
+    public Columns fetchedStaticColumns(SerializationHeader header)
     {
-        return columnsToFetch == null || columnsToFetch.fetches(column);
+        return columnsToFetch == null ? header.columns().statics : columnsToFetch.fetchedColumns().statics;
     }
 
-    public boolean includes(Cell cell, LivenessInfo rowLiveness)
+    public Columns fetchedRegularColumns(SerializationHeader header)
     {
-        if (columnsToFetch == null)
-            return true;
+        return columnsToFetch == null ? header.columns().regulars : columnsToFetch.fetchedColumns().regulars;
+    }
 
-        // During queries, some columns are included even though they are not queried by the user because
-        // we always need to distinguish between having a row (with potentially only null values) and not
-        // having a row at all (see #CASSANDRA-7085 for background). In the case where the column is not
-        // actually requested by the user however (canSkipValue), we can skip the full cell if the cell
-        // timestamp is lower than the row one, because in that case, the row timestamp is enough proof
-        // of the liveness of the row. Otherwise, we'll only be able to skip the values of those cells.
-        ColumnMetadata column = cell.column();
-        if (column.isComplex())
-        {
-            if (!includes(cell.path()))
-                return false;
-
-            return !canSkipValue(cell.path()) || cell.timestamp() >= rowLiveness.timestamp();
-        }
-        else
-        {
-            return columnsToFetch.fetchedColumnIsQueried(column) || cell.timestamp() >= rowLiveness.timestamp();
-        }
+    public boolean includes(ColumnDefinition column)
+    {
+        return columnsToFetch == null || columnsToFetch.includes(column);
     }
 
     public boolean includes(CellPath path)
     {
-        return path == null || tester == null || tester.fetches(path);
+        return path == null || tester == null || tester.includes(path);
     }
 
-    public boolean canSkipValue(ColumnMetadata column)
+    public boolean canSkipValue(ColumnDefinition column)
     {
-        return columnsToFetch != null && !columnsToFetch.fetchedColumnIsQueried(column);
+        return columnsToFetch != null && columnsToFetch.canSkipValue(column);
     }
 
     public boolean canSkipValue(CellPath path)
     {
-        return path != null && tester != null && !tester.fetchedCellIsQueried(path);
+        return path != null && tester != null && tester.canSkipValue(path);
     }
 
-    public void startOfComplexColumn(ColumnMetadata column)
+    public void startOfComplexColumn(ColumnDefinition column)
     {
         this.tester = columnsToFetch == null ? null : columnsToFetch.newTester(column);
         this.currentDroppedComplex = droppedColumns.get(column.name.bytes);
@@ -128,10 +110,7 @@ public class SerializationHelper
 
     public boolean isDropped(Cell cell, boolean isComplex)
     {
-        if (!hasDroppedColumns)
-            return false;
-
-        DroppedColumn dropped = isComplex ? currentDroppedComplex : droppedColumns.get(cell.column().name.bytes);
+        CFMetaData.DroppedColumn dropped = isComplex ? currentDroppedComplex : droppedColumns.get(cell.column().name.bytes);
         return dropped != null && cell.timestamp() <= dropped.droppedTime;
     }
 

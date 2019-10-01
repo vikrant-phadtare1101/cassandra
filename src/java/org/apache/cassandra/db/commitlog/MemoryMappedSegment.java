@@ -38,11 +38,12 @@ public class MemoryMappedSegment extends CommitLogSegment
     /**
      * Constructs a new segment file.
      *
+     * @param filePath  if not null, recycles the existing file by renaming it and truncating it to CommitLog.SEGMENT_SIZE.
      * @param commitLog the commit log it will be used with.
      */
-    MemoryMappedSegment(CommitLog commitLog, AbstractCommitLogSegmentManager manager)
+    MemoryMappedSegment(CommitLog commitLog)
     {
-        super(commitLog, manager);
+        super(commitLog);
         // mark the initial sync marker as uninitialised
         int firstSync = buffer.position();
         buffer.putInt(firstSync + 0, 0);
@@ -54,7 +55,7 @@ public class MemoryMappedSegment extends CommitLogSegment
         try
         {
             MappedByteBuffer mappedFile = channel.map(FileChannel.MapMode.READ_WRITE, 0, DatabaseDescriptor.getCommitLogSegmentSize());
-            manager.addSize(DatabaseDescriptor.getCommitLogSegmentSize());
+            commitLog.allocator.addSize(DatabaseDescriptor.getCommitLogSegmentSize());
             return mappedFile;
         }
         catch (IOException e)
@@ -102,7 +103,8 @@ public class MemoryMappedSegment extends CommitLogSegment
     @Override
     protected void internalClose()
     {
-        FileUtils.clean(buffer);
+        if (FileUtils.isCleanerAvailable())
+            FileUtils.clean(buffer);
         super.internalClose();
     }
 }

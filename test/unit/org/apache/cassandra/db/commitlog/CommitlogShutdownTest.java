@@ -40,7 +40,6 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.TableId;
 import org.jboss.byteman.contrib.bmunit.BMRule;
 import org.jboss.byteman.contrib.bmunit.BMUnitRunner;
 
@@ -63,7 +62,6 @@ public class CommitlogShutdownTest
     public void testShutdownWithPendingTasks() throws Exception
     {
         new Random().nextBytes(entropy);
-        DatabaseDescriptor.daemonInitialization();
         DatabaseDescriptor.setCommitLogCompression(new ParameterizedClass("LZ4Compressor", ImmutableMap.of()));
         DatabaseDescriptor.setCommitLogSegmentSize(1);
         DatabaseDescriptor.setCommitLogSync(Config.CommitLogSync.periodic);
@@ -75,9 +73,10 @@ public class CommitlogShutdownTest
 
                                     CompactionManager.instance.disableAutoCompaction();
 
+        CommitLog.instance.resetUnsafe(true);
         ColumnFamilyStore cfs1 = Keyspace.open(KEYSPACE1).getColumnFamilyStore(STANDARD1);
 
-        final Mutation m = new RowUpdateBuilder(cfs1.metadata.get(), 0, "k")
+        final Mutation m = new RowUpdateBuilder(cfs1.metadata, 0, "k")
                            .clustering("bytes")
                            .add("val", ByteBuffer.wrap(entropy))
                            .build();
@@ -89,11 +88,11 @@ public class CommitlogShutdownTest
         }
 
         // schedule discarding completed segments and immediately issue a shutdown
-        TableId tableId = m.getTableIds().iterator().next();
-        CommitLog.instance.discardCompletedSegments(tableId, CommitLogPosition.NONE, CommitLog.instance.getCurrentPosition());
+        UUID cfid = m.getColumnFamilyIds().iterator().next();
+        CommitLog.instance.discardCompletedSegments(cfid, ReplayPosition.NONE, CommitLog.instance.getContext());
         CommitLog.instance.shutdownBlocking();
 
         // the shutdown should block until all logs except the currently active one and perhaps a new, empty one are gone
-        Assert.assertTrue(new File(DatabaseDescriptor.getCommitLogLocation()).listFiles().length <= 2);
+        Assert.assertTrue(new File(CommitLog.instance.location).listFiles().length <= 2);
     }
 }

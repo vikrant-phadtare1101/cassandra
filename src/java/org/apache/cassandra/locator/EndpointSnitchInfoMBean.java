@@ -53,4 +53,5 @@ public interface EndpointSnitchInfoMBean
      * @return Snitch name
      */
     public String getSnitchName();
+
 }

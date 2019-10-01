@@ -17,7 +17,7 @@
  */
 package org.apache.cassandra.gms;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
+import java.net.InetAddress;
 
 /**
  * An interface that provides an application with the ability
@@ -35,7 +35,7 @@ public interface IFailureDetector
      * @param ep endpoint in question.
      * @return true if UP and false if DOWN.
      */
-    public boolean isAlive(InetAddressAndPort ep);
+    public boolean isAlive(InetAddress ep);
 
     /**
      * This method is invoked by any entity wanting to interrogate the status of an endpoint.
@@ -44,7 +44,7 @@ public interface IFailureDetector
      *
      * param ep endpoint for which we interpret the inter arrival times.
      */
-    public void interpret(InetAddressAndPort ep);
+    public void interpret(InetAddress ep);
 
     /**
      * This method is invoked by the receiver of the heartbeat. In our case it would be
@@ -53,17 +53,17 @@ public interface IFailureDetector
      *
      * param ep endpoint being reported.
      */
-    public void report(InetAddressAndPort ep);
+    public void report(InetAddress ep);
 
     /**
      * remove endpoint from failure detector
      */
-    public void remove(InetAddressAndPort ep);
+    public void remove(InetAddress ep);
 
     /**
      * force conviction of endpoint in the failure detector
      */
-    public void forceConviction(InetAddressAndPort ep);
+    public void forceConviction(InetAddress ep);
 
     /**
      * Register interest for Failure Detector events.

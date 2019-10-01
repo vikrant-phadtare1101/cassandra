@@ -19,10 +19,10 @@ package org.apache.cassandra.db.partitions;
 
 import java.util.Iterator;
 
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletionInfo;
-import org.apache.cassandra.db.RegularAndStaticColumns;
+import org.apache.cassandra.db.PartitionColumns;
 import org.apache.cassandra.db.rows.*;
 
 public class FilteredPartition extends ImmutableBTreePartition
@@ -48,9 +48,9 @@ public class FilteredPartition extends ImmutableBTreePartition
         final Iterator<Row> iter = iterator();
         return new RowIterator()
         {
-            public TableMetadata metadata()
+            public CFMetaData metadata()
             {
-                return FilteredPartition.this.metadata();
+                return metadata;
             }
 
             public boolean isReverseOrder()
@@ -58,14 +58,14 @@ public class FilteredPartition extends ImmutableBTreePartition
                 return false;
             }
 
-            public RegularAndStaticColumns columns()
+            public PartitionColumns columns()
             {
                 return FilteredPartition.this.columns();
             }
 
             public DecoratedKey partitionKey()
             {
-                return FilteredPartition.this.partitionKey();
+                return partitionKey;
             }
 
             public Row staticRow()

@@ -33,14 +33,14 @@ import com.datastax.driver.core.Row;
 import com.datastax.driver.core.TupleType;
 import com.datastax.driver.core.TupleValue;
 import com.datastax.driver.core.UDTValue;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.exceptions.FunctionExecutionException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.schema.Schema;
-import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.transport.Server;
 
 public class UFJavaTest extends CQLTester
 {
@@ -106,15 +106,15 @@ public class UFJavaTest extends CQLTester
         catch (InvalidRequestException e)
         {
             Assert.assertTrue(e.getMessage(), e.getMessage().contains("Java source compilation failed"));
-            Assert.assertTrue(e.getMessage(), e.getMessage().contains("foobarbaz cannot be resolved"));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("foobarbaz cannot be resolved to a type"));
         }
     }
 
     @Test
     public void testJavaFunctionInvalidReturn() throws Throwable
     {
-        assertInvalidMessage("cannot convert from long to Double",
-                             "CREATE OR REPLACE FUNCTION " + KEYSPACE + ".jfir(val double) " +
+        assertInvalidMessage("system keyspace is not user-modifiable",
+                             "CREATE OR REPLACE FUNCTION jfir(val double) " +
                              "RETURNS NULL ON NULL INPUT " +
                              "RETURNS double " +
                              "LANGUAGE JAVA\n" +
@@ -330,7 +330,7 @@ public class UFJavaTest extends CQLTester
                    row(list, set, map));
 
         // same test - but via native protocol
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
             assertRowsNet(version,
                           executeNet(version, "SELECT " + fList + "(lst), " + fSet + "(st), " + fMap + "(mp) FROM %s WHERE key = 1"),
                           row(list, set, map));
@@ -428,13 +428,13 @@ public class UFJavaTest extends CQLTester
         // we use protocol V3 here to encode the expected version because the server
         // always serializes Collections using V3 - see CollectionSerializer's
         // serialize and deserialize methods.
-        TupleType tType = tupleTypeOf(ProtocolVersion.V3,
+        TupleType tType = tupleTypeOf(Server.VERSION_3,
                                       DataType.cdouble(),
                                       DataType.list(DataType.cdouble()),
                                       DataType.set(DataType.text()),
                                       DataType.map(DataType.cint(), DataType.cboolean()));
         TupleValue tup = tType.newValue(1d, list, set, map);
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
         {
             assertRowsNet(version,
                           executeNet(version, "SELECT " + fTup0 + "(tup) FROM %s WHERE key = 1"),
@@ -461,7 +461,7 @@ public class UFJavaTest extends CQLTester
         createTable("CREATE TABLE %s (key int primary key, udt frozen<" + KEYSPACE + '.' + type + ">)");
         execute("INSERT INTO %s (key, udt) VALUES (1, {txt: 'one', i:1})");
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
         {
             executeNet(version, "USE " + KEYSPACE);
 
@@ -525,7 +525,7 @@ public class UFJavaTest extends CQLTester
         assertRows(execute("SELECT " + fUdt2 + "(udt) FROM %s WHERE key = 1"),
                    row(1));
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
         {
             List<Row> rowsNet = executeNet(version, "SELECT " + fUdt0 + "(udt) FROM %s WHERE key = 1").all();
             Assert.assertEquals(1, rowsNet.size());
@@ -750,7 +750,7 @@ public class UFJavaTest extends CQLTester
         assertRows(execute("SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                    row("three", "one", "two"));
 
-        for (ProtocolVersion version : PROTOCOL_VERSIONS)
+        for (int version : PROTOCOL_VERSIONS)
             assertRowsNet(version,
                           executeNet(version, "SELECT " + fName1 + "(lst), " + fName2 + "(st), " + fName3 + "(mp) FROM %s WHERE key = 1"),
                           row("three", "one", "two"));

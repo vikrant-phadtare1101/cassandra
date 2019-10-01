@@ -17,16 +17,15 @@
  */
 package org.apache.cassandra.db.compaction;
 
-import java.util.*;
-import java.util.function.LongPredicate;
+import java.util.List;
+import java.util.UUID;
+import java.util.function.Predicate;
 
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Ordering;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.partitions.PurgeFunction;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterators;
@@ -34,7 +33,7 @@ import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.index.transactions.CompactionTransaction;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
-import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
+import org.apache.cassandra.metrics.CompactionMetrics;
 
 /**
  * Merge multiple iterators over the content of sstable into a "compacted" iterator.
@@ -54,18 +53,17 @@ import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
  */
 public class CompactionIterator extends CompactionInfo.Holder implements UnfilteredPartitionIterator
 {
+    private static final Logger logger = LoggerFactory.getLogger(CompactionIterator.class);
     private static final long UNFILTERED_TO_UPDATE_PROGRESS = 100;
 
     private final OperationType type;
     private final CompactionController controller;
     private final List<ISSTableScanner> scanners;
-    private final ImmutableSet<SSTableReader> sstables;
     private final int nowInSec;
     private final UUID compactionId;
 
     private final long totalBytes;
     private long bytesRead;
-    private long totalSourceCQLRows;
 
     /*
      * counters for merged rows.
@@ -75,15 +73,15 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     private final long[] mergeCounters;
 
     private final UnfilteredPartitionIterator compacted;
-    private final ActiveCompactionsTracker activeCompactions;
+    private final CompactionMetrics metrics;
 
     public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId)
     {
-        this(type, scanners, controller, nowInSec, compactionId, ActiveCompactionsTracker.NOOP);
+        this(type, scanners, controller, nowInSec, compactionId, null);
     }
 
     @SuppressWarnings("resource") // We make sure to close mergedIterator in close() and CompactionIterator is itself an AutoCloseable
-    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId, ActiveCompactionsTracker activeCompactions)
+    public CompactionIterator(OperationType type, List<ISSTableScanner> scanners, CompactionController controller, int nowInSec, UUID compactionId, CompactionMetrics metrics)
     {
         this.controller = controller;
         this.type = type;
@@ -97,31 +95,35 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
             bytes += scanner.getLengthInBytes();
         this.totalBytes = bytes;
         this.mergeCounters = new long[scanners.size()];
-        this.activeCompactions = activeCompactions == null ? ActiveCompactionsTracker.NOOP : activeCompactions;
-        this.activeCompactions.beginCompaction(this); // note that CompactionTask also calls this, but CT only creates CompactionIterator with a NOOP ActiveCompactions
+        this.metrics = metrics;
+
+        if (metrics != null)
+            metrics.beginCompaction(this);
 
         UnfilteredPartitionIterator merged = scanners.isEmpty()
-                                           ? EmptyIterators.unfilteredPartition(controller.cfs.metadata())
-                                           : UnfilteredPartitionIterators.merge(scanners, listener());
-        merged = Transformation.apply(merged, new GarbageSkipper(controller));
-        merged = Transformation.apply(merged, new Purger(controller, nowInSec));
-        compacted = Transformation.apply(merged, new AbortableUnfilteredPartitionTransformation(this));
-        sstables = scanners.stream().map(ISSTableScanner::getBackingSSTables).flatMap(Collection::stream).collect(ImmutableSet.toImmutableSet());
+                                             ? EmptyIterators.unfilteredPartition(controller.cfs.metadata, false)
+                                             : UnfilteredPartitionIterators.merge(scanners, nowInSec, listener());
+        boolean isForThrift = merged.isForThrift(); // to stop capture of iterator in Purger, which is confusing for debug
+        this.compacted = Transformation.apply(merged, new Purger(isForThrift, controller, nowInSec));
     }
 
-    public TableMetadata metadata()
+    public boolean isForThrift()
     {
-        return controller.cfs.metadata();
+        return false;
+    }
+
+    public CFMetaData metadata()
+    {
+        return controller.cfs.metadata;
     }
 
     public CompactionInfo getCompactionInfo()
     {
-        return new CompactionInfo(controller.cfs.metadata(),
+        return new CompactionInfo(controller.cfs.metadata,
                                   type,
                                   bytesRead,
                                   totalBytes,
-                                  compactionId,
-                                  sstables);
+                                  compactionId);
     }
 
     private void updateCounterFor(int rows)
@@ -133,11 +135,6 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
     public long[] getMergedRowCounts()
     {
         return mergeCounters;
-    }
-
-    public long getTotalSourceCQLRows()
-    {
-        return totalSourceCQLRows;
     }
 
     private UnfilteredPartitionIterators.MergeListener listener()
@@ -170,7 +167,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
                         regulars = regulars.mergeTo(iter.columns().regulars);
                     }
                 }
-                final RegularAndStaticColumns regularAndStaticColumns = new RegularAndStaticColumns(statics, regulars);
+                final PartitionColumns partitionColumns = new PartitionColumns(statics, regulars);
 
                 // If we have a 2ndary index, we must update it with deleted/shadowed cells.
                 // we can reuse a single CleanupTransaction for the duration of a partition.
@@ -184,7 +181,7 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
                 // TODO: this should probably be done asynchronously and batched.
                 final CompactionTransaction indexTransaction =
                     controller.cfs.indexManager.newCompactionTransaction(partitionKey,
-                                                                         regularAndStaticColumns,
+                                                                         partitionColumns,
                                                                          versions.size(),
                                                                          nowInSec);
 
@@ -248,7 +245,8 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         }
         finally
         {
-            activeCompactions.finishCompaction(this);
+            if (metrics != null)
+                metrics.finishCompaction(this);
         }
     }
 
@@ -262,15 +260,18 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         private final CompactionController controller;
 
         private DecoratedKey currentKey;
-        private LongPredicate purgeEvaluator;
+        private Predicate<Long> purgeEvaluator;
 
         private long compactedUnfiltered;
 
-        private Purger(CompactionController controller, int nowInSec)
+        private Purger(boolean isForThrift, CompactionController controller, int nowInSec)
         {
-            super(nowInSec, controller.gcBefore, controller.compactingRepaired() ? Integer.MAX_VALUE : Integer.MIN_VALUE,
+            super(isForThrift,
+                  nowInSec,
+                  controller.gcBefore,
+                  controller.compactingRepaired() ? Integer.MAX_VALUE : Integer.MIN_VALUE,
                   controller.cfs.getCompactionStrategyManager().onlyPurgeRepairedTombstones(),
-                  controller.cfs.metadata.get().enforceStrictLiveness());
+                  controller.cfs.metadata.enforceStrictLiveness());
             this.controller = controller;
         }
 
@@ -291,7 +292,6 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
         @Override
         protected void updateProgress()
         {
-            totalSourceCQLRows++;
             if ((++compactedUnfiltered) % UNFILTERED_TO_UPDATE_PROGRESS == 0)
                 updateBytesRead();
         }
@@ -302,276 +302,13 @@ public class CompactionIterator extends CompactionInfo.Holder implements Unfilte
          * This is computed lazily on demand as we only need this if there is tombstones and this a bit expensive
          * (see #8914).
          */
-        protected LongPredicate getPurgeEvaluator()
+        protected Predicate<Long> getPurgeEvaluator()
         {
             if (purgeEvaluator == null)
             {
                 purgeEvaluator = controller.getPurgeEvaluator(currentKey);
             }
             return purgeEvaluator;
-        }
-    }
-
-    /**
-     * Unfiltered row iterator that removes deleted data as provided by a "tombstone source" for the partition.
-     * The result produced by this iterator is such that when merged with tombSource it produces the same output
-     * as the merge of dataSource and tombSource.
-     */
-    private static class GarbageSkippingUnfilteredRowIterator extends WrappingUnfilteredRowIterator
-    {
-        final UnfilteredRowIterator tombSource;
-        final DeletionTime partitionLevelDeletion;
-        final Row staticRow;
-        final ColumnFilter cf;
-        final TableMetadata metadata;
-        final boolean cellLevelGC;
-
-        DeletionTime tombOpenDeletionTime = DeletionTime.LIVE;
-        DeletionTime dataOpenDeletionTime = DeletionTime.LIVE;
-        DeletionTime openDeletionTime = DeletionTime.LIVE;
-        DeletionTime partitionDeletionTime;
-        DeletionTime activeDeletionTime;
-        Unfiltered tombNext = null;
-        Unfiltered dataNext = null;
-        Unfiltered next = null;
-
-        /**
-         * Construct an iterator that filters out data shadowed by the provided "tombstone source".
-         *
-         * @param dataSource The input row. The result is a filtered version of this.
-         * @param tombSource Tombstone source, i.e. iterator used to identify deleted data in the input row.
-         * @param cellLevelGC If false, the iterator will only look at row-level deletion times and tombstones.
-         *                    If true, deleted or overwritten cells within a surviving row will also be removed.
-         */
-        protected GarbageSkippingUnfilteredRowIterator(UnfilteredRowIterator dataSource, UnfilteredRowIterator tombSource, boolean cellLevelGC)
-        {
-            super(dataSource);
-            this.tombSource = tombSource;
-            this.cellLevelGC = cellLevelGC;
-            metadata = dataSource.metadata();
-            cf = ColumnFilter.all(metadata);
-
-            activeDeletionTime = partitionDeletionTime = tombSource.partitionLevelDeletion();
-
-            // Only preserve partition level deletion if not shadowed. (Note: Shadowing deletion must not be copied.)
-            this.partitionLevelDeletion = dataSource.partitionLevelDeletion().supersedes(tombSource.partitionLevelDeletion()) ?
-                    dataSource.partitionLevelDeletion() :
-                    DeletionTime.LIVE;
-
-            Row dataStaticRow = garbageFilterRow(dataSource.staticRow(), tombSource.staticRow());
-            this.staticRow = dataStaticRow != null ? dataStaticRow : Rows.EMPTY_STATIC_ROW;
-
-            tombNext = advance(tombSource);
-            dataNext = advance(dataSource);
-        }
-
-        private static Unfiltered advance(UnfilteredRowIterator source)
-        {
-            return source.hasNext() ? source.next() : null;
-        }
-
-        @Override
-        public DeletionTime partitionLevelDeletion()
-        {
-            return partitionLevelDeletion;
-        }
-
-        public void close()
-        {
-            super.close();
-            tombSource.close();
-        }
-
-        @Override
-        public Row staticRow()
-        {
-            return staticRow;
-        }
-
-        @Override
-        public boolean hasNext()
-        {
-            // Produce the next element. This may consume multiple elements from both inputs until we find something
-            // from dataSource that is still live. We track the currently open deletion in both sources, as well as the
-            // one we have last issued to the output. The tombOpenDeletionTime is used to filter out content; the others
-            // to decide whether or not a tombstone is superseded, and to be able to surface (the rest of) a deletion
-            // range from the input when a suppressing deletion ends.
-            while (next == null && dataNext != null)
-            {
-                int cmp = tombNext == null ? -1 : metadata.comparator.compare(dataNext, tombNext);
-                if (cmp < 0)
-                {
-                    if (dataNext.isRow())
-                        next = ((Row) dataNext).filter(cf, activeDeletionTime, false, metadata);
-                    else
-                        next = processDataMarker();
-                }
-                else if (cmp == 0)
-                {
-                    if (dataNext.isRow())
-                    {
-                        next = garbageFilterRow((Row) dataNext, (Row) tombNext);
-                    }
-                    else
-                    {
-                        tombOpenDeletionTime = updateOpenDeletionTime(tombOpenDeletionTime, tombNext);
-                        activeDeletionTime = Ordering.natural().max(partitionDeletionTime,
-                                                                    tombOpenDeletionTime);
-                        next = processDataMarker();
-                    }
-                }
-                else // (cmp > 0)
-                {
-                    if (tombNext.isRangeTombstoneMarker())
-                    {
-                        tombOpenDeletionTime = updateOpenDeletionTime(tombOpenDeletionTime, tombNext);
-                        activeDeletionTime = Ordering.natural().max(partitionDeletionTime,
-                                                                    tombOpenDeletionTime);
-                        boolean supersededBefore = openDeletionTime.isLive();
-                        boolean supersededAfter = !dataOpenDeletionTime.supersedes(activeDeletionTime);
-                        // If a range open was not issued because it was superseded and the deletion isn't superseded any more, we need to open it now.
-                        if (supersededBefore && !supersededAfter)
-                            next = new RangeTombstoneBoundMarker(((RangeTombstoneMarker) tombNext).closeBound(false).invert(), dataOpenDeletionTime);
-                        // If the deletion begins to be superseded, we don't close the range yet. This can save us a close/open pair if it ends after the superseding range.
-                    }
-                }
-
-                if (next instanceof RangeTombstoneMarker)
-                    openDeletionTime = updateOpenDeletionTime(openDeletionTime, next);
-
-                if (cmp <= 0)
-                    dataNext = advance(wrapped);
-                if (cmp >= 0)
-                    tombNext = advance(tombSource);
-            }
-            return next != null;
-        }
-
-        protected Row garbageFilterRow(Row dataRow, Row tombRow)
-        {
-            if (cellLevelGC)
-            {
-                return Rows.removeShadowedCells(dataRow, tombRow, activeDeletionTime);
-            }
-            else
-            {
-                DeletionTime deletion = Ordering.natural().max(tombRow.deletion().time(),
-                                                               activeDeletionTime);
-                return dataRow.filter(cf, deletion, false, metadata);
-            }
-        }
-
-        /**
-         * Decide how to act on a tombstone marker from the input iterator. We can decide what to issue depending on
-         * whether or not the ranges before and after the marker are superseded/live -- if none are, we can reuse the
-         * marker; if both are, the marker can be ignored; otherwise we issue a corresponding start/end marker.
-         */
-        private RangeTombstoneMarker processDataMarker()
-        {
-            dataOpenDeletionTime = updateOpenDeletionTime(dataOpenDeletionTime, dataNext);
-            boolean supersededBefore = openDeletionTime.isLive();
-            boolean supersededAfter = !dataOpenDeletionTime.supersedes(activeDeletionTime);
-            RangeTombstoneMarker marker = (RangeTombstoneMarker) dataNext;
-            if (!supersededBefore)
-                if (!supersededAfter)
-                    return marker;
-                else
-                    return new RangeTombstoneBoundMarker(marker.closeBound(false), marker.closeDeletionTime(false));
-            else
-                if (!supersededAfter)
-                    return new RangeTombstoneBoundMarker(marker.openBound(false), marker.openDeletionTime(false));
-                else
-                    return null;
-        }
-
-        @Override
-        public Unfiltered next()
-        {
-            if (!hasNext())
-                throw new IllegalStateException();
-
-            Unfiltered v = next;
-            next = null;
-            return v;
-        }
-
-        private DeletionTime updateOpenDeletionTime(DeletionTime openDeletionTime, Unfiltered next)
-        {
-            RangeTombstoneMarker marker = (RangeTombstoneMarker) next;
-            assert openDeletionTime.isLive() == !marker.isClose(false);
-            assert openDeletionTime.isLive() || openDeletionTime.equals(marker.closeDeletionTime(false));
-            return marker.isOpen(false) ? marker.openDeletionTime(false) : DeletionTime.LIVE;
-        }
-    }
-
-    /**
-     * Partition transformation applying GarbageSkippingUnfilteredRowIterator, obtaining tombstone sources for each
-     * partition using the controller's shadowSources method.
-     */
-    private static class GarbageSkipper extends Transformation<UnfilteredRowIterator>
-    {
-        final CompactionController controller;
-        final boolean cellLevelGC;
-
-        private GarbageSkipper(CompactionController controller)
-        {
-            this.controller = controller;
-            cellLevelGC = controller.tombstoneOption == TombstoneOption.CELL;
-        }
-
-        @Override
-        protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
-        {
-            Iterable<UnfilteredRowIterator> sources = controller.shadowSources(partition.partitionKey(), !cellLevelGC);
-            if (sources == null)
-                return partition;
-            List<UnfilteredRowIterator> iters = new ArrayList<>();
-            for (UnfilteredRowIterator iter : sources)
-            {
-                if (!iter.isEmpty())
-                    iters.add(iter);
-                else
-                    iter.close();
-            }
-            if (iters.isEmpty())
-                return partition;
-
-            return new GarbageSkippingUnfilteredRowIterator(partition, UnfilteredRowIterators.merge(iters), cellLevelGC);
-        }
-    }
-
-    private static class AbortableUnfilteredPartitionTransformation extends Transformation<UnfilteredRowIterator>
-    {
-        private final AbortableUnfilteredRowTransformation abortableIter;
-
-        private AbortableUnfilteredPartitionTransformation(CompactionIterator iter)
-        {
-            this.abortableIter = new AbortableUnfilteredRowTransformation(iter);
-        }
-
-        @Override
-        protected UnfilteredRowIterator applyToPartition(UnfilteredRowIterator partition)
-        {
-            if (abortableIter.iter.isStopRequested())
-                throw new CompactionInterruptedException(abortableIter.iter.getCompactionInfo());
-            return Transformation.apply(partition, abortableIter);
-        }
-    }
-
-    private static class AbortableUnfilteredRowTransformation extends Transformation
-    {
-        private final CompactionIterator iter;
-
-        private AbortableUnfilteredRowTransformation(CompactionIterator iter)
-        {
-            this.iter = iter;
-        }
-
-        public Row applyToRow(Row row)
-        {
-            if (iter.isStopRequested())
-                throw new CompactionInterruptedException(iter.getCompactionInfo());
-            return row;
         }
     }
 }

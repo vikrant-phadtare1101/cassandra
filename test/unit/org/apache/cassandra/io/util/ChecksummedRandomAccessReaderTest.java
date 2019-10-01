@@ -24,97 +24,86 @@ import java.io.RandomAccessFile;
 import java.util.Arrays;
 import java.util.concurrent.ThreadLocalRandom;
 
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import static org.junit.Assert.*;
-
-import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.io.util.ChecksummedRandomAccessReader;
+import org.apache.cassandra.io.util.ChecksummedSequentialWriter;
+import org.apache.cassandra.io.util.RandomAccessReader;
+import org.apache.cassandra.io.util.SequentialWriter;
 
 public class ChecksummedRandomAccessReaderTest
 {
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
-
     @Test
     public void readFully() throws IOException
     {
-        final File data = FileUtils.createTempFile("testReadFully", "data");
-        final File crc = FileUtils.createTempFile("testReadFully", "crc");
+        final File data = File.createTempFile("testReadFully", "data");
+        final File crc = File.createTempFile("testReadFully", "crc");
 
         final byte[] expected = new byte[70 * 1024];   // bit more than crc chunk size, so we can test rebuffering.
         ThreadLocalRandom.current().nextBytes(expected);
 
-        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
-        {
-            writer.write(expected);
-            writer.finish();
-        }
+        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
+        writer.write(expected);
+        writer.finish();
 
         assert data.exists();
 
-        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
-        {
-            byte[] b = new byte[expected.length];
-            reader.readFully(b);
+        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
+        byte[] b = new byte[expected.length];
+        reader.readFully(b);
 
-            assertArrayEquals(expected, b);
+        assertArrayEquals(expected, b);
 
-            assertTrue(reader.isEOF());
-        }
+        assertTrue(reader.isEOF());
+
+        reader.close();
     }
 
     @Test
     public void seek() throws IOException
     {
-        final File data = FileUtils.createTempFile("testSeek", "data");
-        final File crc = FileUtils.createTempFile("testSeek", "crc");
+        final File data = File.createTempFile("testSeek", "data");
+        final File crc = File.createTempFile("testSeek", "crc");
 
         final byte[] dataBytes = new byte[70 * 1024];   // bit more than crc chunk size
         ThreadLocalRandom.current().nextBytes(dataBytes);
 
-        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
-        {
-            writer.write(dataBytes);
-            writer.finish();
-        }
+        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
+        writer.write(dataBytes);
+        writer.finish();
 
         assert data.exists();
 
-        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
-        {
+        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
 
-            final int seekPosition = 66000;
-            reader.seek(seekPosition);
+        final int seekPosition = 66000;
+        reader.seek(seekPosition);
 
-            byte[] b = new byte[dataBytes.length - seekPosition];
-            reader.readFully(b);
+        byte[] b = new byte[dataBytes.length - seekPosition];
+        reader.readFully(b);
 
-            byte[] expected = Arrays.copyOfRange(dataBytes, seekPosition, dataBytes.length);
+        byte[] expected = Arrays.copyOfRange(dataBytes, seekPosition, dataBytes.length);
 
-            assertArrayEquals(expected, b);
+        assertArrayEquals(expected, b);
 
-            assertTrue(reader.isEOF());
-        }
+        assertTrue(reader.isEOF());
+
+        reader.close();
     }
 
-    @Test(expected = CorruptFileException.class)
+    @Test(expected = ChecksummedRandomAccessReader.CorruptFileException.class)
     public void corruptionDetection() throws IOException
     {
-        final File data = FileUtils.createTempFile("corruptionDetection", "data");
-        final File crc = FileUtils.createTempFile("corruptionDetection", "crc");
+        final File data = File.createTempFile("corruptionDetection", "data");
+        final File crc = File.createTempFile("corruptionDetection", "crc");
 
         final byte[] expected = new byte[5 * 1024];
         Arrays.fill(expected, (byte) 0);
 
-        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
-        {
-            writer.write(expected);
-            writer.finish();
-        }
+        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
+        writer.write(expected);
+        writer.finish();
 
         assert data.exists();
 
@@ -125,14 +114,14 @@ public class ChecksummedRandomAccessReaderTest
             dataFile.write((byte) 5);
         }
 
-        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
-        {
-            byte[] b = new byte[expected.length];
-            reader.readFully(b);
+        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
+        byte[] b = new byte[expected.length];
+        reader.readFully(b);
 
-            assertArrayEquals(expected, b);
+        assertArrayEquals(expected, b);
 
-            assertTrue(reader.isEOF());
-        }
+        assertTrue(reader.isEOF());
+
+        reader.close();
     }
 }

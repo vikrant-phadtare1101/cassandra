@@ -20,6 +20,7 @@ package org.apache.cassandra.cql3;
 import static junit.framework.Assert.fail;
 
 import java.io.Closeable;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
 import org.junit.Assert;
@@ -33,7 +34,6 @@ import org.apache.cassandra.db.commitlog.CommitLogSegment;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.KillerForTests;
 
@@ -125,9 +125,9 @@ public class OutOfSpaceTest extends CQLTester
         }
 
         // Make sure commit log wasn't discarded.
-        TableId tableId = currentTableMetadata().id;
-        for (CommitLogSegment segment : CommitLog.instance.segmentManager.getActiveSegments())
-            if (segment.getDirtyTableIds().contains(tableId))
+        UUID cfid = currentTableMetadata().cfId;
+        for (CommitLogSegment segment : CommitLog.instance.allocator.getActiveSegments())
+            if (segment.getDirtyCFIDs().contains(cfid))
                 return;
         fail("Expected commit log to remain dirty for the affected table.");
     }

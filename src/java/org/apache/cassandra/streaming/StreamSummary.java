@@ -19,6 +19,7 @@ package org.apache.cassandra.streaming;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.UUID;
 
 import com.google.common.base.Objects;
 
@@ -26,7 +27,8 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.utils.UUIDSerializer;
 
 /**
  * Summary of streaming.
@@ -35,7 +37,7 @@ public class StreamSummary implements Serializable
 {
     public static final IVersionedSerializer<StreamSummary> serializer = new StreamSummarySerializer();
 
-    public final TableId tableId;
+    public final UUID cfId;
 
     /**
      * Number of files to transfer. Can be 0 if nothing to transfer for some streaming request.
@@ -43,9 +45,9 @@ public class StreamSummary implements Serializable
     public final int files;
     public final long totalSize;
 
-    public StreamSummary(TableId tableId, int files, long totalSize)
+    public StreamSummary(UUID cfId, int files, long totalSize)
     {
-        this.tableId = tableId;
+        this.cfId = cfId;
         this.files = files;
         this.totalSize = totalSize;
     }
@@ -56,20 +58,20 @@ public class StreamSummary implements Serializable
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         StreamSummary summary = (StreamSummary) o;
-        return files == summary.files && totalSize == summary.totalSize && tableId.equals(summary.tableId);
+        return files == summary.files && totalSize == summary.totalSize && cfId.equals(summary.cfId);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hashCode(tableId, files, totalSize);
+        return Objects.hashCode(cfId, files, totalSize);
     }
 
     @Override
     public String toString()
     {
         final StringBuilder sb = new StringBuilder("StreamSummary{");
-        sb.append("path=").append(tableId);
+        sb.append("path=").append(cfId);
         sb.append(", files=").append(files);
         sb.append(", totalSize=").append(totalSize);
         sb.append('}');
@@ -78,24 +80,25 @@ public class StreamSummary implements Serializable
 
     public static class StreamSummarySerializer implements IVersionedSerializer<StreamSummary>
     {
+        // arbitrary version is fine for UUIDSerializer for now...
         public void serialize(StreamSummary summary, DataOutputPlus out, int version) throws IOException
         {
-            summary.tableId.serialize(out);
+            UUIDSerializer.serializer.serialize(summary.cfId, out, MessagingService.current_version);
             out.writeInt(summary.files);
             out.writeLong(summary.totalSize);
         }
 
         public StreamSummary deserialize(DataInputPlus in, int version) throws IOException
         {
-            TableId tableId = TableId.deserialize(in);
+            UUID cfId = UUIDSerializer.serializer.deserialize(in, MessagingService.current_version);
             int files = in.readInt();
             long totalSize = in.readLong();
-            return new StreamSummary(tableId, files, totalSize);
+            return new StreamSummary(cfId, files, totalSize);
         }
 
         public long serializedSize(StreamSummary summary, int version)
         {
-            long size = summary.tableId.serializedSize();
+            long size = UUIDSerializer.serializer.serializedSize(summary.cfId, MessagingService.current_version);
             size += TypeSizes.sizeof(summary.files);
             size += TypeSizes.sizeof(summary.totalSize);
             return size;
