@@ -37,7 +37,7 @@ import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.junit.Test;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 
 public class ColumnFilterTest
 {

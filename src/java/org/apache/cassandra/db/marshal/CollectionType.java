@@ -211,7 +211,7 @@ public abstract class CollectionType<T> extends AbstractType<T>
     }
 
     @Override
-    public boolean equals(Object o)
+    public boolean equals(Object o, boolean ignoreFreezing)
     {
         if (this == o)
             return true;
@@ -224,10 +224,11 @@ public abstract class CollectionType<T> extends AbstractType<T>
         if (kind != other.kind)
             return false;
 
-        if (isMultiCell() != other.isMultiCell())
+        if (!ignoreFreezing && isMultiCell() != other.isMultiCell())
             return false;
 
-        return nameComparator().equals(other.nameComparator()) && valueComparator().equals(other.valueComparator());
+        return nameComparator().equals(other.nameComparator(), ignoreFreezing) &&
+               valueComparator().equals(other.valueComparator(), ignoreFreezing);
     }
 
     @Override
