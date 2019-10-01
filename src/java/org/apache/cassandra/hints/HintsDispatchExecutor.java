@@ -306,14 +306,4 @@ final class HintsDispatchExecutor
             }
         }
     }
-
-    public boolean isPaused()
-    {
-        return isPaused.get();
-    }
-
-    public boolean hasScheduledDispatches()
-    {
-        return !scheduledDispatches.isEmpty();
-    }
 }

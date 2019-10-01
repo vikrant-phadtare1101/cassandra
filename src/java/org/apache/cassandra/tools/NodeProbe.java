@@ -69,6 +69,7 @@ import org.apache.cassandra.db.HintedHandOffManager;
 import org.apache.cassandra.locator.DynamicEndpointSnitchMBean;
 import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
+import org.apache.cassandra.metrics.TableMetrics.Sampler;
 import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.metrics.ThreadPoolMetrics;
@@ -90,6 +91,7 @@ import com.codahale.metrics.JmxReporter;
 import com.google.common.base.Function;
 import com.google.common.base.Strings;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
@@ -419,25 +421,27 @@ public class NodeProbe implements AutoCloseable
             }
         }
     }
-    public Map<String, List<CompositeData>> getPartitionSample(int capacity, int durationMillis, int count, List<String> samplers) throws OpenDataException
+    public Map<String, Map<String, CompositeData>> getPartitionSample(int capacity, int duration, int count, List<String> samplers) throws OpenDataException
     {
-        return ssProxy.samplePartitions(durationMillis, capacity, count, samplers);
+        return ssProxy.samplePartitions(duration, capacity, count, samplers);
     }
 
-    public Map<String, List<CompositeData>> getPartitionSample(String ks, String cf, int capacity, int durationMillis, int count, List<String> samplers) throws OpenDataException
+    public Map<String, Map<String, CompositeData>> getPartitionSample(String ks, String cf, int capacity, int duration, int count, List<String> samplers) throws OpenDataException
     {
         ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
         for(String sampler : samplers)
         {
-            cfsProxy.beginLocalSampling(sampler, capacity, durationMillis);
+            cfsProxy.beginLocalSampling(sampler, capacity);
         }
-        Uninterruptibles.sleepUninterruptibly(durationMillis, TimeUnit.MILLISECONDS);
-        Map<String, List<CompositeData>> result = Maps.newHashMap();
+        Uninterruptibles.sleepUninterruptibly(duration, TimeUnit.MILLISECONDS);
+        Map<String, CompositeData> result = Maps.newHashMap();
         for(String sampler : samplers)
         {
             result.put(sampler, cfsProxy.finishLocalSampling(sampler, count));
         }
-        return result;
+        return new ImmutableMap.Builder<String, Map<String, CompositeData>>()
+                .put(ks + "." + cf, result)
+                .build();
     }
 
     public void invalidateCounterCache()
@@ -686,11 +690,6 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isDraining();
     }
 
-    public boolean isBootstrapMode()
-    {
-        return ssProxy.isBootstrapMode();
-    }
-
     public void joinRing() throws IOException
     {
         ssProxy.joinRing();
@@ -818,11 +817,6 @@ public class NodeProbe implements AutoCloseable
     public List<InetAddress> getEndpoints(String keyspace, String cf, String key)
     {
         return ssProxy.getNaturalEndpoints(keyspace, cf, key);
-    }
-
-    public List<String> getReplicas(String keyspace, String cf, String key)
-    {
-        return ssProxy.getReplicas(keyspace, cf, key);
     }
 
     public List<String> getSSTables(String keyspace, String cf, String key, boolean hexFormat)
@@ -1154,10 +1148,6 @@ public class NodeProbe implements AutoCloseable
                 return ssProxy.getCasContentionTimeout();
             case "truncate":
                 return ssProxy.getTruncateRpcTimeout();
-            case "internodeconnect":
-                return ssProxy.getInternodeTcpConnectTimeoutInMS();
-            case "internodeuser":
-                return ssProxy.getInternodeTcpUserTimeoutInMS();
             default:
                 throw new RuntimeException("Timeout type requires one of (" + GetTimeout.TIMEOUT_TYPES + ")");
         }
@@ -1241,12 +1231,6 @@ public class NodeProbe implements AutoCloseable
                 break;
             case "truncate":
                 ssProxy.setTruncateRpcTimeout(value);
-                break;
-            case "internodeconnect":
-                ssProxy.setInternodeTcpConnectTimeoutInMS((int) value);
-                break;
-            case "internodeuser":
-                ssProxy.setInternodeTcpUserTimeoutInMS((int) value);
                 break;
             default:
                 throw new RuntimeException("Timeout type requires one of (" + GetTimeout.TIMEOUT_TYPES + ")");
@@ -1746,7 +1730,7 @@ public class NodeProbe implements AutoCloseable
         return arsProxy;
     }
 
-    public void reloadSslCerts() throws IOException
+    public void reloadSslCerts()
     {
         msProxy.reloadSslCertificates();
     }
@@ -1761,19 +1745,9 @@ public class NodeProbe implements AutoCloseable
         ssProxy.disableAuditLog();
     }
 
-    public void enableAuditLog(String loggerName, String includedKeyspaces ,String excludedKeyspaces ,String includedCategories ,String excludedCategories ,String includedUsers ,String excludedUsers)
+    public void enableAuditLog(String loggerName, String includedKeyspaces ,String excludedKeyspaces ,String includedCategories ,String excludedCategories ,String includedUsers ,String excludedUsers, String archiveCommand)
     {
-        ssProxy.enableAuditLog(loggerName, includedKeyspaces, excludedKeyspaces, includedCategories, excludedCategories, includedUsers, excludedUsers);
-    }
-
-    public void enableOldProtocolVersions()
-    {
-        ssProxy.enableNativeTransportOldProtocolVersions();
-    }
-
-    public void disableOldProtocolVersions()
-    {
-        ssProxy.disableNativeTransportOldProtocolVersions();
+        ssProxy.enableAuditLog(loggerName, includedKeyspaces, excludedKeyspaces, includedCategories, excludedCategories, includedUsers, excludedUsers, archiveCommand);
     }
 }
 
