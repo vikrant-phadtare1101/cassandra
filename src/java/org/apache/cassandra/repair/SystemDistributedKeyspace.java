@@ -73,6 +73,8 @@ public final class SystemDistributedKeyspace
 
     public static final String VIEW_BUILD_STATUS = "view_build_status";
 
+    public static final String BLACKLISTED_PARTITIONS = "blacklisted_partitions";
+
     private static final TableMetadata RepairHistory =
         parse(REPAIR_HISTORY,
                 "Repair history",
@@ -120,6 +122,15 @@ public final class SystemDistributedKeyspace
                      + "status text,"
                      + "PRIMARY KEY ((keyspace_name, view_name), host_id))");
 
+    private static final TableMetadata BlacklistedPartitions =
+        parse(BLACKLISTED_PARTITIONS,
+              "Blacklisted Partitions",
+              "CREATE TABLE %s ("
+              + "keyspace_name text,"
+              + "columnfamily_name text,"
+              + "partition_key text,"
+              + "PRIMARY KEY ((keyspace_name, columnfamily_name), partition_key))");
+
     private static TableMetadata parse(String table, String description, String cql)
     {
         return CreateTableStatement.parse(format(cql, table), SchemaConstants.DISTRIBUTED_KEYSPACE_NAME)
@@ -130,7 +141,7 @@ public final class SystemDistributedKeyspace
 
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, KeyspaceParams.simple(3), Tables.of(RepairHistory, ParentRepairHistory, ViewBuildStatus));
+        return KeyspaceMetadata.create(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, KeyspaceParams.simple(3), Tables.of(RepairHistory, ParentRepairHistory, ViewBuildStatus, BlacklistedPartitions));
     }
 
     public static void startParentRepair(UUID parent_id, String keyspaceName, String[] cfnames, RepairOption options)
@@ -190,7 +201,8 @@ public final class SystemDistributedKeyspace
     {
         //Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
         //due to schema differences
-        boolean includeNewColumns = !Gossiper.instance.haveMajorVersion3Nodes();
+        if (Gossiper.instance.haveMajorVersion3Nodes())
+            return;
 
         InetAddressAndPort coordinator = FBUtilities.getBroadcastAddressAndPort();
         Set<String> participants = Sets.newHashSet();
@@ -205,43 +217,23 @@ public final class SystemDistributedKeyspace
         String query =
                 "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, coordinator_port, participants, participants_v2, status, started_at) " +
                         "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        %d,               { '%s' },     { '%s' },        '%s',   toTimestamp(now()))";
-        String queryWithoutNewColumns =
-                "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, participants, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',               { '%s' },        '%s',   toTimestamp(now()))";
 
         for (String cfname : cfnames)
         {
             for (Range<Token> range : commonRange.ranges)
             {
-                String fmtQry;
-                if (includeNewColumns)
-                {
-                    fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    coordinator.port,
-                                    Joiner.on("', '").join(participants),
-                                    Joiner.on("', '").join(participants_v2),
-                                    RepairState.STARTED.toString());
-                }
-                else
-                {
-                    fmtQry = format(queryWithoutNewColumns, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    Joiner.on("', '").join(participants),
-                                    RepairState.STARTED.toString());
-                }
+                String fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
+                                              keyspaceName,
+                                              cfname,
+                                              id.toString(),
+                                              parent_id.toString(),
+                                              range.left.toString(),
+                                              range.right.toString(),
+                                              coordinator.getHostAddress(false),
+                                              coordinator.port,
+                                              Joiner.on("', '").join(participants),
+                                              Joiner.on("', '").join(participants_v2),
+                                              RepairState.STARTED.toString());
                 processSilent(fmtQry);
             }
         }
@@ -255,6 +247,11 @@ public final class SystemDistributedKeyspace
 
     public static void successfulRepairJob(UUID id, String keyspaceName, String cfname)
     {
+        //Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
+        //due to schema differences
+        if (Gossiper.instance.haveMajorVersion3Nodes())
+            return;
+
         String query = "UPDATE %s.%s SET status = '%s', finished_at = toTimestamp(now()) WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
         String fmtQuery = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
                                         RepairState.SUCCESS.toString(),
@@ -266,6 +263,11 @@ public final class SystemDistributedKeyspace
 
     public static void failedRepairJob(UUID id, String keyspaceName, String cfname, Throwable t)
     {
+        //Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
+        //due to schema differences
+        if (Gossiper.instance.haveMajorVersion3Nodes())
+            return;
+
         String query = "UPDATE %s.%s SET status = '%s', finished_at = toTimestamp(now()), exception_message=?, exception_stacktrace=? WHERE keyspace_name = '%s' AND columnfamily_name = '%s' AND id = %s";
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
@@ -330,6 +332,25 @@ public final class SystemDistributedKeyspace
         String buildReq = "DELETE FROM %s.%s WHERE keyspace_name = ? AND view_name = ?";
         QueryProcessor.executeInternal(format(buildReq, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, VIEW_BUILD_STATUS), keyspaceName, viewName);
         forceBlockingFlush(VIEW_BUILD_STATUS);
+    }
+
+    /**
+     * Reads blacklisted partitions from system_distributed.blacklisted_partitions table.
+     * @return
+     */
+    public static UntypedResultSet getBlacklistedPartitions()
+    {
+        String query = "SELECT keyspace_name, columnfamily_name, partition_key FROM %s.%s";
+        try
+        {
+            return QueryProcessor.execute(format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, BLACKLISTED_PARTITIONS),
+                                             ConsistencyLevel.ONE);
+        }
+        catch (Exception e)
+        {
+            logger.error("Error querying blacklisted partitions", e);
+            return null;
+        }
     }
 
     private static void processSilent(String fmtQry, String... values)

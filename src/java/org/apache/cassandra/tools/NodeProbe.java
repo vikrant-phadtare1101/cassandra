@@ -686,11 +686,6 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isDraining();
     }
 
-    public boolean isBootstrapMode()
-    {
-        return ssProxy.isBootstrapMode();
-    }
-
     public void joinRing() throws IOException
     {
         ssProxy.joinRing();
@@ -1746,7 +1741,7 @@ public class NodeProbe implements AutoCloseable
         return arsProxy;
     }
 
-    public void reloadSslCerts() throws IOException
+    public void reloadSslCerts()
     {
         msProxy.reloadSslCertificates();
     }
@@ -1774,6 +1769,16 @@ public class NodeProbe implements AutoCloseable
     public void disableOldProtocolVersions()
     {
         ssProxy.disableNativeTransportOldProtocolVersions();
+    }
+
+    public void setBlacklistedPartitionsCacheSizeLimit(int cacheSizeInMB)
+    {
+        ssProxy.setBlacklistedPartitionsCacheSizeLimit(cacheSizeInMB);
+    }
+
+    public void refreshBlacklistedPartitionsCache()
+    {
+        ssProxy.refreshBlacklistedPartitionsCache();
     }
 }
 

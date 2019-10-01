@@ -26,7 +26,7 @@ import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.locator.NetworkTopologyStrategy;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaPlan;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.WriteType;
 
@@ -65,13 +65,13 @@ public class DatacenterSyncWriteResponseHandler<T> extends AbstractWriteResponse
         }
     }
 
-    public void onResponse(Message<T> message)
+    public void response(MessageIn<T> message)
     {
         try
         {
             String dataCenter = message == null
                                 ? DatabaseDescriptor.getLocalDataCenter()
-                                : snitch.getDatacenter(message.from());
+                                : snitch.getDatacenter(message.from);
 
             responses.get(dataCenter).getAndDecrement();
             acks.incrementAndGet();
@@ -96,4 +96,10 @@ public class DatacenterSyncWriteResponseHandler<T> extends AbstractWriteResponse
     {
         return acks.get();
     }
+
+    public boolean isLatencyForSnitch()
+    {
+        return false;
+    }
+
 }
