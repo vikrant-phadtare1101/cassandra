@@ -75,6 +75,7 @@ import org.apache.commons.lang3.StringUtils;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.cassandra.io.util.FileUtils.ONE_GB;
+import org.apache.cassandra.utils.JavaUtils;
 
 public class DatabaseDescriptor
 {
@@ -296,6 +297,13 @@ public class DatabaseDescriptor
             Config.log(config);
         }
 
+        if (config.enable_direct_io_for_read_path)
+        {
+            logger.info("Initializing support for O_DIRECT");
+            if (JavaUtils.parseJavaVersion(System.getProperty("java.version")) < 11)
+                throw new RuntimeException("Java 11 required, but found " + System.getProperty("java.version"));
+        }
+
         return config;
     }
 
@@ -506,16 +514,6 @@ public class DatabaseDescriptor
         if (conf.hints_directory == null)
         {
             conf.hints_directory = storagedirFor("hints");
-        }
-
-        if (conf.native_transport_max_concurrent_requests_in_bytes <= 0)
-        {
-            conf.native_transport_max_concurrent_requests_in_bytes = Runtime.getRuntime().maxMemory() / 10;
-        }
-
-        if (conf.native_transport_max_concurrent_requests_in_bytes_per_ip <= 0)
-        {
-            conf.native_transport_max_concurrent_requests_in_bytes_per_ip = Runtime.getRuntime().maxMemory() / 40;
         }
 
         if (conf.cdc_raw_directory == null)
@@ -1422,11 +1420,6 @@ public class DatabaseDescriptor
         return System.getProperty(Config.PROPERTY_PREFIX + "allocate_tokens_for_keyspace", conf.allocate_tokens_for_keyspace);
     }
 
-    public static Integer getAllocateTokensForLocalRf()
-    {
-        return conf.allocate_tokens_for_local_replication_factor;
-    }
-
     public static Collection<String> tokensFromString(String tokenString)
     {
         List<String> tokens = new ArrayList<String>();
@@ -1486,16 +1479,6 @@ public class DatabaseDescriptor
     public static int getSSLStoragePort()
     {
         return Integer.parseInt(System.getProperty(Config.PROPERTY_PREFIX + "ssl_storage_port", Integer.toString(conf.ssl_storage_port)));
-    }
-
-    public static long nativeTransportIdleTimeout()
-    {
-        return conf.native_transport_idle_timeout_in_ms;
-    }
-
-    public static void setNativeTransportIdleTimeout(long nativeTransportTimeout)
-    {
-        conf.native_transport_idle_timeout_in_ms = nativeTransportTimeout;
     }
 
     public static long getRpcTimeout(TimeUnit unit)
@@ -2048,26 +2031,6 @@ public class DatabaseDescriptor
     public static void setCommitLogSyncGroupWindow(double windowMillis)
     {
         conf.commitlog_sync_group_window_in_ms = windowMillis;
-    }
-
-    public static long getNativeTransportMaxConcurrentRequestsInBytesPerIp()
-    {
-        return conf.native_transport_max_concurrent_requests_in_bytes_per_ip;
-    }
-
-    public static void setNativeTransportMaxConcurrentRequestsInBytesPerIp(long maxConcurrentRequestsInBytes)
-    {
-        conf.native_transport_max_concurrent_requests_in_bytes_per_ip = maxConcurrentRequestsInBytes;
-    }
-
-    public static long getNativeTransportMaxConcurrentRequestsInBytes()
-    {
-        return conf.native_transport_max_concurrent_requests_in_bytes;
-    }
-
-    public static void setNativeTransportMaxConcurrentRequestsInBytes(long maxConcurrentRequestsInBytes)
-    {
-        conf.native_transport_max_concurrent_requests_in_bytes = maxConcurrentRequestsInBytes;
     }
 
     public static int getCommitLogSyncPeriod()
@@ -2913,14 +2876,8 @@ public class DatabaseDescriptor
         return strictRuntimeChecks;
     }
 
-    public static boolean useOffheapMerkleTrees()
+    public static boolean useDirectIO()
     {
-        return conf.use_offheap_merkle_trees;
-    }
-
-    public static void useOffheapMerkleTrees(boolean value)
-    {
-        logger.info("Setting use_offheap_merkle_trees to {}", value);
-        conf.use_offheap_merkle_trees = value;
+        return conf.enable_direct_io_for_read_path;
     }
 }

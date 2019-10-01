@@ -26,20 +26,14 @@ num_tokens: 256
 
 # Triggers automatic allocation of num_tokens tokens for this node. The allocation
 # algorithm attempts to choose tokens in a way that optimizes replicated load over
-# the nodes in the datacenter for the replica factor.
+# the nodes in the datacenter for the replication strategy used by the specified
+# keyspace.
 #
 # The load assigned to each node will be close to proportional to its number of
 # vnodes.
 #
 # Only supported with the Murmur3Partitioner.
-
-# Replica factor is determined via the replication strategy used by the specified
-# keyspace.
 # allocate_tokens_for_keyspace: KEYSPACE
-
-# Replica factor is explicitly set, regardless of keyspace or datacenter.
-# This is the replica factor within the datacenter, like NTS.
-# allocate_tokens_for_local_replication_factor: 3
 
 # initial_token allows you to specify tokens manually.  While you can use it with
 # vnodes (num_tokens > 1, above) -- in which case you should provide a 
@@ -688,16 +682,6 @@ native_transport_port: 9042
 # Controls whether Cassandra honors older, yet currently supported, protocol versions.
 # The default is true, which means all supported protocols will be honored.
 native_transport_allow_older_protocols: true
-
-# Controls when idle client connections are closed. Idle connections are ones that had neither reads
-# nor writes for a time period.
-#
-# Clients may implement heartbeats by sending OPTIONS native protocol message after a timeout, which
-# will reset idle timeout timer on the server side. To close idle client connections, corresponding
-# values for heartbeat intervals have to be set on the client side.
-#
-# Idle connection timeouts are disabled by default.
-# native_transport_idle_timeout_in_ms: 60000
 
 # The address or interface to bind the native transport server to.
 #
@@ -1348,3 +1332,6 @@ enable_sasi_indexes: false
 # Enables creation of transiently replicated keyspaces on this node.
 # Transient replication is experimental and is not recommended for production use.
 enable_transient_replication: false
+
+# enables direct_io for read path of data files.
+enable_direct_io_for_read_path: false

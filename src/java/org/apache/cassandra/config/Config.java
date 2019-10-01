@@ -86,10 +86,6 @@ public class Config
     public int num_tokens = 1;
     /** Triggers automatic allocation of tokens if set, using the replication strategy of the referenced keyspace */
     public String allocate_tokens_for_keyspace = null;
-    /** Triggers automatic allocation of tokens if set, based on the provided replica count for a datacenter */
-    public Integer allocate_tokens_for_local_replication_factor = null;
-
-    public long native_transport_idle_timeout_in_ms = 0L;
 
     public volatile long request_timeout_in_ms = 10000L;
 
@@ -131,8 +127,6 @@ public class Config
     @Deprecated
     public volatile Integer repair_session_max_tree_depth = null;
     public volatile Integer repair_session_space_in_mb = null;
-
-    public volatile boolean use_offheap_merkle_trees = true;
 
     public int storage_port = 7000;
     public int ssl_storage_port = 7001;
@@ -189,8 +183,6 @@ public class Config
     public boolean native_transport_flush_in_batches_legacy = false;
     public volatile boolean native_transport_allow_older_protocols = true;
     public int native_transport_frame_block_size_in_kb = 32;
-    public volatile long native_transport_max_concurrent_requests_in_bytes_per_ip = -1L;
-    public volatile long native_transport_max_concurrent_requests_in_bytes = -1L;
 
 
     /**
@@ -467,6 +459,11 @@ public class Config
      * and has no other effect on the collection or processing of the repaired data.
      */
     public volatile boolean report_unconfirmed_repaired_data_mismatches = false;
+
+    /**
+     * Enables direct_io for data file reads.
+     */
+    public boolean enable_direct_io_for_read_path = false;
 
     /**
      * @deprecated migrate to {@link DatabaseDescriptor#isClientInitialized()}

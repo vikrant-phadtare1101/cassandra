@@ -452,7 +452,7 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         try(FileHandle.Builder ibuilder = new FileHandle.Builder(sstable.descriptor.filenameFor(Component.PRIMARY_INDEX))
                                                      .mmapped(DatabaseDescriptor.getIndexAccessMode() == Config.DiskAccessMode.mmap)
                                                      .withChunkCache(ChunkCache.instance);
-            FileHandle.Builder dbuilder = new FileHandle.Builder(sstable.descriptor.filenameFor(Component.DATA)).compressed(sstable.compression)
+            FileHandle.Builder dbuilder = new FileHandle.Builder(sstable.descriptor.filenameFor(Component.DATA), DatabaseDescriptor.useDirectIO()).compressed(sstable.compression)
                                                      .mmapped(DatabaseDescriptor.getDiskAccessMode() == Config.DiskAccessMode.mmap)
                                                      .withChunkCache(ChunkCache.instance))
         {
@@ -787,7 +787,7 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         try(FileHandle.Builder ibuilder = new FileHandle.Builder(descriptor.filenameFor(Component.PRIMARY_INDEX))
                                                      .mmapped(DatabaseDescriptor.getIndexAccessMode() == Config.DiskAccessMode.mmap)
                                                      .withChunkCache(ChunkCache.instance);
-            FileHandle.Builder dbuilder = new FileHandle.Builder(descriptor.filenameFor(Component.DATA)).compressed(compression)
+            FileHandle.Builder dbuilder = new FileHandle.Builder(descriptor.filenameFor(Component.DATA), DatabaseDescriptor.useDirectIO()).compressed(compression)
                                                      .mmapped(DatabaseDescriptor.getDiskAccessMode() == Config.DiskAccessMode.mmap)
                                                      .withChunkCache(ChunkCache.instance))
         {
@@ -1943,9 +1943,9 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         return sstableMetadata.estimatedPartitionSize;
     }
 
-    public EstimatedHistogram getEstimatedCellPerPartitionCount()
+    public EstimatedHistogram getEstimatedColumnCount()
     {
-        return sstableMetadata.estimatedCellPerPartitionCount;
+        return sstableMetadata.estimatedColumnCount;
     }
 
     public double getEstimatedDroppableTombstoneRatio(int gcBefore)
@@ -2496,8 +2496,13 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public static void shutdownBlocking(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {
-
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, syncExecutor);
+        if (syncExecutor != null)
+        {
+            syncExecutor.shutdownNow();
+            syncExecutor.awaitTermination(timeout, unit);
+            if (!syncExecutor.isTerminated())
+                throw new TimeoutException();
+        }
         resetTidying();
     }
 }
