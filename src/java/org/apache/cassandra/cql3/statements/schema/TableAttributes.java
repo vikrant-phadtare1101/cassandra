@@ -25,14 +25,9 @@ import com.google.common.collect.ImmutableSet;
 import org.apache.cassandra.cql3.statements.PropertyDefinitions;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.schema.CachingParams;
-import org.apache.cassandra.schema.CompactionParams;
-import org.apache.cassandra.schema.CompressionParams;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.schema.TableParams;
+import org.apache.cassandra.schema.*;
 import org.apache.cassandra.schema.TableParams.Option;
 import org.apache.cassandra.service.reads.SpeculativeRetryPolicy;
-import org.apache.cassandra.service.reads.repair.ReadRepairStrategy;
 
 import static java.lang.String.format;
 
@@ -128,17 +123,11 @@ public final class TableAttributes extends PropertyDefinitions
         if (hasOption(Option.SPECULATIVE_RETRY))
             builder.speculativeRetry(SpeculativeRetryPolicy.fromString(getString(Option.SPECULATIVE_RETRY)));
 
-        if (hasOption(Option.ADDITIONAL_WRITE_POLICY))
-            builder.additionalWritePolicy(SpeculativeRetryPolicy.fromString(getString(Option.ADDITIONAL_WRITE_POLICY)));
-
         if (hasOption(Option.CRC_CHECK_CHANCE))
             builder.crcCheckChance(getDouble(Option.CRC_CHECK_CHANCE));
 
         if (hasOption(Option.CDC))
             builder.cdc(getBoolean(Option.CDC.toString(), false));
-
-        if (hasOption(Option.READ_REPAIR))
-            builder.readRepair(ReadRepairStrategy.fromString(getString(Option.READ_REPAIR)));
 
         return builder.build();
     }

@@ -126,7 +126,7 @@ public class SSTableLoader implements StreamEventHandler
                                               for (Map.Entry<InetAddressAndPort, Collection<Range<Token>>> entry : ranges.entrySet())
                                               {
                                                   InetAddressAndPort endpoint = entry.getKey();
-                                                  List<Range<Token>> tokenRanges = Range.normalize(entry.getValue());
+                                                  Collection<Range<Token>> tokenRanges = entry.getValue();
 
                                                   List<SSTableReader.PartitionPositionBounds> sstableSections = sstable.getPositionsForRanges(tokenRanges);
                                                   long estimatedKeys = sstable.estimatedKeysForRanges(tokenRanges);
