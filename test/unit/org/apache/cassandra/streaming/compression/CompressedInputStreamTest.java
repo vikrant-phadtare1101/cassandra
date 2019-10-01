@@ -21,9 +21,7 @@ import java.io.*;
 import java.util.*;
 
 import org.junit.BeforeClass;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ClusteringComparator;
@@ -32,7 +30,6 @@ import org.apache.cassandra.io.compress.CompressedSequentialWriter;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.SequentialWriterOption;
 import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.sstable.Component;
@@ -49,9 +46,6 @@ import static org.junit.Assert.fail;
  */
 public class CompressedInputStreamTest
 {
-    @Rule
-    public TemporaryFolder tempFolder = new TemporaryFolder();
-
     @BeforeClass
     public static void setupDD()
     {
@@ -114,7 +108,7 @@ public class CompressedInputStreamTest
         assert valuesToCheck != null && valuesToCheck.length > 0;
 
         // write compressed data file of longs
-        File parentDir = tempFolder.newFolder();
+        File parentDir = new File(System.getProperty("java.io.tmpdir"));
         Descriptor desc = new Descriptor(parentDir, "ks", "cf", 1);
         File tmp = new File(desc.filenameFor(Component.DATA));
         MetadataCollector collector = new MetadataCollector(new ClusteringComparator(BytesType.instance));

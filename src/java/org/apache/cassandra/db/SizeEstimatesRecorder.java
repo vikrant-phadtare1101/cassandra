@@ -78,10 +78,10 @@ public class SizeEstimatesRecorder extends SchemaChangeListener implements Runna
                 recordSizeEstimates(table, localRanges);
                 long passed = System.nanoTime() - start;
                 if (logger.isTraceEnabled())
-                    logger.trace("Spent {} milliseconds on estimating {}.{} size",
-                                 TimeUnit.NANOSECONDS.toMillis(passed),
-                                 table.metadata.keyspace,
-                                 table.metadata.name);
+                	logger.trace("Spent {} milliseconds on estimating {}.{} size",
+                             TimeUnit.NANOSECONDS.toMillis(passed),
+                             table.metadata.keyspace,
+                             table.metadata.name);
             }
         }
     }

@@ -43,7 +43,6 @@ import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.notifications.*;
-import org.apache.cassandra.schema.CachingParams;
 import org.apache.cassandra.schema.MockSchema;
 import org.apache.cassandra.utils.concurrent.OpOrder;
 
@@ -147,7 +146,7 @@ public class TrackerTest
     @Test
     public void testAddInitialSSTables()
     {
-        ColumnFamilyStore cfs = MockSchema.newCFS(metadata -> metadata.caching(CachingParams.CACHE_KEYS));
+        ColumnFamilyStore cfs = MockSchema.newCFS();
         Tracker tracker = cfs.getTracker();
         List<SSTableReader> readers = ImmutableList.of(MockSchema.sstable(0, 17, cfs),
                                                        MockSchema.sstable(1, 121, cfs),
@@ -157,7 +156,7 @@ public class TrackerTest
         Assert.assertEquals(3, tracker.view.get().sstables.size());
 
         for (SSTableReader reader : readers)
-            Assert.assertTrue(reader.isKeyCacheEnabled());
+            Assert.assertTrue(reader.isKeyCacheSetup());
 
         Assert.assertEquals(17 + 121 + 9, cfs.metric.liveDiskSpaceUsed.getCount());
     }
@@ -167,7 +166,7 @@ public class TrackerTest
     {
         boolean backups = DatabaseDescriptor.isIncrementalBackupsEnabled();
         DatabaseDescriptor.setIncrementalBackupsEnabled(false);
-        ColumnFamilyStore cfs = MockSchema.newCFS(metadata -> metadata.caching(CachingParams.CACHE_KEYS));
+        ColumnFamilyStore cfs = MockSchema.newCFS();
         Tracker tracker = cfs.getTracker();
         MockListener listener = new MockListener(false);
         tracker.subscribe(listener);
@@ -179,7 +178,7 @@ public class TrackerTest
         Assert.assertEquals(3, tracker.view.get().sstables.size());
 
         for (SSTableReader reader : readers)
-            Assert.assertTrue(reader.isKeyCacheEnabled());
+            Assert.assertTrue(reader.isKeyCacheSetup());
 
         Assert.assertEquals(17 + 121 + 9, cfs.metric.liveDiskSpaceUsed.getCount());
         Assert.assertEquals(1, listener.senders.size());
@@ -264,7 +263,7 @@ public class TrackerTest
     {
         boolean backups = DatabaseDescriptor.isIncrementalBackupsEnabled();
         DatabaseDescriptor.setIncrementalBackupsEnabled(false);
-        ColumnFamilyStore cfs = MockSchema.newCFS(metadata -> metadata.caching(CachingParams.CACHE_KEYS));
+        ColumnFamilyStore cfs = MockSchema.newCFS();
         MockListener listener = new MockListener(false);
         Tracker tracker = cfs.getTracker();
         tracker.subscribe(listener);
@@ -309,7 +308,7 @@ public class TrackerTest
         Assert.assertEquals(singleton(reader), ((SSTableAddedNotification) listener.received.get(1)).added);
         Assert.assertEquals(Optional.of(prev2), ((SSTableAddedNotification) listener.received.get(1)).memtable());
         listener.received.clear();
-        Assert.assertTrue(reader.isKeyCacheEnabled());
+        Assert.assertTrue(reader.isKeyCacheSetup());
         Assert.assertEquals(10, cfs.metric.liveDiskSpaceUsed.getCount());
 
         // test invalidated CFS
@@ -359,10 +358,6 @@ public class TrackerTest
         Memtable memtable = MockSchema.memtable(cfs);
         tracker.notifyRenewed(memtable);
         Assert.assertEquals(memtable, ((MemtableRenewedNotification) listener.received.get(0)).renewed);
-        listener.received.clear();
-        tracker.notifySSTableMetadataChanged(r1, r1.getSSTableMetadata());
-        Assert.assertEquals(((SSTableMetadataChanged)listener.received.get(0)).sstable, r1);
-        Assert.assertEquals(r1.getSSTableMetadata(), ((SSTableMetadataChanged)listener.received.get(0)).oldMetadata);
         listener.received.clear();
         tracker.unsubscribe(listener);
         MockListener failListener = new MockListener(true);
