@@ -19,22 +19,101 @@
 package org.apache.cassandra.locator;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.function.Predicate;
 
+import com.carrotsearch.hppc.ObjectIntOpenHashMap;
+import com.carrotsearch.hppc.ObjectObjectOpenHashMap;
 import com.google.common.collect.Iterables;
+import org.apache.cassandra.config.DatabaseDescriptor;
 
 import static com.google.common.collect.Iterables.all;
 
 public class Replicas
 {
 
-    public static int countFull(ReplicaCollection<?> liveReplicas)
+    public static int countFull(ReplicaCollection<?> replicas)
     {
         int count = 0;
-        for (Replica replica : liveReplicas)
+        for (Replica replica : replicas)
             if (replica.isFull())
                 ++count;
         return count;
+    }
+
+    public static class ReplicaCount
+    {
+        int fullReplicas;
+        int transientReplicas;
+
+        public int allReplicas()
+        {
+            return fullReplicas + transientReplicas;
+        }
+
+        public int fullReplicas()
+        {
+            return fullReplicas;
+        }
+
+        public int transientReplicas()
+        {
+            return transientReplicas;
+        }
+
+        public void increment(Replica replica)
+        {
+            if (replica.isFull()) ++fullReplicas;
+            else ++transientReplicas;
+        }
+
+        public boolean hasAtleast(int allReplicas, int fullReplicas)
+        {
+            return this.fullReplicas >= fullReplicas
+                    && this.allReplicas() >= allReplicas;
+        }
+    }
+
+    public static ReplicaCount countInOurDc(ReplicaCollection<?> replicas)
+    {
+        ReplicaCount count = new ReplicaCount();
+        Predicate<Replica> inOurDc = InOurDcTester.replicas();
+        for (Replica replica : replicas)
+            if (inOurDc.test(replica))
+                count.increment(replica);
+        return count;
+    }
+
+    /**
+     * count the number of full and transient replicas, separately, for each DC
+     */
+    public static ObjectObjectOpenHashMap<String, ReplicaCount> countPerDc(Collection<String> dataCenters, Iterable<Replica> replicas)
+    {
+        ObjectObjectOpenHashMap<String, ReplicaCount> perDc = new ObjectObjectOpenHashMap<>(dataCenters.size());
+        for (String dc: dataCenters)
+            perDc.put(dc, new ReplicaCount());
+
+        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
+        for (Replica replica : replicas)
+        {
+            String dc = snitch.getDatacenter(replica);
+            perDc.get(dc).increment(replica);
+        }
+        return perDc;
+    }
+
+    /**
+     * increment each of the map's DC entries for each matching replica provided
+     */
+    public static void addToCountPerDc(ObjectIntOpenHashMap<String> perDc, Iterable<Replica> replicas, int add)
+    {
+        IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
+        for (Replica replica : replicas)
+        {
+            String dc = snitch.getDatacenter(replica);
+            perDc.addTo(dc, add);
+        }
     }
 
     /**

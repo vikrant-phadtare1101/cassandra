@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -38,6 +39,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.audit.AuditLogOptions;
+import org.apache.cassandra.audit.FullQueryLoggerOptions;
 import org.apache.cassandra.auth.AllowAllInternodeAuthenticator;
 import org.apache.cassandra.auth.AuthConfig;
 import org.apache.cassandra.auth.IAuthenticator;
@@ -139,7 +141,15 @@ public class DatabaseDescriptor
     private static final boolean disableSTCSInL0 = Boolean.getBoolean(Config.PROPERTY_PREFIX + "disable_stcs_in_l0");
     private static final boolean unsafeSystem = Boolean.getBoolean(Config.PROPERTY_PREFIX + "unsafesystem");
 
+    // turns some warnings into exceptions for testing
+    private static final boolean strictRuntimeChecks = Boolean.getBoolean("cassandra.strict.runtime.checks");
+
     public static void daemonInitialization() throws ConfigurationException
+    {
+        daemonInitialization(DatabaseDescriptor::loadConfig);
+    }
+
+    public static void daemonInitialization(Supplier<Config> config) throws ConfigurationException
     {
         if (toolInitialized)
             throw new AssertionError("toolInitialization() already called");
@@ -151,7 +161,7 @@ public class DatabaseDescriptor
             return;
         daemonInitialized = true;
 
-        setConfig(loadConfig());
+        setConfig(config.get());
         applyAll();
         AuthConfig.applyAuth();
     }
@@ -268,6 +278,9 @@ public class DatabaseDescriptor
     @VisibleForTesting
     public static Config loadConfig() throws ConfigurationException
     {
+        if (Config.getOverrideLoadConfig() != null)
+            return Config.getOverrideLoadConfig().get();
+
         String loaderClass = System.getProperty(Config.PROPERTY_PREFIX + "config.loader");
         ConfigurationLoader loader = loaderClass == null
                                    ? new YamlConfigurationLoader()
@@ -450,6 +463,27 @@ public class DatabaseDescriptor
             logger.info("Global memtable off-heap threshold is disabled, HeapAllocator will be used instead");
         else
             logger.info("Global memtable off-heap threshold is enabled at {}MB", conf.memtable_offheap_space_in_mb);
+
+        if (conf.repair_session_max_tree_depth != null)
+        {
+            logger.warn("repair_session_max_tree_depth has been deprecated and should be removed from cassandra.yaml. Use repair_session_space_in_mb instead");
+            if (conf.repair_session_max_tree_depth < 10)
+                throw new ConfigurationException("repair_session_max_tree_depth should not be < 10, but was " + conf.repair_session_max_tree_depth);
+            if (conf.repair_session_max_tree_depth > 20)
+                logger.warn("repair_session_max_tree_depth of " + conf.repair_session_max_tree_depth + " > 20 could lead to excessive memory usage");
+        }
+        else
+        {
+            conf.repair_session_max_tree_depth = 20;
+        }
+
+        if (conf.repair_session_space_in_mb == null)
+            conf.repair_session_space_in_mb = Math.max(1, (int) (Runtime.getRuntime().maxMemory() / (16 * 1048576)));
+
+        if (conf.repair_session_space_in_mb < 1)
+            throw new ConfigurationException("repair_session_space_in_mb must be > 0, but was " + conf.repair_session_space_in_mb);
+        else if (conf.repair_session_space_in_mb > (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576)))
+            logger.warn("A repair_session_space_in_mb of " + conf.repair_session_space_in_mb + " megabytes is likely to cause heap pressure");
 
         checkForLowestAcceptedTimeouts(conf);
 
@@ -892,7 +926,14 @@ public class DatabaseDescriptor
 
     public static void applySslContextHotReload()
     {
-        SSLFactory.initHotReloading(conf.server_encryption_options, conf.client_encryption_options, false);
+        try
+        {
+            SSLFactory.initHotReloading(conf.server_encryption_options, conf.client_encryption_options, false);
+        }
+        catch(IOException e)
+        {
+            throw new ConfigurationException("Failed to initialize SSL hot reloading", e);
+        }
     }
 
     public static void applySeedProvider()
@@ -991,7 +1032,7 @@ public class DatabaseDescriptor
         snitch = createEndpointSnitch(conf.dynamic_snitch, conf.endpoint_snitch);
         EndpointSnitchInfo.create();
 
-        localDC = snitch.getDatacenter(FBUtilities.getBroadcastAddressAndPort());
+        localDC = snitch.getLocalDatacenter();
         localComparator = (replica1, replica2) -> {
             boolean local1 = localDC.equals(snitch.getDatacenter(replica1));
             boolean local2 = localDC.equals(snitch.getDatacenter(replica2));
@@ -1802,6 +1843,26 @@ public class DatabaseDescriptor
         return conf.internode_recv_buff_size_in_bytes;
     }
 
+    public static int getInternodeTcpConnectTimeoutInMS()
+    {
+        return conf.internode_tcp_connect_timeout_in_ms;
+    }
+
+    public static void setInternodeTcpConnectTimeoutInMS(int value)
+    {
+        conf.internode_tcp_connect_timeout_in_ms = value;
+    }
+
+    public static int getInternodeTcpUserTimeoutInMS()
+    {
+        return conf.internode_tcp_user_timeout_in_ms;
+    }
+
+    public static void setInternodeTcpUserTimeoutInMS(int value)
+    {
+        conf.internode_tcp_user_timeout_in_ms = value;
+    }
+
     public static boolean startNativeTransport()
     {
         return conf.start_native_transport;
@@ -2180,11 +2241,21 @@ public class DatabaseDescriptor
         return conf.commitlog_total_space_in_mb;
     }
 
-    public static int getSSTablePreempiveOpenIntervalInMB()
+    public static boolean shouldMigrateKeycacheOnCompaction()
+    {
+        return conf.key_cache_migrate_during_compaction;
+    }
+
+    public static void setMigrateKeycacheOnCompaction(boolean migrateCacheEntry)
+    {
+        conf.key_cache_migrate_during_compaction = migrateCacheEntry;
+    }
+
+    public static int getSSTablePreemptiveOpenIntervalInMB()
     {
         return FBUtilities.isWindows ? -1 : conf.sstable_preemptive_open_interval_in_mb;
     }
-    public static void setSSTablePreempiveOpenIntervalInMB(int mb)
+    public static void setSSTablePreemptiveOpenIntervalInMB(int mb)
     {
         conf.sstable_preemptive_open_interval_in_mb = mb;
     }
@@ -2345,6 +2416,39 @@ public class DatabaseDescriptor
         return conf.memtable_allocation_type;
     }
 
+    public static int getRepairSessionMaxTreeDepth()
+    {
+        return conf.repair_session_max_tree_depth;
+    }
+
+    public static void setRepairSessionMaxTreeDepth(int depth)
+    {
+        if (depth < 10)
+            throw new ConfigurationException("Cannot set repair_session_max_tree_depth to " + depth +
+                                             " which is < 10, doing nothing");
+        else if (depth > 20)
+            logger.warn("repair_session_max_tree_depth of " + depth + " > 20 could lead to excessive memory usage");
+
+        conf.repair_session_max_tree_depth = depth;
+    }
+
+    public static int getRepairSessionSpaceInMegabytes()
+    {
+        return conf.repair_session_space_in_mb;
+    }
+
+    public static void setRepairSessionSpaceInMegabytes(int sizeInMegabytes)
+    {
+        if (sizeInMegabytes < 1)
+            throw new ConfigurationException("Cannot set repair_session_space_in_mb to " + sizeInMegabytes +
+                                             " < 1 megabyte");
+        else if (sizeInMegabytes > (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576)))
+            logger.warn("A repair_session_space_in_mb of " + conf.repair_session_space_in_mb +
+                        " megabytes is likely to cause heap pressure.");
+
+        conf.repair_session_space_in_mb = sizeInMegabytes;
+    }
+
     public static Float getMemtableCleanupThreshold()
     {
         return conf.memtable_cleanup_threshold;
@@ -2456,9 +2560,24 @@ public class DatabaseDescriptor
         conf.user_defined_function_warn_timeout = userDefinedFunctionWarnTimeout;
     }
 
-    public static boolean enableMaterializedViews()
+    public static boolean getEnableMaterializedViews()
     {
         return conf.enable_materialized_views;
+    }
+
+    public static void setEnableMaterializedViews(boolean enableMaterializedViews)
+    {
+        conf.enable_materialized_views = enableMaterializedViews;
+    }
+
+    public static boolean getEnableSASIIndexes()
+    {
+        return conf.enable_sasi_indexes;
+    }
+
+    public static void setEnableSASIIndexes(boolean enableSASIIndexes)
+    {
+        conf.enable_sasi_indexes = enableSASIIndexes;
     }
 
     public static boolean isTransientReplicationEnabled()
@@ -2604,14 +2723,14 @@ public class DatabaseDescriptor
         return conf.repair_command_pool_full_strategy;
     }
 
-    public static String getFullQueryLogPath()
+    public static FullQueryLoggerOptions getFullQueryLogOptions()
     {
-        return  conf.full_query_log_dir;
+        return  conf.full_query_logging_options;
     }
 
-    public static int getBlockForPeersPercentage()
+    public static boolean getBlockForPeersInRemoteDatacenters()
     {
-        return conf.block_for_peers_percentage;
+        return conf.block_for_peers_in_remote_dcs;
     }
 
     public static int getBlockForPeersTimeoutInSeconds()
@@ -2700,5 +2819,10 @@ public class DatabaseDescriptor
     public static void reportUnconfirmedRepairedDataMismatches(boolean enabled)
     {
         conf.report_unconfirmed_repaired_data_mismatches = enabled;
+    }
+
+    public static boolean strictRuntimeChecks()
+    {
+        return strictRuntimeChecks;
     }
 }

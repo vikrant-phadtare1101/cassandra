@@ -69,7 +69,7 @@ cassandra.yaml configurations for AuditLog
 	- ``logger``: Class name of the logger/ custom logger.
 	- ``audit_logs_dir``: Auditlogs directory location, if not set, default to `cassandra.logdir.audit` or `cassandra.logdir` + /audit/
 	- ``included_keyspaces``: Comma separated list of keyspaces to be included in audit log, default - includes all keyspaces
-	- ``excluded_keyspaces``: Comma separated list of keyspaces to be excluded from audit log, default - excludes no keyspace
+	- ``excluded_keyspaces``: Comma separated list of keyspaces to be excluded from audit log, default - excludes no keyspace except `system`,  `system_schema` and `system_virtual_schema`
 	- ``included_categories``: Comma separated list of Audit Log Categories to be included in audit log, default - includes all categories
 	- ``excluded_categories``: Comma separated list of Audit Log Categories to be excluded from audit log, default - excludes no category
 	- ``included_users``: Comma separated list of users to be included in audit log, default - includes all users
@@ -96,7 +96,10 @@ Options
 
 ``--excluded-keyspaces``
     Comma separated list of keyspaces to be excluded for audit log. If
-    not set the value from cassandra.yaml will be used
+    not set the value from cassandra.yaml will be used.
+    Please remeber that `system`, `system_schema` and `system_virtual_schema` are excluded by default,
+    if you are overwriting this option via nodetool,
+    remember to add these keyspaces back if you dont want them in audit logs
 
 ``--excluded-users``
     Comma separated list of users to be excluded for audit log. If not
@@ -140,19 +143,44 @@ NodeTool command to reload AuditLog filters
 ``enableauditlog``: NodeTool enableauditlog command can be used to reload auditlog filters when called with default or previous ``loggername`` and updated filters
 
 E.g.,
+
 ::
 
     nodetool enableauditlog --loggername <Default/ existing loggerName> --included-keyspaces <New Filter values>
 
 
 
+View the contents of AuditLog Files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``auditlogviewer`` is the new tool introduced to help view the contents of binlog file in human readable text format.
 
+::
 
+	auditlogviewer <path1> [<path2>...<pathN>] [options]
 
+Options
+""""""""
 
+``-f,--follow`` 
+	Upon reacahing the end of the log continue indefinitely
+				waiting for more records
+``-r,--roll_cycle``
+   How often to roll the log file was rolled. May be
+				necessary for Chronicle to correctly parse file names. (MINUTELY, HOURLY,
+				DAILY). Default HOURLY.
+
+``-h,--help``
+         display this help message
+
+For example, to dump the contents of audit log files on the console
+
+::
+
+	auditlogviewer /logs/cassandra/audit
 
 Sample output
-^^^^^^^^^^^^^^^^
+"""""""""""""
+
 ::
 
     LogMessage: user:anonymous|host:localhost/X.X.X.X|source:/X.X.X.X|port:60878|timestamp:1521158923615|type:USE_KS|category:DDL|ks:dev1|operation:USE "dev1"

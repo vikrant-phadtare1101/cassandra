@@ -19,7 +19,6 @@ package org.apache.cassandra.net;
 
 import java.io.IOError;
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -35,8 +34,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -59,6 +56,7 @@ import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.ConsistencyLevel;
@@ -112,6 +110,7 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.BooleanSerializer;
 import org.apache.cassandra.utils.ExpiringMap;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.MBeanWrapper;
 import org.apache.cassandra.utils.NativeLibrary;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.StatusLogger;
@@ -464,6 +463,20 @@ public final class MessagingService implements MessagingServiceMBean
         }
     }
 
+    public static IVersionedSerializer<?> getVerbSerializer(Verb verb, int id)
+    {
+        IVersionedSerializer serializer = verbSerializers.get(verb);
+        if (serializer instanceof MessagingService.CallbackDeterminedSerializer)
+        {
+            CallbackInfo callback = MessagingService.instance().getRegisteredCallback(id);
+            if (callback == null)
+                return null;
+
+            serializer = callback.serializer;
+        }
+        return serializer;
+    }
+
     /* Lookup table for registering message handlers based on the verb. */
     private final Map<Verb, IVerbHandler> verbHandlers;
 
@@ -618,15 +631,7 @@ public final class MessagingService implements MessagingServiceMBean
 
         if (!testOnly)
         {
-            MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-            try
-            {
-                mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
-            }
-            catch (Exception e)
-            {
-                throw new RuntimeException(e);
-            }
+            MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
         }
     }
 
@@ -1138,6 +1143,8 @@ public final class MessagingService implements MessagingServiceMBean
 
             if (!isTest)
                 NettyFactory.instance.close();
+
+            clearMessageSinks();
         }
         catch (Exception e)
         {
@@ -1696,13 +1703,13 @@ public final class MessagingService implements MessagingServiceMBean
             case all:
                 break;
             case dc:
-                if (snitch.getDatacenter(address).equals(snitch.getDatacenter(FBUtilities.getBroadcastAddressAndPort())))
+                if (snitch.getDatacenter(address).equals(snitch.getLocalDatacenter()))
                     return false;
                 break;
             case rack:
                 // for rack then check if the DC's are the same.
-                if (snitch.getRack(address).equals(snitch.getRack(FBUtilities.getBroadcastAddressAndPort()))
-                    && snitch.getDatacenter(address).equals(snitch.getDatacenter(FBUtilities.getBroadcastAddressAndPort())))
+                if (snitch.getRack(address).equals(snitch.getLocalRack())
+                    && snitch.getDatacenter(address).equals(snitch.getLocalDatacenter()))
                     return false;
                 break;
         }
@@ -1710,8 +1717,11 @@ public final class MessagingService implements MessagingServiceMBean
     }
 
     @Override
-    public void reloadSslCertificates()
+    public void reloadSslCertificates() throws IOException
     {
-        SSLFactory.checkCertFilesForHotReloading();
+        final ServerEncryptionOptions serverOpts = DatabaseDescriptor.getInternodeMessagingEncyptionOptions();
+        final EncryptionOptions clientOpts = DatabaseDescriptor.getNativeProtocolEncryptionOptions();
+        SSLFactory.validateSslCerts(serverOpts, clientOpts);
+        SSLFactory.checkCertFilesForHotReloading(serverOpts, clientOpts);
     }
 }

@@ -182,14 +182,14 @@ credentials_validity_in_ms: 2000
 # credentials_update_interval_in_ms: 2000
 
 # The partitioner is responsible for distributing groups of rows (by
-# partition key) across nodes in the cluster.  You should leave this
-# alone for new clusters.  The partitioner can NOT be changed without
-# reloading all data, so when upgrading you should set this to the
-# same partitioner you were already using.
+# partition key) across nodes in the cluster. The partitioner can NOT be
+# changed without reloading all data.  If you are adding nodes or upgrading,
+# you should set this to the same partitioner that you are currently using.
 #
-# Besides Murmur3Partitioner, partitioners included for backwards
-# compatibility include RandomPartitioner, ByteOrderedPartitioner, and
-# OrderPreservingPartitioner.
+# The default partitioner is the Murmur3Partitioner. Older partitioners
+# such as the RandomPartitioner, ByteOrderedPartitioner, and
+# OrderPreservingPartitioner have been included for backward compatibility only.
+# For new clusters, you should NOT change this value.
 #
 partitioner: org.apache.cassandra.dht.Murmur3Partitioner
 
@@ -505,6 +505,17 @@ concurrent_materialized_view_writes: 32
 # offheap_objects
 #    off heap objects
 memtable_allocation_type: heap_buffers
+
+# Limit memory usage for Merkle tree calculations during repairs. The default
+# is 1/16th of the available heap. The main tradeoff is that smaller trees
+# have less resolution, which can lead to over-streaming data. If you see heap
+# pressure during repairs, consider lowering this, but you cannot go below
+# one megabyte. If you see lots of over-streaming, consider raising
+# this or using subrange repair.
+#
+# For more details see https://issues.apache.org/jira/browse/CASSANDRA-14096.
+#
+# repair_session_space_in_mb:
 
 # Total space to use for commit logs on disk.
 #
@@ -847,6 +858,18 @@ truncate_request_timeout_in_ms: 60000
 # Lowest acceptable value is 10 ms.
 request_timeout_in_ms: 10000
 
+# Defensive settings for protecting Cassandra from true network partitions.
+# See (CASSANDRA-14358) for details.
+#
+# The amount of time to wait for internode tcp connections to establish.
+# internode_tcp_connect_timeout_in_ms = 2000
+#
+# The amount of time unacknowledged data is allowed on a connection before we throw out the connection
+# Note this is only supported on Linux + epoll, and it appears to behave oddly above a setting of 30000
+# (it takes much longer than 30s) as of Linux 4.12. If you want something that high set this to 0
+# which picks up the OS default and configure the net.ipv4.tcp_retries2 sysctl to be ~8.
+# internode_tcp_user_timeout_in_ms = 30000
+
 # How long before a node logs slow queries. Select queries that take longer than
 # this timeout to execute, will generate an aggregated log message, so that slow queries
 # can be identified. Set this value to zero to disable slow query logging.
@@ -1052,14 +1075,6 @@ enable_user_defined_functions: false
 # This option has no effect, if enable_user_defined_functions is false.
 enable_scripted_user_defined_functions: false
 
-# Enables materialized view creation on this node.
-# Materialized views are considered experimental and are not recommended for production use.
-enable_materialized_views: true
-
-# Enables creation of transiently replicated keyspaces on this node.
-# Transient replication is experimental and is not recommended for production use.
-#enable_transient_replication: true
-
 # The default Windows kernel timer and scheduling resolution is 15.6ms for power conservation.
 # Lowering this value on Windows can provide much tighter latency and better throughput, however
 # some virtualized environments may see a negative performance impact from changing this setting
@@ -1219,12 +1234,32 @@ audit_logging_options:
     enabled: false
     logger: BinAuditLogger
     # audit_logs_dir:
-    # included_keyspaces: 
-    # excluded_keyspaces:
+    # included_keyspaces:
+    # excluded_keyspaces: system, system_schema, system_virtual_schema
     # included_categories:
     # excluded_categories:
     # included_users:
     # excluded_users:
+    # roll_cycle: HOURLY
+    # block: true
+    # max_queue_weight: 268435456 # 256 MiB
+    # max_log_size: 17179869184 # 16 GiB
+    ## archive command is "/path/to/script.sh %path" where %path is replaced with the file being rolled:
+    # archive_command:
+    # max_archive_retries: 10
+
+
+# default options for full query logging - these can be overridden from command line when executing
+# nodetool enablefullquerylog
+#full_query_logging_options:
+    # log_dir:
+    # roll_cycle: HOURLY
+    # block: true
+    # max_queue_weight: 268435456 # 256 MiB
+    # max_log_size: 17179869184 # 16 GiB
+    ## archive command is "/path/to/script.sh %path" where %path is replaced with the file being rolled:
+    # archive_command:
+    # max_archive_retries: 10
 
 # validate tombstones on reads and compaction
 # can be either "disabled", "warn" or "exception"
@@ -1235,8 +1270,8 @@ audit_logging_options:
 # on internal state and temporal relationships across events, accessible by clients via JMX.
 diagnostic_events_enabled: false
 
-# Define use of legacy delayed flusher for replies to TCP connections. This will increase latency, but might be beneficial for
-# legacy use-cases where only a single connection is used for each Cassandra node. Default is false.
+# Use native transport TCP message coalescing. If on upgrade to 4.0 you found your throughput decreasing, and in
+# particular you run an old kernel or have very fewer client connections, this option might be worth evaluating.
 #native_transport_flush_in_batches_legacy: false
 
 # Enable tracking of repaired state of data during reads and comparison between replicas
@@ -1256,3 +1291,18 @@ repaired_data_tracking_for_partition_reads_enabled: false
 # mismatches are less actionable than confirmed ones.
 report_unconfirmed_repaired_data_mismatches: false
 
+#########################
+# EXPERIMENTAL FEATURES #
+#########################
+
+# Enables materialized view creation on this node.
+# Materialized views are considered experimental and are not recommended for production use.
+enable_materialized_views: false
+
+# Enables SASI index creation on this node.
+# SASI indexes are considered experimental and are not recommended for production use.
+enable_sasi_indexes: false
+
+# Enables creation of transiently replicated keyspaces on this node.
+# Transient replication is experimental and is not recommended for production use.
+enable_transient_replication: false

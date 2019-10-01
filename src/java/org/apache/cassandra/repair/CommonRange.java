@@ -41,14 +41,20 @@ public class CommonRange
 
     public CommonRange(Set<InetAddressAndPort> endpoints, Set<InetAddressAndPort> transEndpoints, Collection<Range<Token>> ranges)
     {
-        Preconditions.checkArgument(endpoints != null && !endpoints.isEmpty());
-        Preconditions.checkArgument(transEndpoints != null);
+        Preconditions.checkArgument(endpoints != null && !endpoints.isEmpty(), "Endpoints can not be empty");
+        Preconditions.checkArgument(transEndpoints != null, "Transient endpoints can not be null");
         Preconditions.checkArgument(endpoints.containsAll(transEndpoints), "transEndpoints must be a subset of endpoints");
-        Preconditions.checkArgument(ranges != null && !ranges.isEmpty());
+        Preconditions.checkArgument(ranges != null && !ranges.isEmpty(), "Ranges can not be empty");
 
         this.endpoints = ImmutableSet.copyOf(endpoints);
         this.transEndpoints = ImmutableSet.copyOf(transEndpoints);
-        this.ranges = new ArrayList(ranges);
+        this.ranges = new ArrayList<>(ranges);
+    }
+
+    public boolean matchesEndpoints(Set<InetAddressAndPort> endpoints, Set<InetAddressAndPort> transEndpoints)
+    {
+        // Use strict equality here, as worst thing that can happen is we generate one more stream
+        return this.endpoints.equals(endpoints) && this.transEndpoints.equals(transEndpoints);
     }
 
     public boolean equals(Object o)

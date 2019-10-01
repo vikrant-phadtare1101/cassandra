@@ -25,6 +25,7 @@ import java.util.function.LongPredicate;
 
 import javax.annotation.Nullable;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.hash.Hasher;
@@ -39,6 +40,7 @@ import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundCloser;
 import org.apache.cassandra.db.transform.RTBoundValidator;
+import org.apache.cassandra.db.transform.RTBoundValidator.Stage;
 import org.apache.cassandra.db.transform.StoppingTransformation;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.exceptions.UnknownIndexException;
@@ -49,6 +51,8 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaCollection;
 import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.schema.IndexMetadata;
@@ -62,6 +66,9 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.HashingUtils;
+
+import static com.google.common.collect.Iterables.any;
+import static com.google.common.collect.Iterables.filter;
 
 /**
  * General interface for storage-engine read commands (common to both range and
@@ -142,6 +149,9 @@ public abstract class ReadCommand extends AbstractReadQuery
                           IndexMetadata index)
     {
         super(metadata, nowInSec, columnFilter, rowFilter, limits);
+        if (acceptsTransient && isDigestQuery)
+            throw new IllegalArgumentException("Attempted to issue a digest response to transient replica");
+
         this.kind = kind;
         this.isDigestQuery = isDigestQuery;
         this.digestVersion = digestVersion;
@@ -308,10 +318,49 @@ public abstract class ReadCommand extends AbstractReadQuery
     public abstract ReadCommand copy();
 
     /**
+     * Returns a copy of this command with acceptsTransient set to true.
+     */
+    public ReadCommand copyAsTransientQuery(Replica replica)
+    {
+        Preconditions.checkArgument(replica.isTransient(),
+                                    "Can't make a transient request on a full replica: " + replica);
+        return copyAsTransientQuery();
+    }
+
+    /**
+     * Returns a copy of this command with acceptsTransient set to true.
+     */
+    public ReadCommand copyAsTransientQuery(Iterable<Replica> replicas)
+    {
+        if (any(replicas, Replica::isFull))
+            throw new IllegalArgumentException("Can't make a transient request on full replicas: " + Iterables.toString(filter(replicas, Replica::isFull)));
+        return copyAsTransientQuery();
+    }
+
+    protected abstract ReadCommand copyAsTransientQuery();
+
+    /**
      * Returns a copy of this command with isDigestQuery set to true.
      */
-    public abstract ReadCommand copyAsDigestQuery();
-    public abstract ReadCommand copyAsTransientQuery();
+    public ReadCommand copyAsDigestQuery(Replica replica)
+    {
+        Preconditions.checkArgument(replica.isFull(),
+                                    "Can't make a digest request on a transient replica " + replica);
+        return copyAsDigestQuery();
+    }
+
+    /**
+     * Returns a copy of this command with isDigestQuery set to true.
+     */
+    public ReadCommand copyAsDigestQuery(Iterable<Replica> replicas)
+    {
+        if (any(replicas, Replica::isTransient))
+            throw new IllegalArgumentException("Can't make a digest request on a transient replica " + Iterables.toString(filter(replicas, Replica::isTransient)));
+
+        return copyAsDigestQuery();
+    }
+
+    protected abstract ReadCommand copyAsDigestQuery();
 
     protected abstract UnfilteredPartitionIterator queryStorage(ColumnFamilyStore cfs, ReadExecutionController executionController);
 
@@ -326,7 +375,7 @@ public abstract class ReadCommand extends AbstractReadQuery
     {
         // validate that the sequence of RT markers is correct: open is followed by close, deletion times for both
         // ends equal, and there are no dangling RT bound in any partition.
-        iterator = Transformation.apply(iterator, new RTBoundValidator(true));
+        iterator = RTBoundValidator.validate(iterator, Stage.PROCESSED, true);
 
         return isDigestQuery()
              ? ReadResponse.createDigestResponse(iterator, this)
@@ -403,11 +452,12 @@ public abstract class ReadCommand extends AbstractReadQuery
             repairedDataInfo = new RepairedDataInfo();
 
         UnfilteredPartitionIterator iterator = (null == searcher) ? queryStorage(cfs, executionController) : searcher.search(executionController);
+        iterator = RTBoundValidator.validate(iterator, Stage.MERGED, false);
 
         try
         {
             iterator = withStateTracking(iterator);
-            iterator = withoutPurgeableTombstones(iterator, cfs);
+            iterator = RTBoundValidator.validate(withoutPurgeableTombstones(iterator, cfs), Stage.PURGED, false);
             iterator = withMetricsRecording(iterator, cfs.metric, startTimeNanos);
 
             // If we've used a 2ndary index, we know the result already satisfy the primary expression used, so
@@ -427,9 +477,7 @@ public abstract class ReadCommand extends AbstractReadQuery
             iterator = limits().filter(iterator, nowInSec(), selectsFullPartition());
 
             // because of the above, we need to append an aritifical end bound if the source iterator was stopped short by a counter.
-            iterator = Transformation.apply(iterator, new RTBoundCloser());
-
-            return iterator;
+            return RTBoundCloser.close(iterator);
         }
         catch (RuntimeException | Error e)
         {

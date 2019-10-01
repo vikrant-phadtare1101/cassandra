@@ -27,15 +27,18 @@ import java.util.Map;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
-import org.junit.Assert;
+import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.IPartitioner;
@@ -56,13 +59,21 @@ import static org.junit.Assert.assertTrue;
 public class SimpleStrategyTest
 {
     public static final String KEYSPACE1 = "SimpleStrategyTest";
+    public static final String MULTIDC = "MultiDCSimpleStrategyTest";
 
     @BeforeClass
-    public static void defineSchema() throws Exception
+    public static void defineSchema()
     {
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1, KeyspaceParams.simple(1));
+        SchemaLoader.createKeyspace(MULTIDC, KeyspaceParams.simple(3));
         DatabaseDescriptor.setTransientReplicationEnabledUnsafe(true);
+    }
+
+    @Before
+    public void resetSnitch()
+    {
+        DatabaseDescriptor.setEndpointSnitch(new SimpleSnitch());
     }
 
     @Test
@@ -97,6 +108,47 @@ public class SimpleStrategyTest
         verifyGetNaturalEndpoints(endpointTokens.toArray(new Token[0]), keyTokens.toArray(new Token[0]));
     }
 
+    @Test
+    public void testMultiDCSimpleStrategyEndpoints() throws UnknownHostException
+    {
+        IEndpointSnitch snitch = new PropertyFileSnitch();
+        DatabaseDescriptor.setEndpointSnitch(snitch);
+
+        TokenMetadata metadata = new TokenMetadata();
+
+        AbstractReplicationStrategy strategy = getStrategy(MULTIDC, metadata, snitch);
+
+        // Topology taken directly from the topology_test.test_size_estimates_multidc dtest that regressed
+        Multimap<InetAddressAndPort, Token> dc1 = HashMultimap.create();
+        dc1.put(InetAddressAndPort.getByName("127.0.0.1"), new Murmur3Partitioner.LongToken(-6639341390736545756L));
+        dc1.put(InetAddressAndPort.getByName("127.0.0.1"), new Murmur3Partitioner.LongToken(-2688160409776496397L));
+        dc1.put(InetAddressAndPort.getByName("127.0.0.2"), new Murmur3Partitioner.LongToken(-2506475074448728501L));
+        dc1.put(InetAddressAndPort.getByName("127.0.0.2"), new Murmur3Partitioner.LongToken(8473270337963525440L));
+        metadata.updateNormalTokens(dc1);
+
+        Multimap<InetAddressAndPort, Token> dc2 = HashMultimap.create();
+        dc2.put(InetAddressAndPort.getByName("127.0.0.4"), new Murmur3Partitioner.LongToken(-3736333188524231709L));
+        dc2.put(InetAddressAndPort.getByName("127.0.0.4"), new Murmur3Partitioner.LongToken(8673615181726552074L));
+        metadata.updateNormalTokens(dc2);
+
+        Map<InetAddressAndPort, Integer> primaryCount = new HashMap<>();
+        Map<InetAddressAndPort, Integer> replicaCount = new HashMap<>();
+        for (Token t : metadata.sortedTokens())
+        {
+            EndpointsForToken replicas = strategy.getNaturalReplicasForToken(t);
+            primaryCount.compute(replicas.get(0).endpoint(), (k, v) -> (v == null) ? 1 : v + 1);
+            for (Replica replica : replicas)
+                replicaCount.compute(replica.endpoint(), (k, v) -> (v == null) ? 1 : v + 1);
+        }
+
+        // All three hosts should have 2 "primary" replica ranges and 6 total ranges with RF=3, 3 nodes and 2 DCs.
+        for (InetAddressAndPort addr : primaryCount.keySet())
+        {
+            assertEquals(2, (int) primaryCount.get(addr));
+            assertEquals(6, (int) replicaCount.get(addr));
+        }
+    }
+
     // given a list of endpoint tokens, and a set of key tokens falling between the endpoint tokens,
     // make sure that the Strategy picks the right endpoints for the keys.
     private void verifyGetNaturalEndpoints(Token[] endpointTokens, Token[] keyTokens) throws UnknownHostException
@@ -106,7 +158,7 @@ public class SimpleStrategyTest
         for (String keyspaceName : Schema.instance.getNonLocalStrategyKeyspaces())
         {
             tmd = new TokenMetadata();
-            strategy = getStrategy(keyspaceName, tmd);
+            strategy = getStrategy(keyspaceName, tmd, new SimpleSnitch());
             List<InetAddressAndPort> hosts = new ArrayList<>();
             for (int i = 0; i < endpointTokens.length; i++)
             {
@@ -160,7 +212,7 @@ public class SimpleStrategyTest
         AbstractReplicationStrategy strategy = null;
         for (String keyspaceName : Schema.instance.getNonLocalStrategyKeyspaces())
         {
-            strategy = getStrategy(keyspaceName, tmd);
+            strategy = getStrategy(keyspaceName, tmd, new SimpleSnitch());
 
             PendingRangeCalculatorService.calculatePendingRanges(strategy, keyspaceName);
 
@@ -238,14 +290,43 @@ public class SimpleStrategyTest
                             strategy.getNaturalReplicasForToken(tk(101)));
     }
 
-    private AbstractReplicationStrategy getStrategy(String keyspaceName, TokenMetadata tmd)
+    @Rule
+    public ExpectedException expectedEx = ExpectedException.none();
+
+    @Test
+    public void testSimpleStrategyThrowsConfigurationException() throws ConfigurationException, UnknownHostException
+    {
+        expectedEx.expect(ConfigurationException.class);
+        expectedEx.expectMessage("SimpleStrategy requires a replication_factor strategy option.");
+
+        IEndpointSnitch snitch = new SimpleSnitch();
+        DatabaseDescriptor.setEndpointSnitch(snitch);
+
+        List<InetAddressAndPort> endpoints = Lists.newArrayList(InetAddressAndPort.getByName("127.0.0.1"),
+                                                                InetAddressAndPort.getByName("127.0.0.2"),
+                                                                InetAddressAndPort.getByName("127.0.0.3"));
+
+        Multimap<InetAddressAndPort, Token> tokens = HashMultimap.create();
+        tokens.put(endpoints.get(0), tk(100));
+        tokens.put(endpoints.get(1), tk(200));
+        tokens.put(endpoints.get(2), tk(300));
+
+        TokenMetadata metadata = new TokenMetadata();
+        metadata.updateNormalTokens(tokens);
+
+        Map<String, String> configOptions = new HashMap<>();
+
+        SimpleStrategy strategy = new SimpleStrategy("ks", metadata, snitch, configOptions);
+    }
+
+    private AbstractReplicationStrategy getStrategy(String keyspaceName, TokenMetadata tmd, IEndpointSnitch snitch)
     {
         KeyspaceMetadata ksmd = Schema.instance.getKeyspaceMetadata(keyspaceName);
         return AbstractReplicationStrategy.createReplicationStrategy(
                                                                     keyspaceName,
                                                                     ksmd.params.replication.klass,
                                                                     tmd,
-                                                                    new SimpleSnitch(),
+                                                                    snitch,
                                                                     ksmd.params.replication.options);
     }
 }

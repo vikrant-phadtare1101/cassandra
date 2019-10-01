@@ -37,7 +37,6 @@ import org.junit.Test;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaCollection;
-import org.apache.cassandra.locator.ReplicaUtils;
 import org.apache.cassandra.schema.MigrationManager;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -497,7 +496,16 @@ public class MoveTest
     {
         tmd.removeFromMoving(host);
         assertTrue(!tmd.isMoving(host));
-        tmd.updateNormalToken(new BigIntegerToken(String.valueOf(token)), host);
+        Token newToken = new BigIntegerToken(String.valueOf(token));
+        tmd.updateNormalToken(newToken, host);
+        // As well as upating TMD, update the host's tokens in gossip. Since CASSANDRA-15120, status changing to MOVING
+        // ensures that TMD is up to date with token assignments according to gossip. So we need to make sure gossip has
+        // the correct new token, as the moving node itself would do upon successful completion of the move operation.
+        // Without this, the next movement for that host will set the token in TMD's back to the old value from gossip
+        // and incorrect range movements will follow
+        Gossiper.instance.injectApplicationState(host,
+                                                 ApplicationState.TOKENS,
+                                                 new VersionedValue.VersionedValueFactory(partitioner).tokens(Collections.singleton(newToken)));
     }
 
     private Map.Entry<Range<Token>, EndpointsForRange> generatePendingMapEntry(int start, int end, String... endpoints) throws UnknownHostException
@@ -535,10 +543,10 @@ public class MoveTest
     private void assertMaps(Map<Range<Token>, EndpointsForRange> expected, PendingRangeMaps actual)
     {
         int sizeOfActual = 0;
-        Iterator<Map.Entry<Range<Token>, EndpointsForRange.Mutable>> iterator = actual.iterator();
+        Iterator<Map.Entry<Range<Token>, EndpointsForRange.Builder>> iterator = actual.iterator();
         while(iterator.hasNext())
         {
-            Map.Entry<Range<Token>, EndpointsForRange.Mutable> actualEntry = iterator.next();
+            Map.Entry<Range<Token>, EndpointsForRange.Builder> actualEntry = iterator.next();
             assertNotNull(expected.get(actualEntry.getKey()));
             assertEquals(ImmutableSet.copyOf(expected.get(actualEntry.getKey())), ImmutableSet.copyOf(actualEntry.getValue()));
             sizeOfActual++;

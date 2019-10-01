@@ -46,22 +46,21 @@ import org.apache.cassandra.db.rows.Rows;
 import org.apache.cassandra.db.rows.UnfilteredRowIterators;
 import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.ReplicaLayout;
+import org.apache.cassandra.locator.ReplicaPlan;
 import org.apache.cassandra.schema.ColumnMetadata;
 
-public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeListener
+public class RowIteratorMergeListener<E extends Endpoints<E>>
+        implements UnfilteredRowIterators.MergeListener
 {
     private final DecoratedKey partitionKey;
     private final RegularAndStaticColumns columns;
     private final boolean isReversed;
     private final ReadCommand command;
-    private final ConsistencyLevel consistency;
 
     private final PartitionUpdate.Builder[] repairs;
-    private final Replica[] sources;
     private final Row.Builder[] currentRows;
     private final RowDiffListener diffListener;
-    private final ReplicaLayout layout;
+    private final ReplicaPlan.ForRead<E> replicaPlan;
 
     // The partition level deletion for the merge row.
     private DeletionTime partitionLevelDeletion;
@@ -74,48 +73,43 @@ public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeLis
 
     private final ReadRepair readRepair;
 
-    public RowIteratorMergeListener(DecoratedKey partitionKey, RegularAndStaticColumns columns, boolean isReversed, ReplicaLayout layout, ReadCommand command, ConsistencyLevel consistency, ReadRepair readRepair)
+    public RowIteratorMergeListener(DecoratedKey partitionKey, RegularAndStaticColumns columns, boolean isReversed, ReplicaPlan.ForRead<E> replicaPlan, ReadCommand command, ReadRepair readRepair)
     {
         this.partitionKey = partitionKey;
         this.columns = columns;
         this.isReversed = isReversed;
-        Endpoints<?> sources = layout.selected();
-        this.sources = new Replica[sources.size()];
-        for (int i = 0; i < sources.size(); i++)
-            this.sources[i] = sources.get(i);
-
-        this.layout = layout;
-        repairs = new PartitionUpdate.Builder[sources.size()];
-        currentRows = new Row.Builder[sources.size()];
-        sourceDeletionTime = new DeletionTime[sources.size()];
-        markerToRepair = new ClusteringBound[sources.size()];
+        this.replicaPlan = replicaPlan;
+        int size = replicaPlan.contacts().size();
+        repairs = new PartitionUpdate.Builder[size];
+        currentRows = new Row.Builder[size];
+        sourceDeletionTime = new DeletionTime[size];
+        markerToRepair = new ClusteringBound[size];
         this.command = command;
-        this.consistency = consistency;
         this.readRepair = readRepair;
 
         this.diffListener = new RowDiffListener()
         {
             public void onPrimaryKeyLivenessInfo(int i, Clustering clustering, LivenessInfo merged, LivenessInfo original)
             {
-                if (merged != null && !merged.equals(original) && !isTransient(i))
+                if (merged != null && !merged.equals(original))
                     currentRow(i, clustering).addPrimaryKeyLivenessInfo(merged);
             }
 
             public void onDeletion(int i, Clustering clustering, Row.Deletion merged, Row.Deletion original)
             {
-                if (merged != null && !merged.equals(original) && !isTransient(i))
+                if (merged != null && !merged.equals(original))
                     currentRow(i, clustering).addRowDeletion(merged);
             }
 
             public void onComplexDeletion(int i, Clustering clustering, ColumnMetadata column, DeletionTime merged, DeletionTime original)
             {
-                if (merged != null && !merged.equals(original) && !isTransient(i))
+                if (merged != null && !merged.equals(original))
                     currentRow(i, clustering).addComplexDeletion(column, merged);
             }
 
             public void onCell(int i, Clustering clustering, Cell merged, Cell original)
             {
-                if (merged != null && !merged.equals(original) && isQueried(merged) && !isTransient(i))
+                if (merged != null && !merged.equals(original) && isQueried(merged))
                     currentRow(i, clustering).addCell(merged);
             }
 
@@ -132,11 +126,6 @@ public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeLis
                 return column.isComplex() ? filter.fetchedCellIsQueried(column, cell.path()) : filter.fetchedColumnIsQueried(column);
             }
         };
-    }
-
-    private boolean isTransient(int i)
-    {
-        return sources[i].isTransient();
     }
 
     private PartitionUpdate.Builder update(int i)
@@ -172,9 +161,6 @@ public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeLis
         this.partitionLevelDeletion = mergedDeletion;
         for (int i = 0; i < versions.length; i++)
         {
-            if (isTransient(i))
-                continue;
-
             if (mergedDeletion.supersedes(versions[i]))
                 update(i).addPartitionDeletion(mergedDeletion);
         }
@@ -209,9 +195,6 @@ public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeLis
 
         for (int i = 0; i < versions.length; i++)
         {
-            if (isTransient(i))
-                continue;
-
             RangeTombstoneMarker marker = versions[i];
 
             // Update what the source now thinks is the current deletion
@@ -326,25 +309,27 @@ public class RowIteratorMergeListener implements UnfilteredRowIterators.MergeLis
     public void close()
     {
         Map<Replica, Mutation> mutations = null;
+        Endpoints<?> sources = replicaPlan.contacts();
         for (int i = 0; i < repairs.length; i++)
         {
             if (repairs[i] == null)
                 continue;
 
-            Preconditions.checkState(!isTransient(i), "cannot read repair transient replicas");
-            Mutation mutation = BlockingReadRepairs.createRepairMutation(repairs[i].build(), consistency, sources[i].endpoint(), false);
+            Replica source = sources.get(i);
+
+            Mutation mutation = BlockingReadRepairs.createRepairMutation(repairs[i].build(), replicaPlan.consistencyLevel(), source.endpoint(), false);
             if (mutation == null)
                 continue;
 
             if (mutations == null)
-                mutations = Maps.newHashMapWithExpectedSize(sources.length);
+                mutations = Maps.newHashMapWithExpectedSize(sources.size());
 
-            mutations.put(sources[i], mutation);
+            mutations.put(source, mutation);
         }
 
         if (mutations != null)
         {
-            readRepair.repairPartition(partitionKey, mutations, layout);
+            readRepair.repairPartition(partitionKey, mutations, replicaPlan);
         }
     }
 }

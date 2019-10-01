@@ -22,6 +22,8 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 
 import org.apache.cassandra.cache.IRowCacheEntry;
@@ -34,12 +36,15 @@ import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.lifecycle.*;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.transform.RTBoundValidator;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaCollection;
 import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
@@ -294,7 +299,8 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
                                               indexMetadata());
     }
 
-    public SinglePartitionReadCommand copyAsDigestQuery()
+    @Override
+    protected SinglePartitionReadCommand copyAsDigestQuery()
     {
         return new SinglePartitionReadCommand(true,
                                               digestVersion(),
@@ -309,7 +315,8 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
                                               indexMetadata());
     }
 
-    public SinglePartitionReadCommand copyAsTransientQuery()
+    @Override
+    protected SinglePartitionReadCommand copyAsTransientQuery()
     {
         return new SinglePartitionReadCommand(false,
                                               0,
@@ -582,7 +589,7 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
 
         Tracing.trace("Acquiring sstable references");
         ColumnFamilyStore.ViewFragment view = cfs.select(View.select(SSTableSet.LIVE, partitionKey()));
-        Collections.sort(view.sstables, SSTableReader.maxTimestampComparator);
+        Collections.sort(view.sstables, SSTableReader.maxTimestampDescending);
         ClusteringIndexFilter filter = clusteringIndexFilter();
         long minTimestamp = Long.MAX_VALUE;
         long mostRecentPartitionTombstone = Long.MIN_VALUE;
@@ -602,7 +609,7 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
 
                 // Memtable data is always considered unrepaired
                 oldestUnrepairedTombstone = Math.min(oldestUnrepairedTombstone, partition.stats().minLocalDeletionTime);
-                inputCollector.addMemtableIterator(iter);
+                inputCollector.addMemtableIterator(RTBoundValidator.validate(iter, RTBoundValidator.Stage.MEMTABLE, false));
 
                 mostRecentPartitionTombstone = Math.max(mostRecentPartitionTombstone,
                                                         iter.partitionLevelDeletion().markedForDeleteAt());
@@ -803,12 +810,17 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
                 if (iter.isEmpty())
                     continue;
 
-                result = add(iter, result, filter, false);
+                result = add(
+                    RTBoundValidator.validate(iter, RTBoundValidator.Stage.MEMTABLE, false),
+                    result,
+                    filter,
+                    false
+                );
             }
         }
 
         /* add the SSTables on disk */
-        Collections.sort(view.sstables, SSTableReader.maxTimestampComparator);
+        Collections.sort(view.sstables, SSTableReader.maxTimestampDescending);
         boolean onlyUnrepaired = true;
         // read sorted sstables
         SSTableReadMetricsCollector metricsCollector = new SSTableReadMetricsCollector();
@@ -844,10 +856,29 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
                                                                                        metricsCollector))
                 {
                     if (!iter.partitionLevelDeletion().isLive())
-                        result = add(UnfilteredRowIterators.noRowsIterator(iter.metadata(), iter.partitionKey(), Rows.EMPTY_STATIC_ROW, iter.partitionLevelDeletion(), filter.isReversed()), result, filter, sstable.isRepaired());
+                    {
+                        result = add(
+                            UnfilteredRowIterators.noRowsIterator(iter.metadata(),
+                                                                  iter.partitionKey(),
+                                                                  Rows.EMPTY_STATIC_ROW,
+                                                                  iter.partitionLevelDeletion(),
+                                                                  filter.isReversed()),
+                            result,
+                            filter,
+                            sstable.isRepaired()
+                        );
+                    }
                     else
-                        result = add(iter, result, filter, sstable.isRepaired());
+                    {
+                        result = add(
+                            RTBoundValidator.validate(iter, RTBoundValidator.Stage.SSTABLE, false),
+                            result,
+                            filter,
+                            sstable.isRepaired()
+                        );
+                    }
                 }
+
                 continue;
             }
 
@@ -864,7 +895,13 @@ public class SinglePartitionReadCommand extends ReadCommand implements SinglePar
 
                 if (sstable.isRepaired())
                     onlyUnrepaired = false;
-                result = add(iter, result, filter, sstable.isRepaired());
+
+                result = add(
+                    RTBoundValidator.validate(iter, RTBoundValidator.Stage.SSTABLE, false),
+                    result,
+                    filter,
+                    sstable.isRepaired()
+                );
             }
         }
 

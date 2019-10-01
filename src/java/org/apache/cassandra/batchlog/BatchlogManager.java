@@ -18,31 +18,37 @@
 package org.apache.cassandra.batchlog;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Predicates;
-import com.google.common.collect.*;
+import com.google.common.collect.Collections2;
+import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.RateLimiter;
-
-import org.apache.cassandra.locator.ReplicaLayout;
-import org.apache.cassandra.locator.EndpointsForToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.DebuggableScheduledThreadPoolExecutor;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.Replicas;
-import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.UntypedResultSet;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.db.WriteType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -54,13 +60,20 @@ import org.apache.cassandra.hints.Hint;
 import org.apache.cassandra.hints.HintsService;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
+import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaLayout;
+import org.apache.cassandra.locator.ReplicaPlan;
+import org.apache.cassandra.locator.Replicas;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.service.WriteResponseHandler;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.MBeanWrapper;
 import org.apache.cassandra.utils.UUIDGen;
 
 import static com.google.common.collect.Iterables.transform;
@@ -94,15 +107,7 @@ public class BatchlogManager implements BatchlogManagerMBean
 
     public void start()
     {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        try
-        {
-            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
+        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
 
         batchlogTasks.scheduleWithFixedDelay(this::replayFailedBatches,
                                              StorageService.RING_DELAY,
@@ -459,36 +464,34 @@ public class BatchlogManager implements BatchlogManagerMBean
             Keyspace keyspace = Keyspace.open(ks);
             Token tk = mutation.key().getToken();
 
-            EndpointsForToken replicas = StorageService.instance.getNaturalAndPendingReplicasForToken(ks, tk);
-            Replicas.temporaryAssertFull(replicas); // TODO in CASSANDRA-14549
+            // TODO: this logic could do with revisiting at some point, as it is unclear what its rationale is
+            // we perform a local write, ignoring errors and inline in this thread (potentially slowing replay down)
+            // effectively bumping CL for locally owned writes and also potentially stalling log replay if an error occurs
+            // once we decide how it should work, it can also probably be simplified, and avoid constructing a ReplicaPlan directly
+            ReplicaLayout.ForTokenWrite liveAndDown = ReplicaLayout.forTokenWriteLiveAndDown(keyspace, tk);
+            Replicas.temporaryAssertFull(liveAndDown.all()); // TODO in CASSANDRA-14549
 
-            EndpointsForToken.Builder liveReplicasBuilder = EndpointsForToken.builder(tk);
-            for (Replica replica : replicas)
+            Replica selfReplica = liveAndDown.all().selfIfPresent();
+            if (selfReplica != null)
+                mutation.apply();
+
+            ReplicaLayout.ForTokenWrite liveRemoteOnly = liveAndDown.filter(
+                    r -> FailureDetector.isReplicaAlive.test(r) && r != selfReplica);
+
+            for (Replica replica : liveAndDown.all())
             {
-                if (replica.isLocal())
-                {
-                    mutation.apply();
-                }
-                else if (FailureDetector.instance.isAlive(replica.endpoint()))
-                {
-                    liveReplicasBuilder.add(replica); // will try delivering directly instead of writing a hint.
-                }
-                else
-                {
-                    hintedNodes.add(replica.endpoint());
-                    HintsService.instance.write(StorageService.instance.getHostIdForEndpoint(replica.endpoint()),
-                                                Hint.create(mutation, writtenAt));
-                }
+                if (replica == selfReplica || liveRemoteOnly.all().contains(replica))
+                    continue;
+                hintedNodes.add(replica.endpoint());
+                HintsService.instance.write(StorageService.instance.getHostIdForEndpoint(replica.endpoint()),
+                        Hint.create(mutation, writtenAt));
             }
 
-            EndpointsForToken liveReplicas = liveReplicasBuilder.build();
-            if (liveReplicas.isEmpty())
-                return null;
-
-            Replicas.temporaryAssertFull(liveReplicas);
-            ReplayWriteResponseHandler<Mutation> handler = new ReplayWriteResponseHandler<>(keyspace, liveReplicas, System.nanoTime());
+            ReplicaPlan.ForTokenWrite replicaPlan = new ReplicaPlan.ForTokenWrite(keyspace, ConsistencyLevel.ONE,
+                    liveRemoteOnly.pending(), liveRemoteOnly.all(), liveRemoteOnly.all(), liveRemoteOnly.all());
+            ReplayWriteResponseHandler<Mutation> handler = new ReplayWriteResponseHandler<>(replicaPlan, System.nanoTime());
             MessageOut<Mutation> message = mutation.createMessage();
-            for (Replica replica : liveReplicas)
+            for (Replica replica : liveRemoteOnly.all())
                 MessagingService.instance().sendWriteRR(message, replica, handler, false);
             return handler;
         }
@@ -509,17 +512,16 @@ public class BatchlogManager implements BatchlogManagerMBean
         {
             private final Set<InetAddressAndPort> undelivered = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
-            ReplayWriteResponseHandler(Keyspace keyspace, EndpointsForToken writeReplicas, long queryStartNanoTime)
+            ReplayWriteResponseHandler(ReplicaPlan.ForTokenWrite replicaPlan, long queryStartNanoTime)
             {
-                super(ReplicaLayout.forWriteWithDownNodes(keyspace, null, writeReplicas.token(), writeReplicas, EndpointsForToken.empty(writeReplicas.token())),
-                      null, WriteType.UNLOGGED_BATCH, queryStartNanoTime);
-                Iterables.addAll(undelivered, writeReplicas.endpoints());
+                super(replicaPlan, null, WriteType.UNLOGGED_BATCH, queryStartNanoTime);
+                Iterables.addAll(undelivered, replicaPlan.contacts().endpoints());
             }
 
             @Override
-            protected int totalBlockFor()
+            protected int blockFor()
             {
-                return this.replicaLayout.selected().size();
+                return this.replicaPlan.contacts().size();
             }
 
             @Override
@@ -529,95 +531,6 @@ public class BatchlogManager implements BatchlogManagerMBean
                 assert removed;
                 super.response(m);
             }
-        }
-    }
-
-    public static class EndpointFilter
-    {
-        private final String localRack;
-        private final Multimap<String, InetAddressAndPort> endpoints;
-
-        public EndpointFilter(String localRack, Multimap<String, InetAddressAndPort> endpoints)
-        {
-            this.localRack = localRack;
-            this.endpoints = endpoints;
-        }
-
-        /**
-         * @return list of candidates for batchlog hosting. If possible these will be two nodes from different racks.
-         */
-        public Collection<InetAddressAndPort> filter()
-        {
-            // special case for single-node data centers
-            if (endpoints.values().size() == 1)
-                return endpoints.values();
-
-            // strip out dead endpoints and localhost
-            ListMultimap<String, InetAddressAndPort> validated = ArrayListMultimap.create();
-            for (Map.Entry<String, InetAddressAndPort> entry : endpoints.entries())
-                if (isValid(entry.getValue()))
-                    validated.put(entry.getKey(), entry.getValue());
-
-            if (validated.size() <= 2)
-                return validated.values();
-
-            if (validated.size() - validated.get(localRack).size() >= 2)
-            {
-                // we have enough endpoints in other racks
-                validated.removeAll(localRack);
-            }
-
-            if (validated.keySet().size() == 1)
-            {
-                /*
-                 * we have only 1 `other` rack to select replicas from (whether it be the local rack or a single non-local rack)
-                 * pick two random nodes from there; we are guaranteed to have at least two nodes in the single remaining rack
-                 * because of the preceding if block.
-                 */
-                List<InetAddressAndPort> otherRack = Lists.newArrayList(validated.values());
-                shuffle(otherRack);
-                return otherRack.subList(0, 2);
-            }
-
-            // randomize which racks we pick from if more than 2 remaining
-            Collection<String> racks;
-            if (validated.keySet().size() == 2)
-            {
-                racks = validated.keySet();
-            }
-            else
-            {
-                racks = Lists.newArrayList(validated.keySet());
-                shuffle((List<String>) racks);
-            }
-
-            // grab a random member of up to two racks
-            List<InetAddressAndPort> result = new ArrayList<>(2);
-            for (String rack : Iterables.limit(racks, 2))
-            {
-                List<InetAddressAndPort> rackMembers = validated.get(rack);
-                result.add(rackMembers.get(getRandomInt(rackMembers.size())));
-            }
-
-            return result;
-        }
-
-        @VisibleForTesting
-        protected boolean isValid(InetAddressAndPort input)
-        {
-            return !input.equals(FBUtilities.getBroadcastAddressAndPort()) && FailureDetector.instance.isAlive(input);
-        }
-
-        @VisibleForTesting
-        protected int getRandomInt(int bound)
-        {
-            return ThreadLocalRandom.current().nextInt(bound);
-        }
-
-        @VisibleForTesting
-        protected void shuffle(List<?> list)
-        {
-            Collections.shuffle(list);
         }
     }
 }

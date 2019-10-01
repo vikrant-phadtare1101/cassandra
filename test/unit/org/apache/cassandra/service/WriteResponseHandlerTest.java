@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.base.Predicates;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.locator.EndpointsForToken;
-import org.apache.cassandra.locator.ReplicaLayout;
+import org.apache.cassandra.locator.ReplicaPlans;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -214,6 +214,7 @@ public class WriteResponseHandlerTest
     @Test
     public void failedIdealCLIncrementsStat() throws Throwable
     {
+        ks.metric.idealCLWriteLatency.totalLatency.dec(ks.metric.idealCLWriteLatency.totalLatency.getCount());
         AbstractWriteResponseHandler awr = createWriteResponseHandler(ConsistencyLevel.LOCAL_QUORUM, ConsistencyLevel.EACH_QUORUM);
 
         //Succeed in local DC
@@ -236,7 +237,7 @@ public class WriteResponseHandlerTest
 
     private static AbstractWriteResponseHandler createWriteResponseHandler(ConsistencyLevel cl, ConsistencyLevel ideal, long queryStartTime)
     {
-        return ks.getReplicationStrategy().getWriteResponseHandler(ReplicaLayout.forWriteWithDownNodes(ks, cl, targets.token(), targets, pending),
+        return ks.getReplicationStrategy().getWriteResponseHandler(ReplicaPlans.forWrite(ks, cl, targets, pending, Predicates.alwaysTrue(), ReplicaPlans.writeAll),
                                                                    null, WriteType.SIMPLE, queryStartTime, ideal);
     }
 

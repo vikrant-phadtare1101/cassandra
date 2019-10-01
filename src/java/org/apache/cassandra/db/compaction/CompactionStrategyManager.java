@@ -39,6 +39,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.primitives.Longs;
+import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -735,13 +736,16 @@ public class CompactionStrategyManager implements INotificationConsumer
                     continue;
 
                 AbstractStrategyHolder dstHolder = holders.get(i);
-                dstHolder.addSSTables(group);
 
                 for (AbstractStrategyHolder holder : holders)
                 {
                     if (holder != dstHolder)
                         holder.removeSSTables(group);
                 }
+
+                // adding sstables into another strategy may change its level,
+                // thus it won't be removed from original LCS. We have to remove sstables first
+                dstHolder.addSSTables(group);
             }
         }
         finally
@@ -1114,7 +1118,7 @@ public class CompactionStrategyManager implements INotificationConsumer
                                                        MetadataCollector collector,
                                                        SerializationHeader header,
                                                        Collection<Index> indexes,
-                                                       LifecycleTransaction txn)
+                                                       LifecycleNewTracker lifecycleNewTracker)
     {
         SSTable.validateRepairedMetadata(repairedAt, pendingRepair, isTransient);
         maybeReloadDiskBoundaries();
@@ -1129,7 +1133,7 @@ public class CompactionStrategyManager implements INotificationConsumer
                                                                                               collector,
                                                                                               header,
                                                                                               indexes,
-                                                                                              txn);
+                                                                                              lifecycleNewTracker);
         }
         finally
         {

@@ -18,14 +18,10 @@
 package org.apache.cassandra.service;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 
 import com.google.common.base.Preconditions;
 import com.google.common.cache.Cache;
@@ -33,7 +29,6 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.AbstractFuture;
 
 import com.google.common.util.concurrent.ListeningExecutorService;
@@ -62,14 +57,12 @@ import org.apache.cassandra.gms.IEndpointStateChangeSubscriber;
 import org.apache.cassandra.gms.IFailureDetectionEventListener;
 import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.Replicas;
 import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.net.IAsyncCallbackWithFailure;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.CommonRange;
-import org.apache.cassandra.repair.RepairRunnable;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.repair.RepairParallelism;
@@ -81,6 +74,7 @@ import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.utils.CassandraVersion;
 import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.MBeanWrapper;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.UUIDGen;
 
@@ -172,15 +166,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
                                              .maximumSize(Long.getLong("cassandra.parent_repair_status_cache_size", 100_000))
                                              .build();
 
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        try
-        {
-            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
+        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
     }
 
     public void start()
@@ -202,6 +188,18 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
     {
         UUID sessionID = UUID.fromString(session);
         consistent.local.cancelSession(sessionID, force);
+    }
+
+    @Override
+    public void setRepairSessionSpaceInMegabytes(int sizeInMegabytes)
+    {
+        DatabaseDescriptor.setRepairSessionSpaceInMegabytes(sizeInMegabytes);
+    }
+
+    @Override
+    public int getRepairSessionSpaceInMegabytes()
+    {
+        return DatabaseDescriptor.getRepairSessionSpaceInMegabytes();
     }
 
     /**
@@ -334,7 +332,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
             TokenMetadata.Topology topology = ss.getTokenMetadata().cloneOnlyTokenMap().getTopology();
             Multimap<String, InetAddressAndPort> dcEndpointsMap = topology.getDatacenterEndpoints();
             Iterable<InetAddressAndPort> dcEndpoints = concat(transform(dataCenters, dcEndpointsMap::get));
-            return neighbors.keep(dcEndpoints);
+            return neighbors.select(dcEndpoints, true);
         }
         else if (hosts != null && !hosts.isEmpty())
         {

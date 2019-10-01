@@ -90,7 +90,6 @@ import com.codahale.metrics.JmxReporter;
 import com.google.common.base.Function;
 import com.google.common.base.Strings;
 import com.google.common.collect.HashMultimap;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
@@ -687,6 +686,11 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isDraining();
     }
 
+    public boolean isBootstrapMode()
+    {
+        return ssProxy.isBootstrapMode();
+    }
+
     public void joinRing() throws IOException
     {
         ssProxy.joinRing();
@@ -1150,6 +1154,10 @@ public class NodeProbe implements AutoCloseable
                 return ssProxy.getCasContentionTimeout();
             case "truncate":
                 return ssProxy.getTruncateRpcTimeout();
+            case "internodeconnect":
+                return ssProxy.getInternodeTcpConnectTimeoutInMS();
+            case "internodeuser":
+                return ssProxy.getInternodeTcpUserTimeoutInMS();
             default:
                 throw new RuntimeException("Timeout type requires one of (" + GetTimeout.TIMEOUT_TYPES + ")");
         }
@@ -1233,6 +1241,12 @@ public class NodeProbe implements AutoCloseable
                 break;
             case "truncate":
                 ssProxy.setTruncateRpcTimeout(value);
+                break;
+            case "internodeconnect":
+                ssProxy.setInternodeTcpConnectTimeoutInMS((int) value);
+                break;
+            case "internodeuser":
+                ssProxy.setInternodeTcpUserTimeoutInMS((int) value);
                 break;
             default:
                 throw new RuntimeException("Timeout type requires one of (" + GetTimeout.TIMEOUT_TYPES + ")");
@@ -1732,7 +1746,7 @@ public class NodeProbe implements AutoCloseable
         return arsProxy;
     }
 
-    public void reloadSslCerts()
+    public void reloadSslCerts() throws IOException
     {
         msProxy.reloadSslCertificates();
     }

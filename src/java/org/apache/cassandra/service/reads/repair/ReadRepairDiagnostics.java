@@ -18,15 +18,15 @@
 
 package org.apache.cassandra.service.reads.repair;
 
-import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 
 import com.google.common.collect.Lists;
 
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.diag.DiagnosticEventService;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.locator.ReplicaLayout;
+import org.apache.cassandra.locator.ReplicaPlan;
 import org.apache.cassandra.service.reads.DigestResolver;
 import org.apache.cassandra.service.reads.repair.PartitionRepairEvent.PartitionRepairEventType;
 import org.apache.cassandra.service.reads.repair.ReadRepairEvent.ReadRepairEventType;
@@ -39,21 +39,22 @@ final class ReadRepairDiagnostics
     {
     }
 
-    static void startRepair(AbstractReadRepair readRepair, Collection<InetAddressAndPort> endpointDestinations,
-                            DigestResolver digestResolver, Collection<InetAddressAndPort> allEndpoints)
+    static void startRepair(AbstractReadRepair readRepair, ReplicaPlan.ForRead<?> fullPlan, DigestResolver digestResolver)
     {
         if (service.isEnabled(ReadRepairEvent.class, ReadRepairEventType.START_REPAIR))
             service.publish(new ReadRepairEvent(ReadRepairEventType.START_REPAIR,
-                                                readRepair, endpointDestinations, allEndpoints, digestResolver));
+                                                readRepair,
+                                                fullPlan.contacts().endpoints(),
+                                                fullPlan.candidates().endpoints(), digestResolver));
     }
 
     static void speculatedRead(AbstractReadRepair readRepair, InetAddressAndPort endpoint,
-                               Iterable<InetAddressAndPort> allEndpoints)
+                               ReplicaPlan.ForRead<?> fullPlan)
     {
         if (service.isEnabled(ReadRepairEvent.class, ReadRepairEventType.SPECULATED_READ))
             service.publish(new ReadRepairEvent(ReadRepairEventType.SPECULATED_READ,
                                                 readRepair, Collections.singletonList(endpoint),
-                                                Lists.newArrayList(allEndpoints), null));
+                                                Lists.newArrayList(fullPlan.candidates().endpoints()), null));
     }
 
     static void sendInitialRepair(BlockingPartitionRepair partitionRepair, InetAddressAndPort destination, Mutation mutation)

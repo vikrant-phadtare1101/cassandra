@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.apache.cassandra.db.rows.EncodingStats;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.commons.lang3.builder.EqualsBuilder;
@@ -65,6 +66,8 @@ public class StatsMetadata extends MetadataComponent
     public final long totalRows;
     public final UUID pendingRepair;
     public final boolean isTransient;
+    // just holds the current encoding stats to avoid allocating - it is not serialized
+    public final EncodingStats encodingStats;
 
     public StatsMetadata(EstimatedHistogram estimatedPartitionSize,
                          EstimatedHistogram estimatedColumnCount,
@@ -107,6 +110,7 @@ public class StatsMetadata extends MetadataComponent
         this.totalRows = totalRows;
         this.pendingRepair = pendingRepair;
         this.isTransient = isTransient;
+        this.encodingStats = new EncodingStats(minTimestamp, minLocalDeletionTime, minTTL);
     }
 
     public MetadataType getType()
@@ -350,15 +354,25 @@ public class StatsMetadata extends MetadataComponent
             int sstableLevel = in.readInt();
             long repairedAt = in.readLong();
 
+            // for legacy sstables, we skip deserializing the min and max clustering value
+            // to prevent erroneously excluding sstables from reads (see CASSANDRA-14861)
             int colCount = in.readInt();
             List<ByteBuffer> minClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-                minClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
+            {
+                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
+                if (version.hasAccurateMinMax())
+                    minClusteringValues.add(val);
+            }
 
             colCount = in.readInt();
             List<ByteBuffer> maxClusteringValues = new ArrayList<>(colCount);
             for (int i = 0; i < colCount; i++)
-                maxClusteringValues.add(ByteBufferUtil.readWithShortLength(in));
+            {
+                ByteBuffer val = ByteBufferUtil.readWithShortLength(in);
+                if (version.hasAccurateMinMax())
+                    maxClusteringValues.add(val);
+            }
 
             boolean hasLegacyCounterShards = in.readBoolean();
 

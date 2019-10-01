@@ -133,10 +133,11 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
     protected void fireErrorAndComplete(int progressCount, int totalProgress, String message)
     {
         StorageMetrics.repairExceptions.inc();
-        fireProgressEvent(new ProgressEvent(ProgressEventType.ERROR, progressCount, totalProgress, message));
+        String errorMessage = String.format("Repair command #%d failed with error %s", cmd, message);
+        fireProgressEvent(new ProgressEvent(ProgressEventType.ERROR, progressCount, totalProgress, errorMessage));
         String completionMessage = String.format("Repair command #%d finished with error", cmd);
         fireProgressEvent(new ProgressEvent(ProgressEventType.COMPLETE, progressCount, totalProgress, completionMessage));
-        recordFailure(message, completionMessage);
+        recordFailure(errorMessage, completionMessage);
     }
 
 
@@ -159,7 +160,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException | IOException e)
         {
-            logger.error("Repair failed:", e);
+            logger.error("Repair {} failed:", parentSession, e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -196,21 +197,17 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         Set<InetAddressAndPort> allNeighbors = new HashSet<>();
         List<CommonRange> commonRanges = new ArrayList<>();
 
-        //pre-calculate output of getLocalReplicas and pass it to getNeighbors to increase performance and prevent
-        //calculation multiple times
-        // we arbitrarily limit ourselves to only full replicas, in lieu of ensuring it is safe to coordinate from a transient replica
-        Iterable<Range<Token>> keyspaceLocalRanges = storageService
-                .getLocalReplicas(keyspace)
-                .filter(Replica::isFull)
-                .ranges();
-
         try
         {
+            //pre-calculate output of getLocalReplicas and pass it to getNeighbors to increase performance and prevent
+            //calculation multiple times
+            Iterable<Range<Token>> keyspaceLocalRanges = storageService.getLocalReplicas(keyspace).ranges();
+
             for (Range<Token> range : options.getRanges())
             {
                 EndpointsForRange neighbors = ActiveRepairService.getNeighbors(keyspace, keyspaceLocalRanges, range,
-                                                                        options.getDataCenters(),
-                                                                        options.getHosts());
+                                                                               options.getDataCenters(),
+                                                                               options.getHosts());
 
                 addRangeToNeighbors(commonRanges, range, neighbors);
                 allNeighbors.addAll(neighbors.endpoints());
@@ -220,7 +217,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException e)
         {
-            logger.error("Repair failed:", e);
+            logger.error("Repair {} failed:", parentSession, e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -234,6 +231,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (IllegalArgumentException e)
         {
+            logger.error("Repair {} failed:", parentSession, e);
             fireErrorAndComplete(progress.get(), totalProgress, e.getMessage());
             return;
         }
@@ -265,6 +263,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         }
         catch (Throwable t)
         {
+            logger.error("Repair {} failed:", parentSession, t);
             if (!options.isPreview())
             {
                 SystemDistributedKeyspace.failParentRepair(parentSession, t);
@@ -643,21 +642,23 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
     {
         // Note we rely on the first message being the reason for the failure
         // when inspecting this state from RepairRunner.queryForCompletedRepair
+        String failure = failureMessage == null ? "unknown failure" : failureMessage;
+        String completion = completionMessage == null ? "unknown completion" : completionMessage;
+
         ActiveRepairService.instance.recordRepairStatus(cmd, ActiveRepairService.ParentRepairStatus.FAILED,
-                                               ImmutableList.of(failureMessage, completionMessage));
+                                               ImmutableList.of(failure, completion));
     }
 
-    private void addRangeToNeighbors(List<CommonRange> neighborRangeList, Range<Token> range, EndpointsForRange neighbors)
+    private static void addRangeToNeighbors(List<CommonRange> neighborRangeList, Range<Token> range, EndpointsForRange neighbors)
     {
         Set<InetAddressAndPort> endpoints = neighbors.endpoints();
         Set<InetAddressAndPort> transEndpoints = neighbors.filter(Replica::isTransient).endpoints();
-        for (int i = 0; i < neighborRangeList.size(); i++)
-        {
-            CommonRange cr = neighborRangeList.get(i);
 
-            if (cr.endpoints.containsAll(endpoints) && cr.transEndpoints.containsAll(transEndpoints))
+        for (CommonRange commonRange : neighborRangeList)
+        {
+            if (commonRange.matchesEndpoints(endpoints, transEndpoints))
             {
-                cr.ranges.add(range);
+                commonRange.ranges.add(range);
                 return;
             }
         }

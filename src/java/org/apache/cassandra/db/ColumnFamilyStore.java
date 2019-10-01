@@ -20,7 +20,6 @@ package org.apache.cassandra.db;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.lang.management.ManagementFactory;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
@@ -41,7 +40,6 @@ import com.google.common.util.concurrent.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.codahale.metrics.Snapshot;
 import org.apache.cassandra.cache.*;
 import org.apache.cassandra.concurrent.*;
 import org.apache.cassandra.config.*;
@@ -72,7 +70,6 @@ import org.apache.cassandra.io.sstable.SSTableMultiWriter;
 import org.apache.cassandra.io.sstable.format.*;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.metrics.Sampler;
 import org.apache.cassandra.metrics.Sampler.Sample;
 import org.apache.cassandra.metrics.Sampler.SamplerType;
@@ -204,7 +201,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public final TableMetrics metric;
     public volatile long sampleReadLatencyNanos;
-    public volatile long transientWriteLatencyNanos;
+    public volatile long additionalWriteLatencyNanos;
 
     private final CassandraTableWriteHandler writeHandler;
     private final CassandraStreamManager streamManager;
@@ -220,10 +217,31 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     private volatile boolean neverPurgeTombstones = false;
 
+    public static void shutdownFlushExecutor() throws InterruptedException
+    {
+        flushExecutor.shutdown();
+        flushExecutor.awaitTermination(60, TimeUnit.SECONDS);
+    }
+
+
     public static void shutdownPostFlushExecutor() throws InterruptedException
     {
         postFlushExecutor.shutdown();
         postFlushExecutor.awaitTermination(60, TimeUnit.SECONDS);
+    }
+
+    public static void shutdownReclaimExecutor() throws InterruptedException
+    {
+        reclaimExecutor.shutdown();
+        reclaimExecutor.awaitTermination(60, TimeUnit.SECONDS);
+    }
+
+    public static void shutdownPerDiskFlushExecutors() throws InterruptedException
+    {
+        for (ExecutorService executorService : perDiskflushExecutors)
+            executorService.shutdown();
+        for (ExecutorService executorService : perDiskflushExecutors)
+            executorService.awaitTermination(60, TimeUnit.SECONDS);
     }
 
     public void reload()
@@ -384,7 +402,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         metric = new TableMetrics(this);
         fileIndexGenerator.set(generation);
         sampleReadLatencyNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getReadRpcTimeout() / 2);
-        transientWriteLatencyNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getWriteRpcTimeout() / 2);
+        additionalWriteLatencyNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getWriteRpcTimeout() / 2);
 
         logger.info("Initializing {}.{}", keyspace.getName(), name);
 
@@ -425,19 +443,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             oldMBeanName = String.format("org.apache.cassandra.db:type=%s,keyspace=%s,columnfamily=%s",
                                          isIndex() ? "IndexColumnFamilies" : "ColumnFamilies",
                                          keyspace.getName(), name);
-            try
-            {
-                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-                ObjectName[] objectNames = {new ObjectName(mbeanName), new ObjectName(oldMBeanName)};
-                for (ObjectName objectName : objectNames)
-                {
-                    mbs.registerMBean(this, objectName);
-                }
-            }
-            catch (Exception e)
-            {
-                throw new RuntimeException(e);
-            }
+
+            String[] objectNames = {mbeanName, oldMBeanName};
+            for (String objectName : objectNames)
+                MBeanWrapper.instance.registerMBean(this, objectName);
         }
         else
         {
@@ -455,7 +464,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         try
         {
             sampleReadLatencyNanos = metadata().params.speculativeRetry.calculateThreshold(metric.coordinatorReadLatency.getSnapshot(), sampleReadLatencyNanos);
-            transientWriteLatencyNanos = metadata().params.speculativeWriteThreshold.calculateThreshold(metric.coordinatorWriteLatency.getSnapshot(), transientWriteLatencyNanos);
+            additionalWriteLatencyNanos = metadata().params.additionalWritePolicy.calculateThreshold(metric.coordinatorWriteLatency.getSnapshot(), additionalWriteLatencyNanos);
         }
         catch (Throwable e)
         {
@@ -488,15 +497,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return directories;
     }
 
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, int sstableLevel, SerializationHeader header, LifecycleTransaction txn)
+    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, int sstableLevel, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
     {
         MetadataCollector collector = new MetadataCollector(metadata().comparator).sstableLevel(sstableLevel);
-        return createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, collector, header, txn);
+        return createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, collector, header, lifecycleNewTracker);
     }
 
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, MetadataCollector metadataCollector, SerializationHeader header, LifecycleTransaction txn)
+    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, MetadataCollector metadataCollector, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
     {
-        return getCompactionStrategyManager().createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, metadataCollector, header, indexManager.listIndexes(), txn);
+        return getCompactionStrategyManager().createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, metadataCollector, header, indexManager.listIndexes(), lifecycleNewTracker);
     }
 
     public boolean supportsEarlyOpen()
@@ -548,14 +557,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         data.removeUnreadableSSTables(directory);
     }
 
-    void unregisterMBean() throws MalformedObjectNameException, InstanceNotFoundException, MBeanRegistrationException
+    void unregisterMBean() throws MalformedObjectNameException
     {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
         ObjectName[] objectNames = {new ObjectName(mbeanName), new ObjectName(oldMBeanName)};
         for (ObjectName objectName : objectNames)
         {
-            if (mbs.isRegistered(objectName))
-                mbs.unregisterMBean(objectName);
+            if (MBeanWrapper.instance.isRegistered(objectName))
+                MBeanWrapper.instance.unregisterMBean(objectName);
         }
 
         // unregister metrics
@@ -2177,28 +2185,46 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public <V> V runWithCompactionsDisabled(Callable<V> callable, boolean interruptValidation, boolean interruptViews)
     {
+        return runWithCompactionsDisabled(callable, (sstable) -> true, interruptValidation, interruptViews, true);
+    }
+
+    /**
+     * Runs callable with compactions paused and compactions including sstables matching sstablePredicate stopped
+     *
+     * @param callable what to do when compactions are paused
+     * @param sstablesPredicate which sstables should we cancel compactions for
+     * @param interruptValidation if we should interrupt validation compactions
+     * @param interruptViews if we should interrupt view compactions
+     * @param interruptIndexes if we should interrupt compactions on indexes. NOTE: if you set this to true your sstablePredicate
+     *                         must be able to handle LocalPartitioner sstables!
+     */
+    public <V> V runWithCompactionsDisabled(Callable<V> callable, Predicate<SSTableReader> sstablesPredicate, boolean interruptValidation, boolean interruptViews, boolean interruptIndexes)
+    {
         // synchronize so that concurrent invocations don't re-enable compactions partway through unexpectedly,
         // and so we only run one major compaction at a time
         synchronized (this)
         {
             logger.trace("Cancelling in-progress compactions for {}", metadata.name);
+            Iterable<ColumnFamilyStore> toInterruptFor = interruptIndexes
+                                                         ? concatWithIndexes()
+                                                         : Collections.singleton(this);
 
-            Iterable<ColumnFamilyStore> selfWithAuxiliaryCfs = interruptViews
-                                                               ? Iterables.concat(concatWithIndexes(), viewManager.allViewsCfs())
-                                                               : concatWithIndexes();
+            toInterruptFor = interruptViews
+                             ? Iterables.concat(toInterruptFor, viewManager.allViewsCfs())
+                             : toInterruptFor;
 
-            for (ColumnFamilyStore cfs : selfWithAuxiliaryCfs)
+            for (ColumnFamilyStore cfs : toInterruptFor)
                 cfs.getCompactionStrategyManager().pause();
             try
             {
                 // interrupt in-progress compactions
-                CompactionManager.instance.interruptCompactionForCFs(selfWithAuxiliaryCfs, interruptValidation);
-                CompactionManager.instance.waitForCessation(selfWithAuxiliaryCfs);
+                CompactionManager.instance.interruptCompactionForCFs(toInterruptFor, sstablesPredicate, interruptValidation);
+                CompactionManager.instance.waitForCessation(toInterruptFor, sstablesPredicate);
 
                 // doublecheck that we finished, instead of timing out
-                for (ColumnFamilyStore cfs : selfWithAuxiliaryCfs)
+                for (ColumnFamilyStore cfs : toInterruptFor)
                 {
-                    if (!cfs.getTracker().getCompacting().isEmpty())
+                    if (cfs.getTracker().getCompacting().stream().anyMatch(sstablesPredicate))
                     {
                         logger.warn("Unable to cancel in-progress compactions for {}.  Perhaps there is an unusually large row in progress somewhere, or the system is simply overloaded.", metadata.name);
                         return null;
@@ -2218,7 +2244,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
             finally
             {
-                for (ColumnFamilyStore cfs : selfWithAuxiliaryCfs)
+                for (ColumnFamilyStore cfs : toInterruptFor)
                     cfs.getCompactionStrategyManager().resume();
             }
         }
@@ -2233,7 +2259,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 assert data.getCompacting().isEmpty() : data.getCompacting();
                 Iterable<SSTableReader> sstables = getLiveSSTables();
                 sstables = AbstractCompactionStrategy.filterSuspectSSTables(sstables);
-                sstables = ImmutableList.copyOf(sstables);
                 LifecycleTransaction modifier = data.tryModify(sstables, operationType);
                 assert modifier != null: "something marked things compacting while compactions are disabled";
                 return modifier;

@@ -300,6 +300,9 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     /**
      * Request data fetch task to this session.
      *
+     * Here, we have to encode both _local_ range transientness (encoded in Replica itself, in RangesAtEndpoint)
+     * and _remote_ (source) range transientmess, which is encoded by splitting ranges into full and transient.
+     *
      * @param keyspace Requesting keyspace
      * @param fullRanges Ranges to retrieve data that will return full data from the source
      * @param transientRanges Ranges to retrieve data that will return transient data from the source
@@ -308,8 +311,9 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public void addStreamRequest(String keyspace, RangesAtEndpoint fullRanges, RangesAtEndpoint transientRanges, Collection<String> columnFamilies)
     {
         //It should either be a dummy address for repair or if it's a bootstrap/move/rebuild it should be this node
-        assert all(fullRanges, Replica::isLocal) || all(fullRanges, range -> range.endpoint().getHostAddress(true).equals("0.0.0.0:0")) : fullRanges.toString();
-        assert all(transientRanges, Replica::isLocal) || all(transientRanges, range -> range.endpoint().getHostAddress(true).equals("0.0.0.0:0")) : transientRanges.toString();
+        assert all(fullRanges, Replica::isSelf) || RangesAtEndpoint.isDummyList(fullRanges) : fullRanges.toString();
+        assert all(transientRanges, Replica::isSelf) || RangesAtEndpoint.isDummyList(transientRanges) : transientRanges.toString();
+
         requests.add(new StreamRequest(keyspace, fullRanges, transientRanges, columnFamilies));
     }
 
@@ -331,15 +335,8 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         //Was it safe to remove this normalize, sorting seems not to matter, merging? Maybe we should have?
         //Do we need to unwrap here also or is that just making it worse?
         //Range and if it's transient
-        RangesAtEndpoint.Builder unwrappedRanges = RangesAtEndpoint.builder(replicas.endpoint(), replicas.size());
-        for (Replica replica : replicas)
-        {
-            for (Range<Token> unwrapped : replica.range().unwrap())
-            {
-                unwrappedRanges.add(new Replica(replica.endpoint(), unwrapped, replica.isFull()));
-            }
-        }
-        List<OutgoingStream> streams = getOutgoingStreamsForRanges(unwrappedRanges.build(), stores, pendingRepair, previewKind);
+        RangesAtEndpoint unwrappedRanges = replicas.unwrap();
+        List<OutgoingStream> streams = getOutgoingStreamsForRanges(unwrappedRanges, stores, pendingRepair, previewKind);
         addTransferStreams(streams);
         Set<Range<Token>> toBeUpdated = transferredRangesPerKeyspace.get(keyspace);
         if (toBeUpdated == null)

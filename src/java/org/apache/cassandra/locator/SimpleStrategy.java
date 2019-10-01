@@ -20,9 +20,11 @@ package org.apache.cassandra.locator;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Map;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.dht.Token;
@@ -36,12 +38,14 @@ import org.apache.cassandra.dht.Token;
  */
 public class SimpleStrategy extends AbstractReplicationStrategy
 {
+    private static final String REPLICATION_FACTOR = "replication_factor";
     private final ReplicationFactor rf;
 
     public SimpleStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions)
     {
         super(keyspaceName, tokenMetadata, snitch, configOptions);
-        this.rf = ReplicationFactor.fromString(this.configOptions.get("replication_factor"));
+        validateOptionsInternal(configOptions);
+        this.rf = ReplicationFactor.fromString(this.configOptions.get(REPLICATION_FACTOR));
     }
 
     public EndpointsForRange calculateNaturalReplicas(Token token, TokenMetadata metadata)
@@ -55,16 +59,17 @@ public class SimpleStrategy extends AbstractReplicationStrategy
         Range<Token> replicaRange = new Range<>(replicaStart, replicaEnd);
         Iterator<Token> iter = TokenMetadata.ringIterator(ring, token, false);
 
-        EndpointsForRange.Builder replicas = EndpointsForRange.builder(replicaRange, rf.allReplicas);
+        EndpointsForRange.Builder replicas = new EndpointsForRange.Builder(replicaRange, rf.allReplicas);
 
         // Add the token at the index by default
         while (replicas.size() < rf.allReplicas && iter.hasNext())
         {
             Token tk = iter.next();
             InetAddressAndPort ep = metadata.getEndpoint(tk);
-            if (!replicas.containsEndpoint(ep))
+            if (!replicas.endpoints().contains(ep))
                 replicas.add(new Replica(ep, replicaRange, replicas.size() < rf.fullReplicas));
         }
+
         return replicas.build();
     }
 
@@ -73,16 +78,20 @@ public class SimpleStrategy extends AbstractReplicationStrategy
         return rf;
     }
 
+    private final static void validateOptionsInternal(Map<String, String> configOptions) throws ConfigurationException
+    {
+        if (configOptions.get(REPLICATION_FACTOR) == null)
+            throw new ConfigurationException("SimpleStrategy requires a replication_factor strategy option.");
+    }
+
     public void validateOptions() throws ConfigurationException
     {
-        String rf = configOptions.get("replication_factor");
-        if (rf == null)
-            throw new ConfigurationException("SimpleStrategy requires a replication_factor strategy option.");
-        validateReplicationFactor(rf);
+        validateOptionsInternal(configOptions);
+        validateReplicationFactor(configOptions.get(REPLICATION_FACTOR));
     }
 
     public Collection<String> recognizedOptions()
     {
-        return Collections.<String>singleton("replication_factor");
+        return Collections.singleton(REPLICATION_FACTOR);
     }
 }
