@@ -29,16 +29,18 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.cache.CachingOptions;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.RowUpdateBuilder;
+import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.metrics.RestorableMeter;
 import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.schema.CachingParams;
-import org.apache.cassandra.schema.KeyspaceParams;
-import org.apache.cassandra.schema.MigrationManager;
 
 import static org.junit.Assert.assertEquals;
 
@@ -52,11 +54,12 @@ public class IndexSummaryRedistributionTest
     {
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    KeyspaceParams.simple(1),
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD)
                                                 .minIndexInterval(8)
                                                 .maxIndexInterval(256)
-                                                .caching(CachingParams.CACHE_NOTHING));
+                                                .caching(CachingOptions.NONE));
     }
 
     @Test
@@ -72,30 +75,31 @@ public class IndexSummaryRedistributionTest
         StorageMetrics.load.dec(load); // reset the load metric
         createSSTables(ksname, cfname, numSSTables, numRows);
 
-        List<SSTableReader> sstables = new ArrayList<>(cfs.getLiveSSTables());
+        List<SSTableReader> sstables = new ArrayList<>(cfs.getSSTables());
         for (SSTableReader sstable : sstables)
             sstable.overrideReadMeter(new RestorableMeter(100.0, 100.0));
 
         long oldSize = 0;
         for (SSTableReader sstable : sstables)
         {
-            assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
+            assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
             oldSize += sstable.bytesOnDisk();
         }
 
         load = StorageMetrics.load.getCount();
+
         long others = load - oldSize; // Other SSTables size, e.g. schema and other system SSTables
 
-        int originalMinIndexInterval = cfs.metadata().params.minIndexInterval;
+        int originalMinIndexInterval = cfs.metadata.getMinIndexInterval();
         // double the min_index_interval
-        MigrationManager.announceTableUpdate(cfs.metadata().unbuild().minIndexInterval(originalMinIndexInterval * 2).build(), true);
+        cfs.metadata.minIndexInterval(originalMinIndexInterval * 2);
         IndexSummaryManager.instance.redistributeSummaries();
 
         long newSize = 0;
-        for (SSTableReader sstable : cfs.getLiveSSTables())
+        for (SSTableReader sstable : cfs.getSSTables())
         {
-            assertEquals(cfs.metadata().params.minIndexInterval, sstable.getEffectiveIndexInterval(), 0.001);
-            assertEquals(numRows / cfs.metadata().params.minIndexInterval, sstable.getIndexSummarySize());
+            assertEquals(cfs.metadata.getMinIndexInterval(), sstable.getEffectiveIndexInterval(), 0.001);
+            assertEquals(numRows / cfs.metadata.getMinIndexInterval(), sstable.getIndexSummarySize());
             newSize += sstable.bytesOnDisk();
         }
         newSize += others;
@@ -118,12 +122,10 @@ public class IndexSummaryRedistributionTest
         {
             for (int row = 0; row < numRows; row++)
             {
-                String key = String.format("%3d", row);
-                new RowUpdateBuilder(cfs.metadata(), 0, key)
-                .clustering("column")
-                .add("val", value)
-                .build()
-                .applyUnsafe();
+                DecoratedKey key = Util.dk(String.format("%3d", row));
+                Mutation rm = new Mutation(ksname, key.getKey());
+                rm.add(cfname, Util.cellname("column"), value, 0);
+                rm.applyUnsafe();
             }
             futures.add(cfs.forceFlush());
         }
@@ -138,6 +140,6 @@ public class IndexSummaryRedistributionTest
                 throw new RuntimeException(e);
             }
         }
-        assertEquals(numSSTables, cfs.getLiveSSTables().size());
+        assertEquals(numSSTables, cfs.getSSTables().size());
     }
 }

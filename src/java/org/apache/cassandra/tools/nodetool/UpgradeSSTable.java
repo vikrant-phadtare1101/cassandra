@@ -17,9 +17,9 @@
  */
 package org.apache.cassandra.tools.nodetool;
 
-import io.airlift.airline.Arguments;
-import io.airlift.airline.Command;
-import io.airlift.airline.Option;
+import io.airlift.command.Arguments;
+import io.airlift.command.Command;
+import io.airlift.command.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,16 +44,15 @@ public class UpgradeSSTable extends NodeToolCmd
     @Override
     public void execute(NodeProbe probe)
     {
-        List<String> keyspaces = parseOptionalKeyspace(args, probe);
-        String[] tableNames = parseOptionalTables(args);
+        List<String> keyspaces = parseOptionalKeyspace(args, probe, true);
+        String[] cfnames = parseOptionalColumnFamilies(args);
 
         for (String keyspace : keyspaces)
         {
             try
             {
-                probe.upgradeSSTables(System.out, keyspace, !includeAll, jobs, tableNames);
-            }
-            catch (Exception e)
+                probe.upgradeSSTables(System.out, keyspace, !includeAll, jobs, cfnames);
+            } catch (Exception e)
             {
                 throw new RuntimeException("Error occurred during enabling auto-compaction", e);
             }

@@ -18,12 +18,12 @@
 package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.cassandra.cql3.functions.Function;
-import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * A CQL3 term, i.e. a column value with or without bind variables.
@@ -70,15 +70,7 @@ public interface Term
      */
     public abstract boolean containsBindMarker();
 
-    /**
-     * Whether that term is terminal (this is a shortcut for {@code this instanceof Term.Terminal}).
-     */
-    default public boolean isTerminal()
-    {
-        return false; // overriden below by Terminal
-    }
-
-    public void addFunctionsTo(List<Function> functions);
+    Iterable<Function> getFunctions();
 
     /**
      * A parsed, non prepared (thus untyped) term.
@@ -89,7 +81,7 @@ public interface Term
      *   - a function call
      *   - a marker
      */
-    public abstract class Raw implements AssignmentTestable
+    public interface Raw extends AssignmentTestable
     {
         /**
          * This method validates this RawTerm is valid for provided column
@@ -101,46 +93,12 @@ public interface Term
          * case this RawTerm describe a list index or a map key, etc...
          * @return the prepared term.
          */
-        public abstract Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException;
-
-        /**
-         * @return a String representation of the raw term that can be used when reconstructing a CQL query string.
-         */
-        public abstract String getText();
-
-        /**
-         * The type of the {@code term} if it can be infered.
-         *
-         * @param keyspace the keyspace on which the statement containing this term is on.
-         * @return the type of this {@code Term} if inferrable, or {@code null}
-         * otherwise (for instance, the type isn't inferable for a bind marker. Even for
-         * literals, the exact type is not inferrable since they are valid for many
-         * different types and so this will return {@code null} too).
-         */
-        public abstract AbstractType<?> getExactTypeIfKnown(String keyspace);
-
-        @Override
-        public String toString()
-        {
-            return getText();
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return getText().hashCode();
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            return this == o || (o instanceof Raw && getText().equals(((Raw) o).getText()));
-        }
+        public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException;
     }
 
-    public abstract class MultiColumnRaw extends Term.Raw
+    public interface MultiColumnRaw extends Raw
     {
-        public abstract Term prepare(String keyspace, List<? extends ColumnSpecification> receiver) throws InvalidRequestException;
+        public Term prepare(String keyspace, List<? extends ColumnSpecification> receiver) throws InvalidRequestException;
     }
 
     /**
@@ -162,8 +120,9 @@ public interface Term
         public void collectMarkerSpecification(VariableSpecifications boundNames) {}
         public Terminal bind(QueryOptions options) { return this; }
 
-        public void addFunctionsTo(List<Function> functions)
+        public Set<Function> getFunctions()
         {
+            return Collections.emptySet();
         }
 
         // While some NonTerminal may not have bind markers, no Term can be Terminal
@@ -173,17 +132,11 @@ public interface Term
             return false;
         }
 
-        @Override
-        public boolean isTerminal()
-        {
-            return true;
-        }
-
         /**
          * @return the serialized value of this terminal.
          * @param protocolVersion
          */
-        public abstract ByteBuffer get(ProtocolVersion protocolVersion) throws InvalidRequestException;
+        public abstract ByteBuffer get(int protocolVersion) throws InvalidRequestException;
 
         public ByteBuffer bindAndGet(QueryOptions options) throws InvalidRequestException
         {

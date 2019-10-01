@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.tools;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.util.Collections;
 import java.util.HashSet;
@@ -26,8 +27,9 @@ import java.util.Set;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 
-import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
@@ -45,7 +47,7 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
  */
 public class SSTableExpiredBlockers
 {
-    public static void main(String[] args)
+    public static void main(String[] args) throws IOException
     {
         PrintStream out = System.out;
         if (args.length < 2)
@@ -60,11 +62,15 @@ public class SSTableExpiredBlockers
         String columnfamily = args[args.length - 1];
         Schema.instance.loadFromDisk(false);
 
-        TableMetadata metadata = Schema.instance.validateTable(keyspace, columnfamily);
+        CFMetaData metadata = Schema.instance.getCFMetaData(keyspace, columnfamily);
+        if (metadata == null)
+            throw new IllegalArgumentException(String.format("Unknown keyspace/table %s.%s",
+                    keyspace,
+                    columnfamily));
 
         Keyspace ks = Keyspace.openWithoutSSTables(keyspace);
         ColumnFamilyStore cfs = ks.getColumnFamilyStore(columnfamily);
-        Directories.SSTableLister lister = cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW).skipTemporary(true);
+        Directories.SSTableLister lister = cfs.directories.sstableLister().skipTemporary(true);
         Set<SSTableReader> sstables = new HashSet<>();
         for (Map.Entry<Descriptor, Set<Component>> sstable : lister.list().entrySet())
         {
@@ -87,7 +93,7 @@ public class SSTableExpiredBlockers
             System.exit(1);
         }
 
-        int gcBefore = (int)(System.currentTimeMillis()/1000) - metadata.params.gcGraceSeconds;
+        int gcBefore = (int)(System.currentTimeMillis()/1000) - metadata.getGcGraceSeconds();
         Multimap<SSTableReader, SSTableReader> blockers = checkForExpiredSSTableBlockers(sstables, gcBefore);
         for (SSTableReader blocker : blockers.keySet())
         {

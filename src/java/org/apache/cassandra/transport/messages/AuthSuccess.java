@@ -20,7 +20,6 @@ package org.apache.cassandra.transport.messages;
 import org.apache.cassandra.transport.CBUtil;
 import org.apache.cassandra.transport.Message;
 import io.netty.buffer.ByteBuf;
-import org.apache.cassandra.transport.ProtocolVersion;
 
 import java.nio.ByteBuffer;
 
@@ -34,7 +33,7 @@ public class AuthSuccess extends Message.Response
 {
     public static final Message.Codec<AuthSuccess> codec = new Message.Codec<AuthSuccess>()
     {
-        public AuthSuccess decode(ByteBuf body, ProtocolVersion version)
+        public AuthSuccess decode(ByteBuf body, int version)
         {
             ByteBuffer b = CBUtil.readValue(body);
             byte[] token = null;
@@ -46,12 +45,12 @@ public class AuthSuccess extends Message.Response
             return new AuthSuccess(token);
         }
 
-        public void encode(AuthSuccess success, ByteBuf dest, ProtocolVersion version)
+        public void encode(AuthSuccess success, ByteBuf dest, int version)
         {
             CBUtil.writeValue(success.token, dest);
         }
 
-        public int encodedSize(AuthSuccess success, ProtocolVersion version)
+        public int encodedSize(AuthSuccess success, int version)
         {
             return CBUtil.sizeOfValue(success.token);
         }

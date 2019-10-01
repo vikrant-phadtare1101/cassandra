@@ -1,40 +1,42 @@
-package #package_name#;
+package org.apache.cassandra.cql3.udf.gen;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.List;
+import com.datastax.driver.core.DataType;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.cql3.functions.JavaSourceUDFFactory;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.exceptions.FunctionExecutionException;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 
-import org.apache.cassandra.cql3.functions.JavaUDF;
-import org.apache.cassandra.cql3.functions.UDFContext;
-import org.apache.cassandra.transport.ProtocolVersion;
-
-import com.datastax.driver.core.TypeCodec;
-import com.datastax.driver.core.TupleValue;
-import com.datastax.driver.core.UDTValue;
-
-public final class #class_name# extends JavaUDF
+public final class #class_name# extends org.apache.cassandra.cql3.functions.UDFunction
 {
-    public #class_name#(TypeCodec<Object> returnCodec, TypeCodec<Object>[] argCodecs, UDFContext udfContext)
+    public #class_name#(FunctionName name, List<ColumnIdentifier> argNames, List<AbstractType<?>> argTypes,
+                        DataType[] argDataTypes, AbstractType<?> returnType, DataType returnDataType, boolean calledOnNullInput, String body)
     {
-        super(returnCodec, argCodecs, udfContext);
+        super(name, argNames, argTypes, argDataTypes, returnType, returnDataType, calledOnNullInput, "java", body);
     }
 
-    protected ByteBuffer executeImpl(ProtocolVersion protocolVersion, List<ByteBuffer> params)
+    protected ByteBuffer executeUserDefined(int protocolVersion, List<ByteBuffer> params) throws InvalidRequestException
     {
-        #return_type# result = #execute_internal_name#(
+        try
+        {
+            #return_type# result = executeInternal(
 #arguments#
-        );
-        return super.decompose(protocolVersion, result);
+            );
+            return decompose(protocolVersion, result);
+        }
+        catch (Throwable t)
+        {
+            logger.debug("Invocation of function '{}' failed", this, t);
+            if (t instanceof VirtualMachineError)
+                throw (VirtualMachineError)t;
+            throw FunctionExecutionException.create(this, t);
+        }
     }
 
-    protected Object executeAggregateImpl(ProtocolVersion protocolVersion, Object firstParam, List<ByteBuffer> params)
-    {
-        #return_type# result = #execute_internal_name#(
-#arguments_aggregate#
-        );
-        return result;
-    }
-
-    private #return_type# #execute_internal_name#(#argument_list#)
+    private #return_type# executeInternal(#argument_list#)
     {
 #body#
     }

@@ -17,12 +17,10 @@
  */
 package org.apache.cassandra.repair.messages;
 
+import java.io.DataInput;
 import java.io.IOException;
-import java.util.Objects;
 import java.util.UUID;
 
-import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.UUIDSerializer;
 
@@ -33,37 +31,23 @@ import org.apache.cassandra.utils.UUIDSerializer;
  */
 public class CleanupMessage extends RepairMessage
 {
+    public static MessageSerializer serializer = new CleanupMessageSerializer();
     public final UUID parentRepairSession;
 
     public CleanupMessage(UUID parentRepairSession)
     {
-        super(null);
+        super(Type.CLEANUP, null);
         this.parentRepairSession = parentRepairSession;
     }
 
-    @Override
-    public boolean equals(Object o)
-    {
-        if (!(o instanceof CleanupMessage))
-            return false;
-        CleanupMessage other = (CleanupMessage) o;
-        return parentRepairSession.equals(other.parentRepairSession);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(parentRepairSession);
-    }
-
-    public static final IVersionedSerializer<CleanupMessage> serializer = new IVersionedSerializer<CleanupMessage>()
+    public static class CleanupMessageSerializer implements MessageSerializer<CleanupMessage>
     {
         public void serialize(CleanupMessage message, DataOutputPlus out, int version) throws IOException
         {
             UUIDSerializer.serializer.serialize(message.parentRepairSession, out, version);
         }
 
-        public CleanupMessage deserialize(DataInputPlus in, int version) throws IOException
+        public CleanupMessage deserialize(DataInput in, int version) throws IOException
         {
             UUID parentRepairSession = UUIDSerializer.serializer.deserialize(in, version);
             return new CleanupMessage(parentRepairSession);
@@ -73,5 +57,5 @@ public class CleanupMessage extends RepairMessage
         {
             return UUIDSerializer.serializer.serializedSize(message.parentRepairSession, version);
         }
-    };
+    }
 }

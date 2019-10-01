@@ -33,9 +33,4 @@ public final class HeapAllocator extends AbstractAllocator
     {
         return ByteBuffer.allocate(size);
     }
-
-    public boolean allocatingOnHeap()
-    {
-        return true;
-    }
 }

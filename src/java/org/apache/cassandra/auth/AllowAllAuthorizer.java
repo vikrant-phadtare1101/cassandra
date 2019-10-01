@@ -22,12 +22,6 @@ import java.util.Set;
 
 public class AllowAllAuthorizer implements IAuthorizer
 {
-    @Override
-    public boolean requireAuthorization()
-    {
-        return false;
-    }
-
     public Set<Permission> authorize(AuthenticatedUser user, IResource resource)
     {
         return resource.applicablePermissions();

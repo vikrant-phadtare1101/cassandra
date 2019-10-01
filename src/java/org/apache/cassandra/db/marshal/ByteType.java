@@ -25,19 +25,17 @@ import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.ByteSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TypeSerializer;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
-public class ByteType extends NumberType<Byte>
+public class ByteType extends AbstractType<Byte>
 {
     public static final ByteType instance = new ByteType();
 
     ByteType()
     {
-        super(ComparisonType.CUSTOM);
     } // singleton
 
-    public int compareCustom(ByteBuffer o1, ByteBuffer o2)
+    public int compare(ByteBuffer o1, ByteBuffer o2)
     {
         return o1.get(o1.position()) - o2.get(o2.position());
     }
@@ -72,7 +70,7 @@ public class ByteType extends NumberType<Byte>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         return getSerializer().deserialize(buffer).toString();
     }
@@ -87,53 +85,5 @@ public class ByteType extends NumberType<Byte>
     public TypeSerializer<Byte> getSerializer()
     {
         return ByteSerializer.instance;
-    }
-
-    @Override
-    public byte toByte(ByteBuffer value)
-    {
-        return ByteBufferUtil.toByte(value);
-    }
-
-    @Override
-    public short toShort(ByteBuffer value)
-    {
-        return toByte(value);
-    }
-
-    @Override
-    protected int toInt(ByteBuffer value)
-    {
-        return toByte(value);
-    }
-
-    public ByteBuffer add(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes((byte) (leftType.toByte(left) + rightType.toByte(right)));
-    }
-
-    public ByteBuffer substract(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes((byte) (leftType.toByte(left) - rightType.toByte(right)));
-    }
-
-    public ByteBuffer multiply(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes((byte) (leftType.toByte(left) * rightType.toByte(right)));
-    }
-
-    public ByteBuffer divide(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes((byte) (leftType.toByte(left) / rightType.toByte(right)));
-    }
-
-    public ByteBuffer mod(NumberType<?> leftType, ByteBuffer left, NumberType<?> rightType, ByteBuffer right)
-    {
-        return ByteBufferUtil.bytes((byte) (leftType.toByte(left) % rightType.toByte(right)));
-    }
-
-    public ByteBuffer negate(ByteBuffer input)
-    {
-        return ByteBufferUtil.bytes((byte) -toByte(input));
     }
 }

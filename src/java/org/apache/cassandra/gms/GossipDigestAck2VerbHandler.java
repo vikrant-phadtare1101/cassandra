@@ -17,25 +17,24 @@
  */
 package org.apache.cassandra.gms;
 
+import java.net.InetAddress;
 import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IVerbHandler;
+import org.apache.cassandra.net.MessageIn;
 
-public class GossipDigestAck2VerbHandler extends GossipVerbHandler<GossipDigestAck2>
+public class GossipDigestAck2VerbHandler implements IVerbHandler<GossipDigestAck2>
 {
-    public static final GossipDigestAck2VerbHandler instance = new GossipDigestAck2VerbHandler();
-
     private static final Logger logger = LoggerFactory.getLogger(GossipDigestAck2VerbHandler.class);
 
-    public void doVerb(Message<GossipDigestAck2> message)
+    public void doVerb(MessageIn<GossipDigestAck2> message, int id)
     {
         if (logger.isTraceEnabled())
         {
-            InetAddressAndPort from = message.from();
+            InetAddress from = message.from;
             logger.trace("Received a GossipDigestAck2Message from {}", from);
         }
         if (!Gossiper.instance.isEnabled())
@@ -44,11 +43,9 @@ public class GossipDigestAck2VerbHandler extends GossipVerbHandler<GossipDigestA
                 logger.trace("Ignoring GossipDigestAck2Message because gossip is disabled");
             return;
         }
-        Map<InetAddressAndPort, EndpointState> remoteEpStateMap = message.payload.getEndpointStateMap();
+        Map<InetAddress, EndpointState> remoteEpStateMap = message.payload.getEndpointStateMap();
         /* Notify the Failure Detector */
         Gossiper.instance.notifyFailureDetector(remoteEpStateMap);
         Gossiper.instance.applyStateLocally(remoteEpStateMap);
-
-        super.doVerb(message);
     }
 }

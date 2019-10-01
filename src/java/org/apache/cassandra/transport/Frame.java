@@ -22,25 +22,31 @@ import java.io.IOException;
 import java.util.EnumSet;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.MessageToMessageDecoder;
 import io.netty.handler.codec.MessageToMessageEncoder;
-import io.netty.util.Attribute;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.transport.frame.FrameBodyTransformer;
 import org.apache.cassandra.transport.messages.ErrorMessage;
 
 public class Frame
 {
+    private static final Logger logger = LoggerFactory.getLogger(Frame.class);
+
     public static final byte PROTOCOL_VERSION_MASK = 0x7f;
 
     public final Header header;
     public final ByteBuf body;
+
+    /**
+     * <code>true</code> if the deprecation warning for protocol versions 1 and 2 has been logged.
+     */
+    private static boolean hasLoggedDeprecationWarning;
 
     /**
      * An on-wire frame consists of a header and a body.
@@ -51,6 +57,16 @@ public class Frame
      *   +---------+---------+---------+---------+---------+
      *   | version |  flags  |      stream       | opcode  |
      *   +---------+---------+---------+---------+---------+
+     *   |                length                 |
+     *   +---------+---------+---------+---------+
+     *
+     *
+     * In versions 1 and 2 the header has a smaller (1 byte) stream id, and is thus defined the following way:
+     *
+     *   0         8        16        24        32
+     *   +---------+---------+---------+---------+
+     *   | version |  flags  | stream  | opcode  |
+     *   +---------+---------+---------+---------+
      *   |                length                 |
      *   +---------+---------+---------+---------+
      */
@@ -70,43 +86,45 @@ public class Frame
         return body.release();
     }
 
-    public static Frame create(Message.Type type, int streamId, ProtocolVersion version, EnumSet<Header.Flag> flags, ByteBuf body)
+    public static Frame create(Message.Type type, int streamId, int version, EnumSet<Header.Flag> flags, ByteBuf body)
     {
-        Header header = new Header(version, flags, streamId, type, body.readableBytes());
+        Header header = new Header(version, flags, streamId, type);
         return new Frame(header, body);
     }
 
     public static class Header
     {
-        // 9 bytes in protocol version 3 and later
-        public static final int LENGTH = 9;
+        // 8 bytes in protocol versions 1 and 2, 8 bytes in protocol version 3 and later
+        public static final int MODERN_LENGTH = 9;
+        public static final int LEGACY_LENGTH = 8;
 
         public static final int BODY_LENGTH_SIZE = 4;
 
-        public final ProtocolVersion version;
+        public final int version;
         public final EnumSet<Flag> flags;
         public final int streamId;
         public final Message.Type type;
-        public final long bodySizeInBytes;
 
-        private Header(ProtocolVersion version, EnumSet<Flag> flags, int streamId, Message.Type type, long bodySizeInBytes)
+        private Header(int version, int flags, int streamId, Message.Type type)
+        {
+            this(version, Flag.deserialize(flags), streamId, type);
+        }
+
+        private Header(int version, EnumSet<Flag> flags, int streamId, Message.Type type)
         {
             this.version = version;
             this.flags = flags;
             this.streamId = streamId;
             this.type = type;
-            this.bodySizeInBytes = bodySizeInBytes;
         }
 
-        public enum Flag
+        public static enum Flag
         {
             // The order of that enum matters!!
             COMPRESSED,
             TRACING,
             CUSTOM_PAYLOAD,
-            WARNING,
-            USE_BETA,
-            CHECKSUMMED;
+            WARNING;
 
             private static final Flag[] ALL_VALUES = values();
 
@@ -152,8 +170,8 @@ public class Frame
             this.factory = factory;
         }
 
-        @VisibleForTesting
-        Frame decodeFrame(ByteBuf buffer)
+        @Override
+        protected void decode(ChannelHandlerContext ctx, ByteBuf buffer, List<Object> results)
         throws Exception
         {
             if (discardingTooLongFrame)
@@ -162,35 +180,51 @@ public class Frame
                 // If we have discarded everything, throw the exception
                 if (bytesToDiscard <= 0)
                     fail();
-                return null;
+                return;
             }
 
-            int readableBytes = buffer.readableBytes();
-            if (readableBytes == 0)
-                return null;
+            // Wait until we have read at least the short header
+            if (buffer.readableBytes() < Header.LEGACY_LENGTH)
+                return;
 
             int idx = buffer.readerIndex();
 
-            // Check the first byte for the protocol version before we wait for a complete header.  Protocol versions
-            // 1 and 2 use a shorter header, so we may never have a complete header's worth of bytes.
             int firstByte = buffer.getByte(idx++);
             Message.Direction direction = Message.Direction.extractFromVersion(firstByte);
-            int versionNum = firstByte & PROTOCOL_VERSION_MASK;
-            ProtocolVersion version = ProtocolVersion.decode(versionNum, DatabaseDescriptor.getNativeTransportAllowOlderProtocols());
+            int version = firstByte & PROTOCOL_VERSION_MASK;
 
-            // Wait until we have the complete header
-            if (readableBytes < Header.LENGTH)
-                return null;
+            if (version > Server.CURRENT_VERSION)
+                throw new ProtocolException(String.format("Invalid or unsupported protocol version (%d); highest supported is %d ",
+                                                          version, Server.CURRENT_VERSION));
+
+            if (version < Server.VERSION_3 && !hasLoggedDeprecationWarning)
+            {
+                hasLoggedDeprecationWarning = true;
+                logger.warn("Detected connection using native protocol version {}. Both version 1 and 2"
+                          + " of the native protocol are now deprecated and support will be removed in Cassandra 3.0."
+                          + " You are encouraged to upgrade to a client driver using version 3 of the native protocol",
+                            version);
+            }
+
+            // Wait until we have the complete V3+ header
+            if (version >= Server.VERSION_3 && buffer.readableBytes() < Header.MODERN_LENGTH)
+                return;
 
             int flags = buffer.getByte(idx++);
-            EnumSet<Header.Flag> decodedFlags = Header.Flag.deserialize(flags);
 
-            if (version.isBeta() && !decodedFlags.contains(Header.Flag.USE_BETA))
-                throw new ProtocolException(String.format("Beta version of the protocol used (%s), but USE_BETA flag is unset", version),
-                                            version);
-
-            int streamId = buffer.getShort(idx);
-            idx += 2;
+            int streamId, headerLength;
+            if (version >= Server.VERSION_3)
+            {
+                streamId = buffer.getShort(idx);
+                idx += 2;
+                headerLength = Header.MODERN_LENGTH;
+            }
+            else
+            {
+                streamId = buffer.getByte(idx);
+                idx++;
+                headerLength = Header.LEGACY_LENGTH;
+            }
 
             // This throws a protocol exceptions if the opcode is unknown
             Message.Type type;
@@ -205,8 +239,7 @@ public class Frame
 
             long bodyLength = buffer.getUnsignedInt(idx);
             idx += Header.BODY_LENGTH_SIZE;
-
-            long frameLength = bodyLength + Header.LENGTH;
+            long frameLength = bodyLength + headerLength;
             if (frameLength > MAX_FRAME_LENGTH)
             {
                 // Enter the discard mode and discard everything received so far.
@@ -216,46 +249,36 @@ public class Frame
                 bytesToDiscard = discard(buffer, frameLength);
                 if (bytesToDiscard <= 0)
                     fail();
-                return null;
+                return;
             }
 
             if (buffer.readableBytes() < frameLength)
-                return null;
+                return;
 
             // extract body
             ByteBuf body = buffer.slice(idx, (int) bodyLength);
             body.retain();
-
+            
             idx += bodyLength;
             buffer.readerIndex(idx);
 
-            return new Frame(new Header(version, decodedFlags, streamId, type, bodyLength), body);
-        }
-
-        @Override
-        protected void decode(ChannelHandlerContext ctx, ByteBuf buffer, List<Object> results)
-        throws Exception
-        {
-            Frame frame = decodeFrame(buffer);
-            if (frame == null) return;
-
-            Attribute<Connection> attrConn = ctx.channel().attr(Connection.attributeKey);
-            Connection connection = attrConn.get();
+            Connection connection = ctx.channel().attr(Connection.attributeKey).get();
             if (connection == null)
             {
                 // First message seen on this channel, attach the connection object
-                connection = factory.newConnection(ctx.channel(), frame.header.version);
-                attrConn.set(connection);
+                connection = factory.newConnection(ctx.channel(), version);
+                ctx.channel().attr(Connection.attributeKey).set(connection);
             }
-            else if (connection.getVersion() != frame.header.version)
+            else if (connection.getVersion() != version)
             {
                 throw ErrorMessage.wrap(
                         new ProtocolException(String.format(
-                                "Invalid message version. Got %s but previous messages on this connection had version %s",
-                                frame.header.version, connection.getVersion())),
-                        frame.header.streamId);
+                                "Invalid message version. Got %d but previous messages on this connection had version %d",
+                                version, connection.getVersion())),
+                        streamId);
             }
-            results.add(frame);
+
+            results.add(new Frame(new Header(version, flags, streamId, type), body));
         }
 
         private void fail()
@@ -283,15 +306,16 @@ public class Frame
         public void encode(ChannelHandlerContext ctx, Frame frame, List<Object> results)
         throws IOException
         {
-            ByteBuf header = CBUtil.allocator.buffer(Header.LENGTH);
+            int headerLength = frame.header.version >= Server.VERSION_3
+                             ? Header.MODERN_LENGTH
+                             : Header.LEGACY_LENGTH;
+            ByteBuf header = CBUtil.allocator.buffer(headerLength);
 
             Message.Type type = frame.header.type;
-            header.writeByte(type.direction.addToVersion(frame.header.version.asInt()));
+            header.writeByte(type.direction.addToVersion(frame.header.version));
             header.writeByte(Header.Flag.serialize(frame.header.flags));
 
-            // Continue to support writing pre-v3 headers so that we can give proper error messages to drivers that
-            // connect with the v1/v2 protocol. See CASSANDRA-11464.
-            if (frame.header.version.isGreaterOrEqualTo(ProtocolVersion.V3))
+            if (frame.header.version >= Server.VERSION_3)
                 header.writeShort(frame.header.streamId);
             else
                 header.writeByte(frame.header.streamId);
@@ -305,70 +329,54 @@ public class Frame
     }
 
     @ChannelHandler.Sharable
-    public static class InboundBodyTransformer extends MessageToMessageDecoder<Frame>
+    public static class Decompressor extends MessageToMessageDecoder<Frame>
     {
         public void decode(ChannelHandlerContext ctx, Frame frame, List<Object> results)
         throws IOException
         {
             Connection connection = ctx.channel().attr(Connection.attributeKey).get();
 
-            if ((!frame.header.flags.contains(Header.Flag.COMPRESSED) && !frame.header.flags.contains(Header.Flag.CHECKSUMMED)) || connection == null)
+            if (!frame.header.flags.contains(Header.Flag.COMPRESSED) || connection == null)
             {
                 results.add(frame);
                 return;
             }
 
-            FrameBodyTransformer transformer = connection.getTransformer();
-            if (transformer == null)
+            FrameCompressor compressor = connection.getCompressor();
+            if (compressor == null)
             {
                 results.add(frame);
                 return;
             }
 
-            try
-            {
-                results.add(frame.with(transformer.transformInbound(frame.body, frame.header.flags)));
-            }
-            finally
-            {
-                // release the old frame
-                frame.release();
-            }
+            results.add(compressor.decompress(frame));
         }
     }
 
     @ChannelHandler.Sharable
-    public static class OutboundBodyTransformer extends MessageToMessageEncoder<Frame>
+    public static class Compressor extends MessageToMessageEncoder<Frame>
     {
         public void encode(ChannelHandlerContext ctx, Frame frame, List<Object> results)
         throws IOException
         {
             Connection connection = ctx.channel().attr(Connection.attributeKey).get();
 
-            // Never transform STARTUP messages
+            // Never compress STARTUP messages
             if (frame.header.type == Message.Type.STARTUP || connection == null)
             {
                 results.add(frame);
                 return;
             }
 
-            FrameBodyTransformer transformer = connection.getTransformer();
-            if (transformer == null)
+            FrameCompressor compressor = connection.getCompressor();
+            if (compressor == null)
             {
                 results.add(frame);
                 return;
             }
 
-            try
-            {
-                results.add(frame.with(transformer.transformOutbound(frame.body)));
-                frame.header.flags.addAll(transformer.getOutboundHeaderFlags());
-            }
-            finally
-            {
-                // release the old frame
-                frame.release();
-            }
+            frame.header.flags.add(Header.Flag.COMPRESSED);
+            results.add(compressor.compress(frame));
         }
     }
 }

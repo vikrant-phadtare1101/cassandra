@@ -315,7 +315,7 @@ public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlu
                 for (int i = 0 ; i < charRunLength ; i++)
                 {
                     char ch = str.charAt(offset + i);
-                    if ((ch > 0) && (ch <= 127))
+                    if ((ch > 0) & (ch <= 127))
                     {
                         utfBytes[utfIndex++] = (byte) ch;
                     }
@@ -371,4 +371,15 @@ public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlu
         }
     }
 
+    public void write(Memory memory, long offset, long length) throws IOException
+    {
+        for (ByteBuffer buffer : memory.asByteBuffers(offset, length))
+            write(buffer);
+    }
+
+    @Override
+    public <R> R applyToChannel(Function<WritableByteChannel, R> f) throws IOException
+    {
+        return f.apply(channel);
+    }
 }

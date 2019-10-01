@@ -17,14 +17,16 @@
  */
 package org.apache.cassandra.io.sstable.metadata;
 
+import java.io.DataInput;
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.Set;
 
 import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
 import com.clearspring.analytics.stream.cardinality.ICardinality;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.sstable.format.Version;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -37,10 +39,13 @@ public class CompactionMetadata extends MetadataComponent
 {
     public static final IMetadataComponentSerializer serializer = new CompactionMetadataSerializer();
 
+    public final Set<Integer> ancestors;
+
     public final ICardinality cardinalityEstimator;
 
-    public CompactionMetadata(ICardinality cardinalityEstimator)
+    public CompactionMetadata(Set<Integer> ancestors, ICardinality cardinalityEstimator)
     {
+        this.ancestors = ancestors;
         this.cardinalityEstimator = cardinalityEstimator;
     }
 
@@ -52,42 +57,48 @@ public class CompactionMetadata extends MetadataComponent
     @Override
     public boolean equals(Object o)
     {
-        if (this == o)
-            return true;
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
 
-        if (o == null || getClass() != o.getClass())
-            return false;
-
-        // keeping equals and hashCode as all classes inheriting from MetadataComponent
-        // implement them but we have really nothing to compare
-        return true;
+        CompactionMetadata that = (CompactionMetadata) o;
+        return ancestors == null ? that.ancestors == null : ancestors.equals(that.ancestors);
     }
 
     @Override
     public int hashCode()
     {
-        // see comment in equals
-        return 31;
+        return ancestors != null ? ancestors.hashCode() : 0;
     }
 
     public static class CompactionMetadataSerializer implements IMetadataComponentSerializer<CompactionMetadata>
     {
-        public int serializedSize(Version version, CompactionMetadata component) throws IOException
+        public int serializedSize(CompactionMetadata component, Version version) throws IOException
         {
-            int sz = 0;
+            int size = 0;
+            size += TypeSizes.NATIVE.sizeof(component.ancestors.size());
+            for (int g : component.ancestors)
+                size += TypeSizes.NATIVE.sizeof(g);
             byte[] serializedCardinality = component.cardinalityEstimator.getBytes();
-            return TypeSizes.sizeof(serializedCardinality.length) + serializedCardinality.length + sz;
+            size += TypeSizes.NATIVE.sizeof(serializedCardinality.length) + serializedCardinality.length;
+            return size;
         }
 
-        public void serialize(Version version, CompactionMetadata component, DataOutputPlus out) throws IOException
+        public void serialize(CompactionMetadata component, Version version, DataOutputPlus out) throws IOException
         {
+            out.writeInt(component.ancestors.size());
+            for (int g : component.ancestors)
+                out.writeInt(g);
             ByteBufferUtil.writeWithLength(component.cardinalityEstimator.getBytes(), out);
         }
 
-        public CompactionMetadata deserialize(Version version, DataInputPlus in) throws IOException
+        public CompactionMetadata deserialize(Version version, DataInput in) throws IOException
         {
+            int nbAncestors = in.readInt();
+            Set<Integer> ancestors = new HashSet<>(nbAncestors);
+            for (int i = 0; i < nbAncestors; i++)
+                ancestors.add(in.readInt());
             ICardinality cardinality = HyperLogLogPlus.Builder.build(ByteBufferUtil.readBytes(in, in.readInt()));
-            return new CompactionMetadata(cardinality);
+            return new CompactionMetadata(ancestors, cardinality);
         }
     }
 }

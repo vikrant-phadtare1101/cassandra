@@ -20,13 +20,9 @@ package org.apache.cassandra.transport.messages;
 import java.nio.ByteBuffer;
 
 import io.netty.buffer.ByteBuf;
-import org.apache.cassandra.audit.AuditLogEntry;
-import org.apache.cassandra.audit.AuditLogEntryType;
-import org.apache.cassandra.audit.AuditLogManager;
 import org.apache.cassandra.auth.AuthenticatedUser;
 import org.apache.cassandra.auth.IAuthenticator;
 import org.apache.cassandra.exceptions.AuthenticationException;
-import org.apache.cassandra.metrics.ClientMetrics;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.*;
 
@@ -39,9 +35,9 @@ public class AuthResponse extends Message.Request
 {
     public static final Message.Codec<AuthResponse> codec = new Message.Codec<AuthResponse>()
     {
-        public AuthResponse decode(ByteBuf body, ProtocolVersion version)
+        public AuthResponse decode(ByteBuf body, int version)
         {
-            if (version == ProtocolVersion.V1)
+            if (version == 1)
                 throw new ProtocolException("SASL Authentication is not supported in version 1 of the protocol");
 
             ByteBuffer b = CBUtil.readValue(body);
@@ -50,12 +46,12 @@ public class AuthResponse extends Message.Request
             return new AuthResponse(token);
         }
 
-        public void encode(AuthResponse response, ByteBuf dest, ProtocolVersion version)
+        public void encode(AuthResponse response, ByteBuf dest, int version)
         {
             CBUtil.writeValue(response.token, dest);
         }
 
-        public int encodedSize(AuthResponse response, ProtocolVersion version)
+        public int encodedSize(AuthResponse response, int version)
         {
             return CBUtil.sizeOfValue(response.token);
         }
@@ -71,21 +67,16 @@ public class AuthResponse extends Message.Request
     }
 
     @Override
-    protected Response execute(QueryState queryState, long queryStartNanoTime, boolean traceRequest)
+    public Response execute(QueryState queryState)
     {
-        AuditLogManager auditLogManager = AuditLogManager.getInstance();
-
         try
         {
-            IAuthenticator.SaslNegotiator negotiator = ((ServerConnection) connection).getSaslNegotiator(queryState);
+            IAuthenticator.SaslNegotiator negotiator = ((ServerConnection) connection).getSaslNegotiator();
             byte[] challenge = negotiator.evaluateResponse(token);
             if (negotiator.isComplete())
             {
                 AuthenticatedUser user = negotiator.getAuthenticatedUser();
                 queryState.getClientState().login(user);
-                ClientMetrics.instance.markAuthSuccess();
-                if (auditLogManager.isAuditingEnabled())
-                    logSuccess(queryState);
                 // authentication is complete, send a ready message to the client
                 return new AuthSuccess(challenge);
             }
@@ -96,30 +87,7 @@ public class AuthResponse extends Message.Request
         }
         catch (AuthenticationException e)
         {
-            ClientMetrics.instance.markAuthFailure();
-            if (auditLogManager.isAuditingEnabled())
-                logException(queryState, e);
             return ErrorMessage.fromException(e);
         }
-    }
-
-    private void logSuccess(QueryState state)
-    {
-        AuditLogEntry entry =
-            new AuditLogEntry.Builder(state)
-                             .setOperation("LOGIN SUCCESSFUL")
-                             .setType(AuditLogEntryType.LOGIN_SUCCESS)
-                             .build();
-        AuditLogManager.getInstance().log(entry);
-    }
-
-    private void logException(QueryState state, AuthenticationException e)
-    {
-        AuditLogEntry entry =
-            new AuditLogEntry.Builder(state)
-                             .setOperation("LOGIN FAILURE")
-                             .setType(AuditLogEntryType.LOGIN_ERROR)
-                             .build();
-        AuditLogManager.getInstance().log(entry, e);
     }
 }
