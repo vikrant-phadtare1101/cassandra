@@ -22,7 +22,6 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 
-import io.netty.util.concurrent.FastThreadLocal;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -65,7 +64,7 @@ public abstract class DataOutputStreamPlus extends OutputStream implements DataO
         return bytes;
     }
 
-    private static final FastThreadLocal<byte[]> tempBuffer = new FastThreadLocal<byte[]>()
+    private static final ThreadLocal<byte[]> tempBuffer = new ThreadLocal<byte[]>()
     {
         @Override
         public byte[] initialValue()
@@ -87,7 +86,7 @@ public abstract class DataOutputStreamPlus extends OutputStream implements DataO
             }
 
             @Override
-            public void close()
+            public void close() throws IOException
             {
             }
 
@@ -119,7 +118,7 @@ public abstract class DataOutputStreamPlus extends OutputStream implements DataO
                 {
                     int toWriteThisTime = Math.min(buf.length, toWrite - totalWritten);
 
-                    ByteBufferUtil.copyBytes(src, src.position() + totalWritten, buf, 0, toWriteThisTime);
+                    ByteBufferUtil.arrayCopy(src, src.position() + totalWritten, buf, 0, toWriteThisTime);
 
                     DataOutputStreamPlus.this.write(buf, 0, toWriteThisTime);
 

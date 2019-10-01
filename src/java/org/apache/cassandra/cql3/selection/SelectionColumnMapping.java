@@ -21,12 +21,13 @@
 package org.apache.cassandra.cql3.selection;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
+import com.google.common.base.Function;
+import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 import com.google.common.collect.*;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnSpecification;
 
 /**
@@ -37,8 +38,8 @@ import org.apache.cassandra.cql3.ColumnSpecification;
  */
 public class SelectionColumnMapping implements SelectionColumns
 {
-    private final List<ColumnSpecification> columnSpecifications;
-    private final Multimap<ColumnSpecification, ColumnMetadata> columnMappings;
+    private final ArrayList<ColumnSpecification> columnSpecifications;
+    private final HashMultimap<ColumnSpecification, ColumnDefinition> columnMappings;
 
     private SelectionColumnMapping()
     {
@@ -51,15 +52,15 @@ public class SelectionColumnMapping implements SelectionColumns
         return new SelectionColumnMapping();
     }
 
-    protected static SelectionColumnMapping simpleMapping(Iterable<ColumnMetadata> columnDefinitions)
+    protected static SelectionColumnMapping simpleMapping(Iterable<ColumnDefinition> columnDefinitions)
     {
         SelectionColumnMapping mapping = new SelectionColumnMapping();
-        for (ColumnMetadata def: columnDefinitions)
+        for (ColumnDefinition def: columnDefinitions)
             mapping.addMapping(def, def);
         return mapping;
     }
 
-    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, ColumnMetadata column)
+    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, ColumnDefinition column)
     {
         columnSpecifications.add(colSpec);
         // functions without arguments do not map to any column, so don't
@@ -69,7 +70,7 @@ public class SelectionColumnMapping implements SelectionColumns
         return this;
     }
 
-    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, Iterable<ColumnMetadata> columns)
+    protected SelectionColumnMapping addMapping(ColumnSpecification colSpec, Iterable<ColumnDefinition> columns)
     {
         columnSpecifications.add(colSpec);
         columnMappings.putAll(colSpec, columns);
@@ -83,7 +84,7 @@ public class SelectionColumnMapping implements SelectionColumns
         return Lists.newArrayList(columnSpecifications);
     }
 
-    public Multimap<ColumnSpecification, ColumnMetadata> getMappings()
+    public Multimap<ColumnSpecification, ColumnDefinition> getMappings()
     {
         return Multimaps.unmodifiableMultimap(columnMappings);
     }
@@ -108,20 +109,44 @@ public class SelectionColumnMapping implements SelectionColumns
 
     public String toString()
     {
-        return columnMappings.asMap()
-                             .entrySet()
-                             .stream()
-                             .map(entry ->
-                                  entry.getValue()
-                                       .stream()
-                                       .map(colDef -> colDef.name.toString())
-                                       .collect(Collectors.joining(", ", entry.getKey().name.toString() + ":[", "]")))
-                             .collect(Collectors.joining(", ",
-                                                         columnSpecifications.stream()
-                                                                             .map(colSpec -> colSpec.name.toString())
-                                                                             .collect(Collectors.joining(", ",
-                                                                                                         "{ Columns:[",
-                                                                                                         "], Mappings:{")),
-                                                         "} }"));
+        final Function<ColumnDefinition, String> getDefName = new Function<ColumnDefinition, String>()
+        {
+            public String apply(ColumnDefinition def)
+            {
+                return def.name.toString();
+            }
+        };
+        Function<Map.Entry<ColumnSpecification, Collection<ColumnDefinition>>, String> mappingEntryToString =
+        new Function<Map.Entry<ColumnSpecification, Collection<ColumnDefinition>>, String>(){
+            public String apply(Map.Entry<ColumnSpecification, Collection<ColumnDefinition>> entry)
+            {
+                StringBuilder builder = new StringBuilder();
+                builder.append(entry.getKey().name.toString());
+                builder.append(":[");
+                builder.append(Joiner.on(',').join(Iterables.transform(entry.getValue(), getDefName)));
+                builder.append("]");
+                return builder.toString();
+            }
+        };
+
+        Function<ColumnSpecification, String> colSpecToString = new Function<ColumnSpecification, String>()
+        {
+            public String apply(ColumnSpecification columnSpecification)
+            {
+                return columnSpecification.name.toString();
+            }
+        };
+
+        StringBuilder builder = new StringBuilder();
+        builder.append("{ Columns:[");
+        builder.append(Joiner.on(",")
+                             .join(Iterables.transform(columnSpecifications, colSpecToString)));
+        builder.append("], Mappings:[");
+        builder.append(Joiner.on(", ")
+                             .join(Iterables.transform(columnMappings.asMap().entrySet(),
+                                                       mappingEntryToString)));
+        builder.append("] }");
+        return builder.toString();
     }
+
 }

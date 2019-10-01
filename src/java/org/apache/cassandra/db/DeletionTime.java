@@ -17,21 +17,21 @@
  */
 package org.apache.cassandra.db;
 
+import java.io.DataInput;
 import java.io.IOException;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Objects;
-import com.google.common.hash.Hasher;
 
 import org.apache.cassandra.cache.IMeasurableMemory;
-import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.io.ISerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.utils.HashingUtils;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.ObjectSizes;
+import org.codehaus.jackson.annotate.JsonIgnore;
 
 /**
- * Information on deletion of a storage engine object.
+ * A top-level (row) tombstone.
  */
 public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
 {
@@ -42,11 +42,22 @@ public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
      */
     public static final DeletionTime LIVE = new DeletionTime(Long.MIN_VALUE, Integer.MAX_VALUE);
 
+    /**
+     * A timestamp (typically in microseconds since the unix epoch, although this is not enforced) after which
+     * data should be considered deleted. If set to Long.MIN_VALUE, this implies that the data has not been marked
+     * for deletion at all.
+     */
+    public final long markedForDeleteAt;
+
+    /**
+     * The local server timestamp, in seconds since the unix epoch, at which this tombstone was created. This is
+     * only used for purposes of purging the tombstone after gc_grace_seconds have elapsed.
+     */
+    public final int localDeletionTime;
+
     public static final Serializer serializer = new Serializer();
 
-    private final long markedForDeleteAt;
-    private final int localDeletionTime;
-
+    @VisibleForTesting
     public DeletionTime(long markedForDeleteAt, int localDeletionTime)
     {
         this.markedForDeleteAt = markedForDeleteAt;
@@ -54,47 +65,12 @@ public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
     }
 
     /**
-     * A timestamp (typically in microseconds since the unix epoch, although this is not enforced) after which
-     * data should be considered deleted. If set to Long.MIN_VALUE, this implies that the data has not been marked
-     * for deletion at all.
-     */
-    public long markedForDeleteAt()
-    {
-        return markedForDeleteAt;
-    }
-
-    /**
-     * The local server timestamp, in seconds since the unix epoch, at which this tombstone was created. This is
-     * only used for purposes of purging the tombstone after gc_grace_seconds have elapsed.
-     */
-    public int localDeletionTime()
-    {
-        return localDeletionTime;
-    }
-
-    /**
      * Returns whether this DeletionTime is live, that is deletes no columns.
      */
+    @JsonIgnore
     public boolean isLive()
     {
-        return markedForDeleteAt() == Long.MIN_VALUE && localDeletionTime() == Integer.MAX_VALUE;
-    }
-
-    public void digest(Hasher hasher)
-    {
-        // localDeletionTime is basically a metadata of the deletion time that tells us when it's ok to purge it.
-        // It's thus intrinsically a local information and shouldn't be part of the digest (which exists for
-        // cross-nodes comparisons).
-        HashingUtils.updateWithLong(hasher, markedForDeleteAt());
-    }
-
-    /**
-     * check if this deletion time is valid - localDeletionTime can never be negative
-     * @return true if it is valid
-     */
-    public boolean validate()
-    {
-        return localDeletionTime >= 0;
+        return markedForDeleteAt == Long.MIN_VALUE && localDeletionTime == Integer.MAX_VALUE;
     }
 
     @Override
@@ -103,58 +79,48 @@ public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
         if(!(o instanceof DeletionTime))
             return false;
         DeletionTime that = (DeletionTime)o;
-        return markedForDeleteAt() == that.markedForDeleteAt() && localDeletionTime() == that.localDeletionTime();
+        return markedForDeleteAt == that.markedForDeleteAt && localDeletionTime == that.localDeletionTime;
     }
 
     @Override
     public final int hashCode()
     {
-        return Objects.hashCode(markedForDeleteAt(), localDeletionTime());
+        return Objects.hashCode(markedForDeleteAt, localDeletionTime);
     }
 
     @Override
     public String toString()
     {
-        return String.format("deletedAt=%d, localDeletion=%d", markedForDeleteAt(), localDeletionTime());
+        return String.format("deletedAt=%d, localDeletion=%d", markedForDeleteAt, localDeletionTime);
     }
 
     public int compareTo(DeletionTime dt)
     {
-        if (markedForDeleteAt() < dt.markedForDeleteAt())
+        if (markedForDeleteAt < dt.markedForDeleteAt)
             return -1;
-        else if (markedForDeleteAt() > dt.markedForDeleteAt())
+        else if (markedForDeleteAt > dt.markedForDeleteAt)
             return 1;
-        else if (localDeletionTime() < dt.localDeletionTime())
+        else if (localDeletionTime < dt.localDeletionTime)
             return -1;
-        else if (localDeletionTime() > dt.localDeletionTime())
+        else if (localDeletionTime > dt.localDeletionTime)
             return 1;
         else
             return 0;
     }
 
+    public boolean isGcAble(int gcBefore)
+    {
+        return localDeletionTime < gcBefore;
+    }
+
+    public boolean isDeleted(OnDiskAtom atom)
+    {
+        return atom.timestamp() <= markedForDeleteAt;
+    }
+
     public boolean supersedes(DeletionTime dt)
     {
-        return markedForDeleteAt() > dt.markedForDeleteAt() || (markedForDeleteAt() == dt.markedForDeleteAt() && localDeletionTime() > dt.localDeletionTime());
-    }
-
-    public boolean deletes(LivenessInfo info)
-    {
-        return deletes(info.timestamp());
-    }
-
-    public boolean deletes(Cell cell)
-    {
-        return deletes(cell.timestamp());
-    }
-
-    public boolean deletes(long timestamp)
-    {
-        return timestamp <= markedForDeleteAt();
-    }
-
-    public int dataSize()
-    {
-        return 12;
+        return this.markedForDeleteAt > dt.markedForDeleteAt;
     }
 
     public long unsharedHeapSize()
@@ -166,11 +132,11 @@ public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
     {
         public void serialize(DeletionTime delTime, DataOutputPlus out) throws IOException
         {
-            out.writeInt(delTime.localDeletionTime());
-            out.writeLong(delTime.markedForDeleteAt());
+            out.writeInt(delTime.localDeletionTime);
+            out.writeLong(delTime.markedForDeleteAt);
         }
 
-        public DeletionTime deserialize(DataInputPlus in) throws IOException
+        public DeletionTime deserialize(DataInput in) throws IOException
         {
             int ldt = in.readInt();
             long mfda = in.readLong();
@@ -179,15 +145,15 @@ public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
                  : new DeletionTime(mfda, ldt);
         }
 
-        public void skip(DataInputPlus in) throws IOException
+        public void skip(DataInput in) throws IOException
         {
-            in.skipBytesFully(4 + 8);
+            FileUtils.skipBytesFully(in, 4 + 8);
         }
 
-        public long serializedSize(DeletionTime delTime)
+        public long serializedSize(DeletionTime delTime, TypeSizes typeSizes)
         {
-            return TypeSizes.sizeof(delTime.localDeletionTime())
-                 + TypeSizes.sizeof(delTime.markedForDeleteAt());
+            return typeSizes.sizeof(delTime.localDeletionTime)
+                 + typeSizes.sizeof(delTime.markedForDeleteAt);
         }
     }
 }

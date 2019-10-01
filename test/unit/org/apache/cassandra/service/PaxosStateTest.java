@@ -18,11 +18,7 @@
 package org.apache.cassandra.service;
 
 import java.nio.ByteBuffer;
-import java.util.UUID;
 
-import com.google.common.collect.Iterables;
-import org.apache.cassandra.service.paxos.PrepareVerbHandler;
-import org.apache.cassandra.service.paxos.ProposeVerbHandler;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -30,8 +26,8 @@ import org.junit.Test;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.Row;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.service.paxos.Commit;
 import org.apache.cassandra.service.paxos.PaxosState;
@@ -39,7 +35,9 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 
 public class PaxosStateTest
 {
@@ -60,68 +58,48 @@ public class PaxosStateTest
     public void testCommittingAfterTruncation() throws Exception
     {
         ColumnFamilyStore cfs = Keyspace.open("PaxosStateTestKeyspace1").getColumnFamilyStore("Standard1");
-        String key = "key" + System.nanoTime();
+        DecoratedKey key = Util.dk("key" + System.nanoTime());
+        CellName name = Util.cellname("col");
         ByteBuffer value = ByteBufferUtil.bytes(0);
-        RowUpdateBuilder builder = new RowUpdateBuilder(cfs.metadata(), FBUtilities.timestampMicros(), key);
-        builder.clustering("a").add("val", value);
-        PartitionUpdate update = Iterables.getOnlyElement(builder.build().getPartitionUpdates());
+        ColumnFamily update = ArrayBackedSortedColumns.factory.create(cfs.metadata);
+        update.addColumn(name, value, FBUtilities.timestampMicros());
 
         // CFS should be empty initially
-        assertNoDataPresent(cfs, Util.dk(key));
+        assertNoDataPresent(cfs, key);
 
         // Commit the proposal & verify the data is present
-        Commit beforeTruncate = newProposal(0, update);
+        Commit beforeTruncate = newProposal(0, key.getKey(), update);
         PaxosState.commit(beforeTruncate);
-        assertDataPresent(cfs, Util.dk(key), "val", value);
+        assertDataPresent(cfs, key, name, value);
 
         // Truncate then attempt to commit again, mutation should
         // be ignored as the proposal predates the truncation
         cfs.truncateBlocking();
         PaxosState.commit(beforeTruncate);
-        assertNoDataPresent(cfs, Util.dk(key));
+        assertNoDataPresent(cfs, key);
 
         // Now try again with a ballot created after the truncation
-        long timestamp = SystemKeyspace.getTruncatedAt(update.metadata().id) + 1;
-        Commit afterTruncate = newProposal(timestamp, update);
+        long timestamp = SystemKeyspace.getTruncatedAt(update.metadata().cfId) + 1;
+        Commit afterTruncate = newProposal(timestamp, key.getKey(), update);
         PaxosState.commit(afterTruncate);
-        assertDataPresent(cfs, Util.dk(key), "val", value);
+        assertDataPresent(cfs, key, name, value);
     }
 
-    private Commit newProposal(long ballotMillis, PartitionUpdate update)
+    private Commit newProposal(long ballotMillis, ByteBuffer key, ColumnFamily update)
     {
-        return Commit.newProposal(UUIDGen.getTimeUUID(ballotMillis), update);
+        return Commit.newProposal(key, UUIDGen.getTimeUUID(ballotMillis), update);
     }
 
-    private void assertDataPresent(ColumnFamilyStore cfs, DecoratedKey key, String name, ByteBuffer value)
+    private void assertDataPresent(ColumnFamilyStore cfs, DecoratedKey key, CellName name, ByteBuffer value)
     {
-        Row row = Util.getOnlyRowUnfiltered(Util.cmd(cfs, key).build());
-        assertEquals(0, ByteBufferUtil.compareUnsigned(value,
-                row.getCell(cfs.metadata().getColumn(ByteBufferUtil.bytes(name))).value()));
+        ColumnFamily cf = cfs.getColumnFamily(QueryFilter.getIdentityFilter(key, cfs.name, System.currentTimeMillis()));
+        assertFalse(cf.isEmpty());
+        assertEquals(0, ByteBufferUtil.compareUnsigned(value, cf.getColumn(name).value()));
     }
 
     private void assertNoDataPresent(ColumnFamilyStore cfs, DecoratedKey key)
     {
-        Util.assertEmpty(Util.cmd(cfs, key).build());
-    }
-
-    @Test
-    public void testPrepareProposePaxos() throws Throwable
-    {
-        ColumnFamilyStore cfs = Keyspace.open("PaxosStateTestKeyspace1").getColumnFamilyStore("Standard1");
-        String key = "key" + System.nanoTime();
-        ByteBuffer value = ByteBufferUtil.bytes(0);
-        RowUpdateBuilder builder = new RowUpdateBuilder(cfs.metadata(), FBUtilities.timestampMicros(), key);
-        builder.clustering("a").add("val", value);
-        PartitionUpdate update = Iterables.getOnlyElement(builder.build().getPartitionUpdates());
-
-        // CFS should be empty initially
-        assertNoDataPresent(cfs, Util.dk(key));
-
-        UUID ballot = UUIDGen.getRandomTimeUUIDFromMicros(System.currentTimeMillis());
-
-        Commit commit = Commit.newPrepare(Util.dk(key), cfs.metadata(), ballot);
-
-        assertTrue("paxos prepare stage failed", PrepareVerbHandler.doPrepare(commit).promised);
-        assertTrue("paxos propose stage failed", ProposeVerbHandler.doPropose(commit));
+        ColumnFamily cf = cfs.getColumnFamily(QueryFilter.getIdentityFilter(key, cfs.name, System.currentTimeMillis()));
+        assertNull(cf);
     }
 }

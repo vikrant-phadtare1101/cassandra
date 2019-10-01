@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.config;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,9 +25,6 @@ import com.google.common.base.Objects;
 
 public class ParameterizedClass
 {
-    public static final String CLASS_NAME = "class_name";
-    public static final String PARAMETERS = "parameters";
-
     public String class_name;
     public Map<String, String> parameters;
 
@@ -37,10 +35,10 @@ public class ParameterizedClass
     }
 
     @SuppressWarnings("unchecked")
-    public ParameterizedClass(Map<String, ?> p)
+    public ParameterizedClass(LinkedHashMap<String, ?> p)
     {
-        this((String)p.get(CLASS_NAME),
-             p.containsKey(PARAMETERS) ? (Map<String, String>)((List<?>)p.get(PARAMETERS)).get(0) : null);
+        this((String)p.get("class_name"),
+                p.containsKey("parameters") ? (Map<String, String>)((List<?>)p.get("parameters")).get(0) : null);
     }
 
     @Override

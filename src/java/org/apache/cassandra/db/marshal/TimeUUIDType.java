@@ -21,21 +21,18 @@ import java.nio.ByteBuffer;
 import java.util.UUID;
 
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.Constants;
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.serializers.TypeSerializer;
-import org.apache.cassandra.utils.UUIDGen;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TimeUUIDSerializer;
 
-public class TimeUUIDType extends TemporalType<UUID>
+public class TimeUUIDType extends AbstractType<UUID>
 {
     public static final TimeUUIDType instance = new TimeUUIDType();
 
     TimeUUIDType()
     {
-        super(ComparisonType.CUSTOM);
     } // singleton
 
     public boolean isEmptyValueMeaningless()
@@ -43,7 +40,7 @@ public class TimeUUIDType extends TemporalType<UUID>
         return true;
     }
 
-    public int compareCustom(ByteBuffer b1, ByteBuffer b2)
+    public int compare(ByteBuffer b1, ByteBuffer b2)
     {
         // Compare for length
         int s1 = b1.position(), s2 = b2.position();
@@ -129,35 +126,5 @@ public class TimeUUIDType extends TemporalType<UUID>
     public TypeSerializer<UUID> getSerializer()
     {
         return TimeUUIDSerializer.instance;
-    }
-
-    @Override
-    public int valueLengthIfFixed()
-    {
-        return 16;
-    }
-
-    @Override
-    public long toTimeInMillis(ByteBuffer value)
-    {
-        return UUIDGen.unixTimestamp(UUIDGen.getUUID(value));
-    }
-
-    @Override
-    public ByteBuffer addDuration(ByteBuffer temporal, ByteBuffer duration)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ByteBuffer substractDuration(ByteBuffer temporal, ByteBuffer duration)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ByteBuffer now()
-    {
-        return ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
     }
 }

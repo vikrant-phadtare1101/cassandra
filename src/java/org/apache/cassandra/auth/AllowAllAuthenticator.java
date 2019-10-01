@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.auth;
 
-import java.net.InetAddress;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
@@ -47,7 +46,7 @@ public class AllowAllAuthenticator implements IAuthenticator
     {
     }
 
-    public SaslNegotiator newSaslNegotiator(InetAddress clientAddress)
+    public SaslNegotiator newSaslNegotiator()
     {
         return AUTHENTICATOR_INSTANCE;
     }

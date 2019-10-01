@@ -22,24 +22,25 @@ import java.io.*;
 import java.util.*;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.AbstractIterator;
 
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.db.rows.*;
-import org.apache.cassandra.db.partitions.*;
+import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
-import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.service.ActiveRepairService;
-import org.apache.cassandra.utils.*;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.OutputHandler;
+import org.apache.cassandra.utils.UUIDGen;
 import org.apache.cassandra.utils.concurrent.Refs;
-import org.apache.cassandra.utils.memory.HeapAllocator;
 
 public class Scrubber implements Closeable
 {
@@ -48,8 +49,8 @@ public class Scrubber implements Closeable
     private final LifecycleTransaction transaction;
     private final File destination;
     private final boolean skipCorrupted;
-    private final boolean reinsertOverflowedTTLRows;
 
+    private final CompactionController controller;
     private final boolean isCommutative;
     private final boolean isIndex;
     private final boolean checkData;
@@ -60,6 +61,9 @@ public class Scrubber implements Closeable
     private final ScrubInfo scrubInfo;
     private final RowIndexEntry.IndexSerializer rowIndexEntrySerializer;
 
+    private SSTableReader newSstable;
+    private SSTableReader newInOrderSstable;
+
     private int goodRows;
     private int badRows;
     private int emptyRows;
@@ -69,52 +73,42 @@ public class Scrubber implements Closeable
     long currentRowPositionFromIndex;
     long nextRowPositionFromIndex;
 
-    private NegativeLocalDeletionInfoMetrics negativeLocalDeletionInfoMetrics = new NegativeLocalDeletionInfoMetrics();
-
     private final OutputHandler outputHandler;
 
-    private static final Comparator<Partition> partitionComparator = new Comparator<Partition>()
+    private static final Comparator<Row> rowComparator = new Comparator<Row>()
     {
-         public int compare(Partition r1, Partition r2)
+         public int compare(Row r1, Row r2)
          {
-             return r1.partitionKey().compareTo(r2.partitionKey());
+             return r1.key.compareTo(r2.key);
          }
     };
-    private final SortedSet<Partition> outOfOrder = new TreeSet<>(partitionComparator);
+    private final SortedSet<Row> outOfOrderRows = new TreeSet<>(rowComparator);
 
-    public Scrubber(ColumnFamilyStore cfs, LifecycleTransaction transaction, boolean skipCorrupted, boolean checkData)
+    public Scrubber(ColumnFamilyStore cfs, LifecycleTransaction transaction, boolean skipCorrupted, boolean checkData) throws IOException
     {
-        this(cfs, transaction, skipCorrupted, checkData, false);
-    }
-
-    public Scrubber(ColumnFamilyStore cfs, LifecycleTransaction transaction, boolean skipCorrupted, boolean checkData,
-                    boolean reinsertOverflowedTTLRows)
-    {
-        this(cfs, transaction, skipCorrupted, new OutputHandler.LogOutput(), checkData, reinsertOverflowedTTLRows);
+        this(cfs, transaction, skipCorrupted, new OutputHandler.LogOutput(), checkData);
     }
 
     @SuppressWarnings("resource")
-    public Scrubber(ColumnFamilyStore cfs,
-                    LifecycleTransaction transaction,
-                    boolean skipCorrupted,
-                    OutputHandler outputHandler,
-                    boolean checkData,
-                    boolean reinsertOverflowedTTLRows)
+    public Scrubber(ColumnFamilyStore cfs, LifecycleTransaction transaction, boolean skipCorrupted, OutputHandler outputHandler, boolean checkData) throws IOException
     {
         this.cfs = cfs;
         this.transaction = transaction;
         this.sstable = transaction.onlyOne();
         this.outputHandler = outputHandler;
         this.skipCorrupted = skipCorrupted;
-        this.reinsertOverflowedTTLRows = reinsertOverflowedTTLRows;
-        this.rowIndexEntrySerializer = sstable.descriptor.version.getSSTableFormat().getIndexSerializer(cfs.metadata(),
-                                                                                                        sstable.descriptor.version,
-                                                                                                        sstable.header);
+        this.rowIndexEntrySerializer = sstable.descriptor.version.getSSTableFormat().getIndexSerializer(sstable.metadata);
 
         List<SSTableReader> toScrub = Collections.singletonList(sstable);
 
-        this.destination = cfs.getDirectories().getLocationForDisk(cfs.getDiskBoundaries().getCorrectDiskForSSTable(sstable));
-        this.isCommutative = cfs.metadata().isCounter();
+        // Calculate the expected compacted filesize
+        this.destination = cfs.directories.getWriteableLocationAsFile(cfs.getExpectedCompactedFileSize(toScrub, OperationType.SCRUB));
+
+        // If we run scrub offline, we should never purge tombstone, as we cannot know if other sstable have data that the tombstone deletes.
+        this.controller = transaction.isOffline()
+                        ? new ScrubController(cfs)
+                        : new CompactionController(cfs, Collections.singleton(sstable), CompactionManager.getDefaultGcBefore(cfs));
+        this.isCommutative = cfs.metadata.isCounter();
 
         boolean hasIndexFile = (new File(sstable.descriptor.filenameFor(Component.PRIMARY_INDEX))).exists();
         this.isIndex = cfs.isIndex();
@@ -125,7 +119,7 @@ public class Scrubber implements Closeable
         }
         this.checkData = checkData && !this.isIndex; //LocalByPartitionerType does not support validation
         this.expectedBloomFilterSize = Math.max(
-            cfs.metadata().params.minIndexInterval,
+            cfs.metadata.getMinIndexInterval(),
             hasIndexFile ? SSTableReader.getApproximateKeyCount(toScrub) : 0);
 
         // loop through each row, deserializing to check for damage.
@@ -144,34 +138,23 @@ public class Scrubber implements Closeable
 
         this.currentRowPositionFromIndex = 0;
         this.nextRowPositionFromIndex = 0;
-
-        if (reinsertOverflowedTTLRows)
-            outputHandler.output("Starting scrub with reinsert overflowed TTL option");
-    }
-
-    private UnfilteredRowIterator withValidation(UnfilteredRowIterator iter, String filename)
-    {
-        return checkData ? UnfilteredRowIterators.withValidation(iter, filename) : iter;
     }
 
     public void scrub()
     {
-        List<SSTableReader> finished = new ArrayList<>();
-        boolean completed = false;
-        outputHandler.output(String.format("Scrubbing %s (%s)", sstable, FBUtilities.prettyPrintMemory(dataFile.length())));
-        try (SSTableRewriter writer = SSTableRewriter.construct(cfs, transaction, false, sstable.maxDataAge);
+        outputHandler.output(String.format("Scrubbing %s (%s bytes)", sstable, dataFile.length()));
+        try (SSTableRewriter writer = new SSTableRewriter(cfs, transaction, sstable.maxDataAge, transaction.isOffline());
              Refs<SSTableReader> refs = Refs.ref(Collections.singleton(sstable)))
         {
             nextIndexKey = indexAvailable() ? ByteBufferUtil.readWithShortLength(indexFile) : null;
             if (indexAvailable())
             {
                 // throw away variable so we don't have a side effect in the assert
-                long firstRowPositionFromIndex = rowIndexEntrySerializer.deserializePositionAndSkip(indexFile);
+                long firstRowPositionFromIndex = rowIndexEntrySerializer.deserialize(indexFile, sstable.descriptor.version).position;
                 assert firstRowPositionFromIndex == 0 : firstRowPositionFromIndex;
             }
 
-            StatsMetadata metadata = sstable.getSSTableMetadata();
-            writer.switchWriter(CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, metadata.repairedAt, metadata.pendingRepair, metadata.isTransient, sstable, transaction));
+            writer.switchWriter(CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, sstable.getSSTableMetadata().repairedAt, sstable));
 
             DecoratedKey prevKey = null;
 
@@ -180,21 +163,35 @@ public class Scrubber implements Closeable
                 if (scrubInfo.isStopRequested())
                     throw new CompactionInterruptedException(scrubInfo.getCompactionInfo());
 
+                updateIndexKey();
+
+                if (prevKey != null && indexFile != null)
+                {
+                    long nextRowStart = currentRowPositionFromIndex == -1 ? dataFile.length() : currentRowPositionFromIndex;
+                    if (dataFile.getFilePointer() < nextRowStart)
+                    {
+                        // Encountered CASSANDRA-10791. Place post-END_OF_ROW data in the out-of-order table.
+                        saveOutOfOrderRow(prevKey,
+                                          SSTableIdentityIterator.createFragmentIterator(sstable, dataFile, prevKey, nextRowStart - dataFile.getFilePointer(), checkData),
+                                          String.format("Row fragment detected after END_OF_ROW at key %s", prevKey));
+                        if (dataFile.isEOF())
+                            break;
+                    }
+                }
+
                 long rowStart = dataFile.getFilePointer();
                 outputHandler.debug("Reading row at " + rowStart);
 
                 DecoratedKey key = null;
                 try
                 {
-                    key = sstable.decorateKey(ByteBufferUtil.readWithShortLength(dataFile));
+                    key = sstable.partitioner.decorateKey(ByteBufferUtil.readWithShortLength(dataFile));
                 }
                 catch (Throwable th)
                 {
                     throwIfFatal(th);
                     // check for null key below
                 }
-
-                updateIndexKey();
 
                 long dataStart = dataFile.getFilePointer();
 
@@ -208,7 +205,7 @@ public class Scrubber implements Closeable
 
                 // avoid an NPE if key is null
                 String keyName = key == null ? "(unreadable key)" : ByteBufferUtil.bytesToHex(key.getKey());
-                outputHandler.debug(String.format("row %s is %s", keyName, FBUtilities.prettyPrintMemory(dataSizeFromIndex)));
+                outputHandler.debug(String.format("row %s is %s bytes", keyName, dataSizeFromIndex));
 
                 assert currentIndexKey != null || !indexAvailable();
 
@@ -220,8 +217,7 @@ public class Scrubber implements Closeable
                     if (currentIndexKey != null && !key.getKey().equals(currentIndexKey))
                     {
                         throw new IOError(new IOException(String.format("Key from data file (%s) does not match key from index file (%s)",
-                                //ByteBufferUtil.bytesToHex(key.getKey()), ByteBufferUtil.bytesToHex(currentIndexKey))));
-                                "_too big_", ByteBufferUtil.bytesToHex(currentIndexKey))));
+                                ByteBufferUtil.bytesToHex(key.getKey()), ByteBufferUtil.bytesToHex(currentIndexKey))));
                     }
 
                     if (indexFile != null && dataSizeFromIndex > dataFile.length())
@@ -243,7 +239,7 @@ public class Scrubber implements Closeable
                     {
                         outputHandler.output(String.format("Retrying from row index; data is %s bytes starting at %s",
                                                   dataSizeFromIndex, dataStartFromIndex));
-                        key = sstable.decorateKey(currentIndexKey);
+                        key = sstable.partitioner.decorateKey(currentIndexKey);
                         try
                         {
                             dataFile.seek(dataStartFromIndex);
@@ -273,25 +269,26 @@ public class Scrubber implements Closeable
                 }
             }
 
-            if (!outOfOrder.isEmpty())
+            if (!outOfOrderRows.isEmpty())
             {
                 // out of order rows, but no bad rows found - we can keep our repairedAt time
-                long repairedAt = badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : metadata.repairedAt;
-                SSTableReader newInOrderSstable;
-                try (SSTableWriter inOrderWriter = CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, repairedAt, metadata.pendingRepair, metadata.isTransient, sstable, transaction))
+                long repairedAt = badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : sstable.getSSTableMetadata().repairedAt;
+                try (SSTableWriter inOrderWriter = CompactionManager.createWriter(cfs, destination, expectedBloomFilterSize, repairedAt, sstable);)
                 {
-                    for (Partition partition : outOfOrder)
-                        inOrderWriter.append(partition.unfilteredIterator());
+                    for (Row row : outOfOrderRows)
+                        inOrderWriter.append(row.key, row.cf);
                     newInOrderSstable = inOrderWriter.finish(-1, sstable.maxDataAge, true);
                 }
                 transaction.update(newInOrderSstable, false);
-                finished.add(newInOrderSstable);
-                outputHandler.warn(String.format("%d out of order rows found while scrubbing %s; Those have been written (in order) to a new sstable (%s)", outOfOrder.size(), sstable, newInOrderSstable));
+                if (transaction.isOffline() && newInOrderSstable != null)
+                    newInOrderSstable.selfRef().release();
+                outputHandler.warn(String.format("%d out of order rows found while scrubbing %s; Those have been written (in order) to a new sstable (%s)", outOfOrderRows.size(), sstable, newInOrderSstable));
             }
 
             // finish obsoletes the old sstable
-            finished.addAll(writer.setRepairedAt(badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : sstable.getSSTableMetadata().repairedAt).finish());
-            completed = true;
+            List<SSTableReader> finished = writer.setRepairedAt(badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : sstable.getSSTableMetadata().repairedAt).finish();
+            if (!finished.isEmpty())
+                newSstable = finished.get(0);
         }
         catch (IOException e)
         {
@@ -299,70 +296,50 @@ public class Scrubber implements Closeable
         }
         finally
         {
-            if (transaction.isOffline())
-                finished.forEach(sstable -> sstable.selfRef().release());
+            controller.close();
+            if (transaction.isOffline() && newSstable != null)
+                newSstable.selfRef().release();
         }
 
-        if (completed)
-        {
-            outputHandler.output("Scrub of " + sstable + " complete: " + goodRows + " rows in new sstable and " + emptyRows + " empty (tombstoned) rows dropped");
-            if (negativeLocalDeletionInfoMetrics.fixedRows > 0)
-                outputHandler.output("Fixed " + negativeLocalDeletionInfoMetrics.fixedRows + " rows with overflowed local deletion time.");
-            if (badRows > 0)
-                outputHandler.warn("Unable to recover " + badRows + " rows that were skipped.  You can attempt manual recovery from the pre-scrub snapshot.  You can also run nodetool repair to transfer the data from a healthy replica, if any");
-        }
-        else
+        if (newSstable == null)
         {
             if (badRows > 0)
                 outputHandler.warn("No valid rows found while scrubbing " + sstable + "; it is marked for deletion now. If you want to attempt manual recovery, you can find a copy in the pre-scrub snapshot");
             else
                 outputHandler.output("Scrub of " + sstable + " complete; looks like all " + emptyRows + " rows were tombstoned");
         }
+        else
+        {
+            outputHandler.output("Scrub of " + sstable + " complete: " + goodRows + " rows in new sstable and " + emptyRows + " empty (tombstoned) rows dropped");
+            if (badRows > 0)
+                outputHandler.warn("Unable to recover " + badRows + " rows that were skipped.  You can attempt manual recovery from the pre-scrub snapshot.  You can also run nodetool repair to transfer the data from a healthy replica, if any");
+        }
     }
 
     @SuppressWarnings("resource")
     private boolean tryAppend(DecoratedKey prevKey, DecoratedKey key, SSTableRewriter writer)
     {
-        // OrderCheckerIterator will check, at iteration time, that the rows are in the proper order. If it detects
-        // that one row is out of order, it will stop returning them. The remaining rows will be sorted and added
-        // to the outOfOrder set that will be later written to a new SSTable.
-        OrderCheckerIterator sstableIterator = new OrderCheckerIterator(getIterator(key),
-                                                                        cfs.metadata().comparator);
-
-        try (UnfilteredRowIterator iterator = withValidation(sstableIterator, dataFile.getPath()))
+        // OrderCheckerIterator will check, at iteration time, that the cells are in the proper order. If it detects
+        // that one cell is out of order, it will stop returning them. The remaining cells will be sorted and added
+        // to the outOfOrderRows that will be later written to a new SSTable.
+        OrderCheckerIterator atoms = new OrderCheckerIterator(new SSTableIdentityIterator(sstable, dataFile, key, checkData),
+                                                              cfs.metadata.comparator.onDiskAtomComparator());
+        if (prevKey != null && prevKey.compareTo(key) > 0)
         {
-            if (prevKey != null && prevKey.compareTo(key) > 0)
-            {
-                saveOutOfOrderRow(prevKey, key, iterator);
-                return false;
-            }
-
-            if (writer.tryAppend(iterator) == null)
-                emptyRows++;
-            else
-                goodRows++;
+            saveOutOfOrderRow(prevKey, key, atoms);
+            return false;
         }
 
-        if (sstableIterator.hasRowsOutOfOrder())
-        {
-            outputHandler.warn(String.format("Out of order rows found in partition: %s", key));
-            outOfOrder.add(sstableIterator.getRowsOutOfOrder());
-        }
+        AbstractCompactedRow compactedRow = new LazilyCompactedRow(controller, Collections.singletonList(atoms));
+        if (writer.tryAppend(compactedRow) == null)
+            emptyRows++;
+        else
+            goodRows++;
+
+        if (atoms.hasOutOfOrderCells())
+            saveOutOfOrderRow(key, atoms);
 
         return true;
-    }
-
-    /**
-     * Only wrap with {@link FixNegativeLocalDeletionTimeIterator} if {@link #reinsertOverflowedTTLRows} option
-     * is specified
-     */
-    @SuppressWarnings("resource")
-    private UnfilteredRowIterator getIterator(DecoratedKey key)
-    {
-        RowMergingSSTableIterator rowMergingIterator = new RowMergingSSTableIterator(SSTableIdentityIterator.create(sstable, dataFile, key));
-        return reinsertOverflowedTTLRows ? new FixNegativeLocalDeletionTimeIterator(rowMergingIterator,
-                                                                                    outputHandler,
-                                                                                    negativeLocalDeletionInfoMetrics) : rowMergingIterator;
     }
 
     private void updateIndexKey()
@@ -375,7 +352,7 @@ public class Scrubber implements Closeable
 
             nextRowPositionFromIndex = !indexAvailable()
                     ? dataFile.length()
-                    : rowIndexEntrySerializer.deserializePositionAndSkip(indexFile);
+                    : rowIndexEntrySerializer.deserialize(indexFile, sstable.descriptor.version).position;
         }
         catch (Throwable th)
         {
@@ -411,11 +388,40 @@ public class Scrubber implements Closeable
         }
     }
 
-    private void saveOutOfOrderRow(DecoratedKey prevKey, DecoratedKey key, UnfilteredRowIterator iterator)
+    private void saveOutOfOrderRow(DecoratedKey prevKey, DecoratedKey key, OnDiskAtomIterator atoms)
+    {
+        saveOutOfOrderRow(key, atoms, String.format("Out of order row detected (%s found after %s)", key, prevKey));
+    }
+
+    void saveOutOfOrderRow(DecoratedKey key, OnDiskAtomIterator atoms, String message)
     {
         // TODO bitch if the row is too large?  if it is there's not much we can do ...
-        outputHandler.warn(String.format("Out of order row detected (%s found after %s)", key, prevKey));
-        outOfOrder.add(ImmutableBTreePartition.create(iterator));
+        outputHandler.warn(message);
+        // adding atoms in sorted order is worst-case for TMBSC, but we shouldn't need to do this very often
+        // and there's no sense in failing on mis-sorted cells when a TreeMap could safe us
+        ColumnFamily cf = atoms.getColumnFamily().cloneMeShallow(ArrayBackedSortedColumns.factory, false);
+        while (atoms.hasNext())
+        {
+            OnDiskAtom atom = atoms.next();
+            cf.addAtom(atom);
+        }
+        outOfOrderRows.add(new Row(key, cf));
+    }
+
+    void saveOutOfOrderRow(DecoratedKey key, OrderCheckerIterator atoms)
+    {
+        outputHandler.warn(String.format("Out of order cells found at key %s", key));
+        outOfOrderRows.add(new Row(key, atoms.getOutOfOrderCells()));
+    }
+
+    public SSTableReader getNewSSTable()
+    {
+        return newSstable;
+    }
+
+    public SSTableReader getNewInOrderSSTable()
+    {
+        return newInOrderSstable;
     }
 
     private void throwIfFatal(Throwable th)
@@ -472,17 +478,30 @@ public class Scrubber implements Closeable
         {
             try
             {
-                return new CompactionInfo(sstable.metadata(),
+                return new CompactionInfo(sstable.metadata,
                                           OperationType.SCRUB,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
-                                          scrubCompactionId,
-                                          ImmutableSet.of(sstable));
+                                          scrubCompactionId);
             }
             catch (Exception e)
             {
-                throw new RuntimeException(e);
+                throw new RuntimeException();
             }
+        }
+    }
+
+    private static class ScrubController extends CompactionController
+    {
+        public ScrubController(ColumnFamilyStore cfs)
+        {
+            super(cfs, Integer.MAX_VALUE);
+        }
+
+        @Override
+        public Predicate<Long> getPurgeEvaluator(DecoratedKey key)
+        {
+            return Predicates.alwaysFalse();
         }
     }
 
@@ -507,303 +526,89 @@ public class Scrubber implements Closeable
         }
     }
 
-    public class NegativeLocalDeletionInfoMetrics
-    {
-        public volatile int fixedRows = 0;
-    }
-
-    /**
-     * During 2.x migration, under some circumstances rows might have gotten duplicated.
-     * Merging iterator merges rows with same clustering.
-     *
-     * For more details, refer to CASSANDRA-12144.
-     */
-    private static class RowMergingSSTableIterator extends WrappingUnfilteredRowIterator
-    {
-        Unfiltered nextToOffer = null;
-
-        RowMergingSSTableIterator(UnfilteredRowIterator source)
-        {
-            super(source);
-        }
-
-        @Override
-        public boolean hasNext()
-        {
-            return nextToOffer != null || wrapped.hasNext();
-        }
-
-        @Override
-        public Unfiltered next()
-        {
-            Unfiltered next = nextToOffer != null ? nextToOffer : wrapped.next();
-
-            if (next.isRow())
-            {
-                while (wrapped.hasNext())
-                {
-                    Unfiltered peek = wrapped.next();
-                    if (!peek.isRow() || !next.clustering().equals(peek.clustering()))
-                    {
-                        nextToOffer = peek; // Offer peek in next call
-                        return next;
-                    }
-
-                    // Duplicate row, merge it.
-                    next = Rows.merge((Row) next, (Row) peek);
-                }
-            }
-
-            nextToOffer = null;
-            return next;
-        }
-    }
-
     /**
      * In some case like CASSANDRA-12127 the cells might have been stored in the wrong order. This decorator check the
      * cells order and collect the out of order cells to correct the problem.
      */
-    private static final class OrderCheckerIterator extends AbstractIterator<Unfiltered> implements UnfilteredRowIterator
+    private static final class OrderCheckerIterator extends AbstractIterator<OnDiskAtom> implements OnDiskAtomIterator
     {
         /**
          * The decorated iterator.
          */
-        private final UnfilteredRowIterator iterator;
-
-        private final ClusteringComparator comparator;
-
-        private Unfiltered previous;
+        private final OnDiskAtomIterator iterator;
 
         /**
-         * The partition containing the rows which are out of order.
+         * The atom comparator.
          */
-        private Partition rowsOutOfOrder;
+        private final Comparator<OnDiskAtom> comparator;
 
-        public OrderCheckerIterator(UnfilteredRowIterator iterator, ClusteringComparator comparator)
+        /**
+         * The Column family containing the cells which are out of order.
+         */
+        private ColumnFamily outOfOrderCells;
+
+        /**
+         * The previous atom returned
+         */
+        private OnDiskAtom previous;
+
+        public OrderCheckerIterator(OnDiskAtomIterator iterator, Comparator<OnDiskAtom> comparator)
         {
             this.iterator = iterator;
             this.comparator = comparator;
         }
 
-        public TableMetadata metadata()
+        public ColumnFamily getColumnFamily()
         {
-            return iterator.metadata();
+            return iterator.getColumnFamily();
         }
 
-        public boolean isReverseOrder()
+        public DecoratedKey getKey()
         {
-            return iterator.isReverseOrder();
+            return iterator.getKey();
         }
 
-        public RegularAndStaticColumns columns()
-        {
-            return iterator.columns();
-        }
-
-        public DecoratedKey partitionKey()
-        {
-            return iterator.partitionKey();
-        }
-
-        public Row staticRow()
-        {
-            return iterator.staticRow();
-        }
-
-        @Override
-        public boolean isEmpty()
-        {
-            return iterator.isEmpty();
-        }
-
-        public void close()
+        public void close() throws IOException
         {
             iterator.close();
         }
 
-        public DeletionTime partitionLevelDeletion()
-        {
-            return iterator.partitionLevelDeletion();
-        }
-
-        public EncodingStats stats()
-        {
-            return iterator.stats();
-        }
-
-        public boolean hasRowsOutOfOrder()
-        {
-            return rowsOutOfOrder != null;
-        }
-
-        public Partition getRowsOutOfOrder()
-        {
-            return rowsOutOfOrder;
-        }
-
-        protected Unfiltered computeNext()
+        @Override
+        protected OnDiskAtom computeNext()
         {
             if (!iterator.hasNext())
                 return endOfData();
 
-            Unfiltered next = iterator.next();
+            OnDiskAtom next = iterator.next();
 
-            // If we detect that some rows are out of order we will store and sort the remaining ones to insert them
+            // If we detect that some cells are out of order we will store and sort the remaining once to insert them
             // in a separate SSTable.
             if (previous != null && comparator.compare(next, previous) < 0)
             {
-                rowsOutOfOrder = ImmutableBTreePartition.create(UnfilteredRowIterators.concat(next, iterator), false);
+                outOfOrderCells = collectOutOfOrderCells(next, iterator);
                 return endOfData();
             }
             previous = next;
             return next;
         }
-    }
 
-    /**
-     * This iterator converts negative {@link AbstractCell#localDeletionTime()} into {@link AbstractCell#MAX_DELETION_TIME}
-     *
-     * This is to recover entries with overflowed localExpirationTime due to CASSANDRA-14092
-     */
-    private static final class FixNegativeLocalDeletionTimeIterator extends AbstractIterator<Unfiltered> implements UnfilteredRowIterator
-    {
-        /**
-         * The decorated iterator.
-         */
-        private final UnfilteredRowIterator iterator;
-
-        private final OutputHandler outputHandler;
-        private final NegativeLocalDeletionInfoMetrics negativeLocalExpirationTimeMetrics;
-
-        public FixNegativeLocalDeletionTimeIterator(UnfilteredRowIterator iterator, OutputHandler outputHandler,
-                                                    NegativeLocalDeletionInfoMetrics negativeLocalDeletionInfoMetrics)
+        public boolean hasOutOfOrderCells()
         {
-            this.iterator = iterator;
-            this.outputHandler = outputHandler;
-            this.negativeLocalExpirationTimeMetrics = negativeLocalDeletionInfoMetrics;
+            return outOfOrderCells != null;
         }
 
-        public TableMetadata metadata()
+        public ColumnFamily getOutOfOrderCells()
         {
-            return iterator.metadata();
+            return outOfOrderCells;
         }
 
-        public boolean isReverseOrder()
+        private static ColumnFamily collectOutOfOrderCells(OnDiskAtom atom, OnDiskAtomIterator iterator)
         {
-            return iterator.isReverseOrder();
-        }
-
-        public RegularAndStaticColumns columns()
-        {
-            return iterator.columns();
-        }
-
-        public DecoratedKey partitionKey()
-        {
-            return iterator.partitionKey();
-        }
-
-        public Row staticRow()
-        {
-            return iterator.staticRow();
-        }
-
-        @Override
-        public boolean isEmpty()
-        {
-            return iterator.isEmpty();
-        }
-
-        public void close()
-        {
-            iterator.close();
-        }
-
-        public DeletionTime partitionLevelDeletion()
-        {
-            return iterator.partitionLevelDeletion();
-        }
-
-        public EncodingStats stats()
-        {
-            return iterator.stats();
-        }
-
-        protected Unfiltered computeNext()
-        {
-            if (!iterator.hasNext())
-                return endOfData();
-
-            Unfiltered next = iterator.next();
-            if (!next.isRow())
-                return next;
-
-            if (hasNegativeLocalExpirationTime((Row) next))
-            {
-                outputHandler.debug(String.format("Found row with negative local expiration time: %s", next.toString(metadata(), false)));
-                negativeLocalExpirationTimeMetrics.fixedRows++;
-                return fixNegativeLocalExpirationTime((Row) next);
-            }
-
-            return next;
-        }
-
-        private boolean hasNegativeLocalExpirationTime(Row next)
-        {
-            Row row = next;
-            if (row.primaryKeyLivenessInfo().isExpiring() && row.primaryKeyLivenessInfo().localExpirationTime() < 0)
-            {
-                return true;
-            }
-
-            for (ColumnData cd : row)
-            {
-                if (cd.column().isSimple())
-                {
-                    Cell cell = (Cell)cd;
-                    if (cell.isExpiring() && cell.localDeletionTime() < 0)
-                        return true;
-                }
-                else
-                {
-                    ComplexColumnData complexData = (ComplexColumnData)cd;
-                    for (Cell cell : complexData)
-                    {
-                        if (cell.isExpiring() && cell.localDeletionTime() < 0)
-                            return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-
-        private Unfiltered fixNegativeLocalExpirationTime(Row row)
-        {
-            Row.Builder builder = HeapAllocator.instance.cloningBTreeRowBuilder();
-            builder.newRow(row.clustering());
-            builder.addPrimaryKeyLivenessInfo(row.primaryKeyLivenessInfo().isExpiring() && row.primaryKeyLivenessInfo().localExpirationTime() < 0 ?
-                                              row.primaryKeyLivenessInfo().withUpdatedTimestampAndLocalDeletionTime(row.primaryKeyLivenessInfo().timestamp() + 1, AbstractCell.MAX_DELETION_TIME)
-                                              :row.primaryKeyLivenessInfo());
-            builder.addRowDeletion(row.deletion());
-            for (ColumnData cd : row)
-            {
-                if (cd.column().isSimple())
-                {
-                    Cell cell = (Cell)cd;
-                    builder.addCell(cell.isExpiring() && cell.localDeletionTime() < 0 ? cell.withUpdatedTimestampAndLocalDeletionTime(cell.timestamp() + 1, AbstractCell.MAX_DELETION_TIME) : cell);
-                }
-                else
-                {
-                    ComplexColumnData complexData = (ComplexColumnData)cd;
-                    builder.addComplexDeletion(complexData.column(), complexData.complexDeletion());
-                    for (Cell cell : complexData)
-                    {
-                        builder.addCell(cell.isExpiring() && cell.localDeletionTime() < 0 ? cell.withUpdatedTimestampAndLocalDeletionTime(cell.timestamp() + 1, AbstractCell.MAX_DELETION_TIME) : cell);
-                    }
-                }
-            }
-            return builder.build();
+            ColumnFamily cf = iterator.getColumnFamily().cloneMeShallow(ArrayBackedSortedColumns.factory, false);
+            cf.addAtom(atom);
+            while (iterator.hasNext())
+                cf.addAtom(iterator.next());
+            return cf;
         }
     }
 }

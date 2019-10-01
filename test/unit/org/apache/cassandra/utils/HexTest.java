@@ -18,11 +18,10 @@
 
 package org.apache.cassandra.utils;
 
-import java.util.Arrays;
-
-import org.junit.Test;
-
 import static org.junit.Assert.assertArrayEquals;
+
+import java.util.Arrays;
+import org.junit.Test;
 
 public class HexTest
 {

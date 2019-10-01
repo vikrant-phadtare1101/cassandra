@@ -17,11 +17,8 @@
  */
 package org.apache.cassandra.db;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
+import java.io.*;
+import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.util.*;
@@ -29,6 +26,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+
 import javax.management.*;
 import javax.management.openmbean.*;
 
@@ -37,94 +35,68 @@ import com.google.common.base.*;
 import com.google.common.base.Throwables;
 import com.google.common.collect.*;
 import com.google.common.util.concurrent.*;
+
+import org.apache.cassandra.db.lifecycle.SSTableIntervalTree;
+import org.apache.cassandra.db.lifecycle.View;
+import org.apache.cassandra.db.lifecycle.Tracker;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.io.FSWriteError;
+import org.json.simple.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.cache.*;
 import org.apache.cassandra.concurrent.*;
 import org.apache.cassandra.config.*;
+import org.apache.cassandra.config.CFMetaData.SpeculativeRetry;
 import org.apache.cassandra.db.commitlog.CommitLog;
-import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.compaction.*;
-import org.apache.cassandra.db.filter.ClusteringIndexFilter;
-import org.apache.cassandra.db.filter.DataLimits;
-import org.apache.cassandra.db.streaming.CassandraStreamManager;
-import org.apache.cassandra.db.repair.CassandraTableRepairManager;
-import org.apache.cassandra.db.view.TableViews;
-import org.apache.cassandra.db.lifecycle.*;
-import org.apache.cassandra.db.partitions.CachedPartition;
-import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.db.rows.CellPath;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.composites.CellNameType;
+import org.apache.cassandra.db.composites.Composite;
+import org.apache.cassandra.db.filter.ColumnSlice;
+import org.apache.cassandra.db.filter.ExtendedFilter;
+import org.apache.cassandra.db.filter.IDiskAtomFilter;
+import org.apache.cassandra.db.filter.QueryFilter;
+import org.apache.cassandra.db.filter.SliceQueryFilter;
+import org.apache.cassandra.db.index.SecondaryIndex;
+import org.apache.cassandra.db.index.SecondaryIndexManager;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.exceptions.StartupException;
-import org.apache.cassandra.index.SecondaryIndexManager;
-import org.apache.cassandra.index.internal.CassandraIndex;
-import org.apache.cassandra.index.transactions.UpdateTransaction;
 import org.apache.cassandra.io.FSReadError;
-import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.io.sstable.Component;
+import org.apache.cassandra.io.compress.CompressionParameters;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.SSTableMultiWriter;
+import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.sstable.format.*;
-import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.io.sstable.metadata.CompactionMetadata;
+import org.apache.cassandra.io.sstable.metadata.MetadataType;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.metrics.Sampler;
-import org.apache.cassandra.metrics.Sampler.Sample;
-import org.apache.cassandra.metrics.Sampler.SamplerType;
-import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.repair.TableRepairManager;
-import org.apache.cassandra.schema.*;
-import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
+import org.apache.cassandra.metrics.ColumnFamilyMetrics;
+import org.apache.cassandra.metrics.ColumnFamilyMetrics.Sampler;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.streaming.TableStreamManager;
+import org.apache.cassandra.streaming.StreamLockfile;
+import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
-import org.apache.cassandra.utils.concurrent.OpOrder;
-import org.apache.cassandra.utils.concurrent.Refs;
+import org.apache.cassandra.utils.concurrent.*;
+import org.apache.cassandra.utils.TopKSampler.SamplerResult;
 import org.apache.cassandra.utils.memory.MemtableAllocator;
-import org.json.simple.JSONArray;
-import org.json.simple.JSONObject;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
+import com.clearspring.analytics.stream.Counter;
+
 import static org.apache.cassandra.utils.Throwables.maybeFail;
 
 public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 {
     private static final Logger logger = LoggerFactory.getLogger(ColumnFamilyStore.class);
 
-    /*
-    We keep a pool of threads for each data directory, size of each pool is memtable_flush_writers.
-    When flushing we start a Flush runnable in the flushExecutor. Flush calculates how to split the
-    memtable ranges over the existing data directories and creates a FlushRunnable for each of the directories.
-    The FlushRunnables are executed in the perDiskflushExecutors and the Flush will block until all FlushRunnables
-    are finished. By having flushExecutor size the same size as each of the perDiskflushExecutors we make sure we can
-    have that many flushes going at the same time.
-    */
     private static final ExecutorService flushExecutor = new JMXEnabledThreadPoolExecutor(DatabaseDescriptor.getFlushWriters(),
                                                                                           StageManager.KEEPALIVE,
                                                                                           TimeUnit.SECONDS,
                                                                                           new LinkedBlockingQueue<Runnable>(),
                                                                                           new NamedThreadFactory("MemtableFlushWriter"),
                                                                                           "internal");
-
-    private static final ExecutorService [] perDiskflushExecutors = new ExecutorService[DatabaseDescriptor.getAllDataFileLocations().length];
-
-    static
-    {
-        for (int i = 0; i < DatabaseDescriptor.getAllDataFileLocations().length; i++)
-        {
-            perDiskflushExecutors[i] = new JMXEnabledThreadPoolExecutor(DatabaseDescriptor.getFlushWriters(),
-                                                                        StageManager.KEEPALIVE,
-                                                                        TimeUnit.SECONDS,
-                                                                        new LinkedBlockingQueue<Runnable>(),
-                                                                        new NamedThreadFactory("PerDiskMemtableFlushWriter_"+i),
-                                                                        "internal");
-        }
-    }
 
     // post-flush executor is single threaded to provide guarantee that any flush Future on a CF will never return until prior flushes have completed
     private static final ExecutorService postFlushExecutor = new JMXEnabledThreadPoolExecutor(1,
@@ -134,6 +106,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                                                                               new NamedThreadFactory("MemtablePostFlush"),
                                                                                               "internal");
 
+    // If a flush fails with an error the post-flush is never allowed to continue. This stores the error that caused it
+    // to be able to show an error on following flushes instead of blindly continuing.
+    private static volatile FSWriteError previousFlushFailure = null;
+
     private static final ExecutorService reclaimExecutor = new JMXEnabledThreadPoolExecutor(1,
                                                                                             StageManager.KEEPALIVE,
                                                                                             TimeUnit.SECONDS,
@@ -141,18 +117,22 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                                                                             new NamedThreadFactory("MemtableReclaimMemory"),
                                                                                             "internal");
 
-    private static final String[] COUNTER_NAMES = new String[]{"table", "count", "error", "value"};
+    private static final String[] COUNTER_NAMES = new String[]{"raw", "count", "error", "string"};
     private static final String[] COUNTER_DESCS = new String[]
-    { "keyspace.tablename",
-      "number of occurances",
-      "error bounds",
-      "value" };
+    { "partition key in raw hex bytes",
+      "value of this partition for given sampler",
+      "value is within the error bounds plus or minus of this",
+      "the partition key turned into a human readable format" };
     private static final CompositeType COUNTER_COMPOSITE_TYPE;
+    private static final TabularType COUNTER_TYPE;
+
+    private static final String[] SAMPLER_NAMES = new String[]{"cardinality", "partitions"};
+    private static final String[] SAMPLER_DESCS = new String[]
+    { "cardinality of partitions",
+      "list of counter results" };
 
     private static final String SAMPLING_RESULTS_NAME = "SAMPLING_RESULTS";
-
-    public static final String SNAPSHOT_TRUNCATE_PREFIX = "truncated";
-    public static final String SNAPSHOT_DROP_PREFIX = "dropped";
+    private static final CompositeType SAMPLING_RESULT;
 
     static
     {
@@ -160,18 +140,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             OpenType<?>[] counterTypes = new OpenType[] { SimpleType.STRING, SimpleType.LONG, SimpleType.LONG, SimpleType.STRING };
             COUNTER_COMPOSITE_TYPE = new CompositeType(SAMPLING_RESULTS_NAME, SAMPLING_RESULTS_NAME, COUNTER_NAMES, COUNTER_DESCS, counterTypes);
+            COUNTER_TYPE = new TabularType(SAMPLING_RESULTS_NAME, SAMPLING_RESULTS_NAME, COUNTER_COMPOSITE_TYPE, COUNTER_NAMES);
+
+            OpenType<?>[] samplerTypes = new OpenType[] { SimpleType.LONG, COUNTER_TYPE };
+            SAMPLING_RESULT = new CompositeType(SAMPLING_RESULTS_NAME, SAMPLING_RESULTS_NAME, SAMPLER_NAMES, SAMPLER_DESCS, samplerTypes);
         } catch (OpenDataException e)
         {
-            throw new RuntimeException(e);
+            throw Throwables.propagate(e);
         }
     }
 
+    @VisibleForTesting
+    public static volatile ColumnFamilyStore discardFlushResults;
+
     public final Keyspace keyspace;
     public final String name;
-    public final TableMetadataRef metadata;
+    public final CFMetaData metadata;
+    public final IPartitioner partitioner;
     private final String mbeanName;
-    @Deprecated
-    private final String oldMBeanName;
     private volatile boolean valid = true;
 
     /**
@@ -191,47 +177,22 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     private final AtomicInteger fileIndexGenerator = new AtomicInteger(0);
 
     public final SecondaryIndexManager indexManager;
-    public final TableViews viewManager;
 
     /* These are locally held copies to be changed from the config during runtime */
-    private volatile DefaultValue<Integer> minCompactionThreshold;
-    private volatile DefaultValue<Integer> maxCompactionThreshold;
-    private volatile DefaultValue<Double> crcCheckChance;
+    private volatile DefaultInteger minCompactionThreshold;
+    private volatile DefaultInteger maxCompactionThreshold;
+    private final WrappingCompactionStrategy compactionStrategyWrapper;
 
-    private final CompactionStrategyManager compactionStrategyManager;
+    public final Directories directories;
 
-    private final Directories directories;
-
-    public final TableMetrics metric;
-    public volatile long sampleReadLatencyNanos;
-    public volatile long additionalWriteLatencyNanos;
-
-    private final CassandraTableWriteHandler writeHandler;
-    private final CassandraStreamManager streamManager;
-
-    private final TableRepairManager repairManager;
-
-    private final SSTableImporter sstableImporter;
-
-    private volatile boolean compactionSpaceCheck = true;
-
-    @VisibleForTesting
-    final DiskBoundaryManager diskBoundaryManager = new DiskBoundaryManager();
-
-    private volatile boolean neverPurgeTombstones = false;
+    public final ColumnFamilyMetrics metric;
+    public volatile long sampleLatencyNanos;
+    private final ScheduledFuture<?> latencyCalculator;
 
     public static void shutdownPostFlushExecutor() throws InterruptedException
     {
         postFlushExecutor.shutdown();
         postFlushExecutor.awaitTermination(60, TimeUnit.SECONDS);
-    }
-
-    public static void shutdownExecutorsAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        List<ExecutorService> executors = new ArrayList<>(perDiskflushExecutors.length + 3);
-        Collections.addAll(executors, reclaimExecutor, postFlushExecutor, flushExecutor);
-        Collections.addAll(executors, perDiskflushExecutors);
-        ExecutorUtils.shutdownAndWait(timeout, unit, executors);
     }
 
     public void reload()
@@ -241,15 +202,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // only update these runtime-modifiable settings if they have not been modified.
         if (!minCompactionThreshold.isModified())
             for (ColumnFamilyStore cfs : concatWithIndexes())
-                cfs.minCompactionThreshold = new DefaultValue(metadata().params.compaction.minCompactionThreshold());
+                cfs.minCompactionThreshold = new DefaultInteger(metadata.getMinCompactionThreshold());
         if (!maxCompactionThreshold.isModified())
             for (ColumnFamilyStore cfs : concatWithIndexes())
-                cfs.maxCompactionThreshold = new DefaultValue(metadata().params.compaction.maxCompactionThreshold());
-        if (!crcCheckChance.isModified())
-            for (ColumnFamilyStore cfs : concatWithIndexes())
-                cfs.crcCheckChance = new DefaultValue(metadata().params.crcCheckChance);
+                cfs.maxCompactionThreshold = new DefaultInteger(metadata.getMaxCompactionThreshold());
 
-        compactionStrategyManager.maybeReload(metadata());
+        compactionStrategyWrapper.maybeReloadCompactionStrategy(metadata);
 
         scheduleFlush();
 
@@ -257,19 +215,19 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         // If the CF comparator has changed, we need to change the memtable,
         // because the old one still aliases the previous comparator.
-        if (data.getView().getCurrentMemtable().initialComparator != metadata().comparator)
+        if (data.getView().getCurrentMemtable().initialComparator != metadata.comparator)
             switchMemtable();
     }
 
     void scheduleFlush()
     {
-        int period = metadata().params.memtableFlushPeriodInMs;
+        int period = metadata.getMemtableFlushPeriod();
         if (period > 0)
         {
             logger.trace("scheduling flush in {} ms", period);
             WrappedRunnable runnable = new WrappedRunnable()
             {
-                protected void runMayThrow()
+                protected void runMayThrow() throws Exception
                 {
                     synchronized (data)
                     {
@@ -308,9 +266,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         };
     }
 
-    public Map<String, String> getCompactionParameters()
+    public void setCompactionParametersJson(String options)
     {
-        return compactionStrategyManager.getCompactionParams().asMap();
+        setCompactionParameters(FBUtilities.fromJsonMap(options));
     }
 
     public String getCompactionParametersJson()
@@ -322,9 +280,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         try
         {
-            CompactionParams compactionParams = CompactionParams.fromMap(options);
-            compactionParams.validate();
-            compactionStrategyManager.setNewLocalCompactionStrategy(compactionParams);
+            Map<String, String> optionsCopy = new HashMap<>(options);
+            Class<? extends AbstractCompactionStrategy> compactionStrategyClass = CFMetaData.createCompactionStrategy(optionsCopy.get("class"));
+            optionsCopy.remove("class");
+            CFMetaData.validateCompactionOptions(compactionStrategyClass, optionsCopy);
+            compactionStrategyWrapper.setNewLocalCompactionStrategy(compactionStrategyClass, optionsCopy);
         }
         catch (Throwable t)
         {
@@ -334,28 +294,19 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public void setCompactionParametersJson(String options)
+    public Map<String, String> getCompactionParameters()
     {
-        setCompactionParameters(FBUtilities.fromJsonMap(options));
+        Map<String, String> options = new HashMap<>(compactionStrategyWrapper.options);
+        options.put("class", compactionStrategyWrapper.getName());
+        return options;
     }
 
-    public Map<String,String> getCompressionParameters()
-    {
-        return metadata().params.compression.asMap();
-    }
-
-    public String getCompressionParametersJson()
-    {
-        return FBUtilities.json(getCompressionParameters());
-    }
-
-    public void setCompressionParameters(Map<String,String> opts)
+    public void setCompactionStrategyClass(String compactionStrategyClass)
     {
         try
         {
-            CompressionParams params = CompressionParams.fromMap(opts);
-            params.validate();
-            throw new UnsupportedOperationException(); // TODO FIXME CASSANDRA-12949
+            metadata.compactionStrategyClass = CFMetaData.createCompactionStrategy(compactionStrategyClass);
+            compactionStrategyWrapper.maybeReloadCompactionStrategy(metadata);
         }
         catch (ConfigurationException e)
         {
@@ -363,144 +314,153 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public void setCompressionParametersJson(String options)
+    public String getCompactionStrategyClass()
     {
-        setCompressionParameters(FBUtilities.fromJsonMap(options));
+        return metadata.compactionStrategyClass.getName();
     }
+
+    public Map<String,String> getCompressionParameters()
+    {
+        return metadata.compressionParameters().asThriftOptions();
+    }
+
+    public void setCompressionParameters(Map<String,String> opts)
+    {
+        try
+        {
+            metadata.compressionParameters = CompressionParameters.create(opts);
+        }
+        catch (ConfigurationException e)
+        {
+            throw new IllegalArgumentException(e.getMessage());
+        }
+    }
+
+    public void setCrcCheckChance(double crcCheckChance)
+    {
+        try
+        {
+            for (SSTableReader sstable : keyspace.getAllSSTables())
+                if (sstable.compression)
+                    sstable.getCompressionMetadata().parameters.setCrcCheckChance(crcCheckChance);
+        }
+        catch (ConfigurationException e)
+        {
+            throw new IllegalArgumentException(e.getMessage());
+        }
+    }
+
+    public ColumnFamilyStore(Keyspace keyspace,
+                             String columnFamilyName,
+                             IPartitioner partitioner,
+                             int generation,
+                             CFMetaData metadata,
+                             Directories directories,
+                             boolean loadSSTables)
+    {
+        this(keyspace, columnFamilyName, partitioner, generation, metadata, directories, loadSSTables, true);
+    }
+
 
     @VisibleForTesting
     public ColumnFamilyStore(Keyspace keyspace,
-                             String columnFamilyName,
-                             int generation,
-                             TableMetadataRef metadata,
-                             Directories directories,
-                             boolean loadSSTables,
-                             boolean registerBookeeping,
-                             boolean offline)
+                              String columnFamilyName,
+                              IPartitioner partitioner,
+                              int generation,
+                              CFMetaData metadata,
+                              Directories directories,
+                              boolean loadSSTables,
+                              boolean registerBookkeeping)
     {
-        assert directories != null;
         assert metadata != null : "null metadata for " + keyspace + ":" + columnFamilyName;
 
         this.keyspace = keyspace;
-        this.metadata = metadata;
-        this.directories = directories;
         name = columnFamilyName;
-        minCompactionThreshold = new DefaultValue<>(metadata.get().params.compaction.minCompactionThreshold());
-        maxCompactionThreshold = new DefaultValue<>(metadata.get().params.compaction.maxCompactionThreshold());
-        crcCheckChance = new DefaultValue<>(metadata.get().params.crcCheckChance);
-        viewManager = keyspace.viewManager.forTable(metadata.id);
-        metric = new TableMetrics(this);
+        this.metadata = metadata;
+        this.minCompactionThreshold = new DefaultInteger(metadata.getMinCompactionThreshold());
+        this.maxCompactionThreshold = new DefaultInteger(metadata.getMaxCompactionThreshold());
+        this.partitioner = partitioner;
+        this.directories = directories;
+        this.indexManager = new SecondaryIndexManager(this);
+        this.metric = new ColumnFamilyMetrics(this);
         fileIndexGenerator.set(generation);
-        sampleReadLatencyNanos = DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS) / 2;
-        additionalWriteLatencyNanos = DatabaseDescriptor.getWriteRpcTimeout(NANOSECONDS) / 2;
+        sampleLatencyNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getReadRpcTimeout() / 2);
 
         logger.info("Initializing {}.{}", keyspace.getName(), name);
 
         // Create Memtable only on online
         Memtable initialMemtable = null;
         if (DatabaseDescriptor.isDaemonInitialized())
-            initialMemtable = new Memtable(new AtomicReference<>(CommitLog.instance.getCurrentPosition()), this);
+            initialMemtable = new Memtable(new AtomicReference<>(CommitLog.instance.getContext()), this);
         data = new Tracker(initialMemtable, loadSSTables);
 
         // scan for sstables corresponding to this cf and load them
         if (data.loadsstables)
         {
-            Directories.SSTableLister sstableFiles = directories.sstableLister(Directories.OnTxnErr.IGNORE).skipTemporary(true);
-            Collection<SSTableReader> sstables = SSTableReader.openAll(sstableFiles.list().entrySet(), metadata);
+            Directories.SSTableLister sstableFiles = directories.sstableLister().skipTemporary(true);
+            Collection<SSTableReader> sstables = SSTableReader.openAll(sstableFiles.list().entrySet(), metadata, this.partitioner);
             data.addInitialSSTables(sstables);
         }
 
         // compaction strategy should be created after the CFS has been prepared
-        compactionStrategyManager = new CompactionStrategyManager(this);
+        this.compactionStrategyWrapper = new WrappingCompactionStrategy(this);
 
         if (maxCompactionThreshold.value() <= 0 || minCompactionThreshold.value() <=0)
         {
             logger.warn("Disabling compaction strategy by setting compaction thresholds to 0 is deprecated, set the compaction option 'enabled' to 'false' instead.");
-            this.compactionStrategyManager.disable();
+            this.compactionStrategyWrapper.disable();
         }
 
         // create the private ColumnFamilyStores for the secondary column indexes
-        indexManager = new SecondaryIndexManager(this);
-        for (IndexMetadata info : metadata.get().indexes)
-            indexManager.addIndex(info, true);
+        for (ColumnDefinition info : metadata.allColumns())
+        {
+            if (info.getIndexType() != null)
+                indexManager.addIndexedColumn(info);
+        }
 
-        if (registerBookeeping)
+        if (registerBookkeeping)
         {
             // register the mbean
-            mbeanName = String.format("org.apache.cassandra.db:type=%s,keyspace=%s,table=%s",
-                                         isIndex() ? "IndexTables" : "Tables",
-                                         keyspace.getName(), name);
-            oldMBeanName = String.format("org.apache.cassandra.db:type=%s,keyspace=%s,columnfamily=%s",
-                                         isIndex() ? "IndexColumnFamilies" : "ColumnFamilies",
-                                         keyspace.getName(), name);
-
-            String[] objectNames = {mbeanName, oldMBeanName};
-            for (String objectName : objectNames)
-                MBeanWrapper.instance.registerMBean(this, objectName);
+            String type = this.partitioner instanceof LocalPartitioner ? "IndexColumnFamilies" : "ColumnFamilies";
+            mbeanName = "org.apache.cassandra.db:type=" + type + ",keyspace=" + this.keyspace.getName() + ",columnfamily=" + name;
+            try
+            {
+                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+                ObjectName nameObj = new ObjectName(mbeanName);
+                mbs.registerMBean(this, nameObj);
+            }
+            catch (Exception e)
+            {
+                throw new RuntimeException(e);
+            }
+            logger.trace("retryPolicy for {} is {}", name, this.metadata.getSpeculativeRetry());
+            latencyCalculator = ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(new Runnable()
+            {
+                public void run()
+                {
+                    SpeculativeRetry retryPolicy = ColumnFamilyStore.this.metadata.getSpeculativeRetry();
+                    switch (retryPolicy.type)
+                    {
+                        case PERCENTILE:
+                            // get percentile in nanos
+                            sampleLatencyNanos = (long) (metric.coordinatorReadLatency.getSnapshot().getValue(retryPolicy.value));
+                            break;
+                        case CUSTOM:
+                            // convert to nanos, since configuration is in millisecond
+                            sampleLatencyNanos = (long) (retryPolicy.value * 1000d * 1000d);
+                            break;
+                        default:
+                            sampleLatencyNanos = Long.MAX_VALUE;
+                            break;
+                    }
+                }
+            }, DatabaseDescriptor.getReadRpcTimeout(), DatabaseDescriptor.getReadRpcTimeout(), TimeUnit.MILLISECONDS);
         }
         else
         {
+            latencyCalculator = ScheduledExecutors.optionalTasks.schedule(Runnables.doNothing(), 0, TimeUnit.NANOSECONDS);
             mbeanName = null;
-            oldMBeanName= null;
         }
-        writeHandler = new CassandraTableWriteHandler(this);
-        streamManager = new CassandraStreamManager(this);
-        repairManager = new CassandraTableRepairManager(this);
-        sstableImporter = new SSTableImporter(this);
-    }
-
-    public void updateSpeculationThreshold()
-    {
-        try
-        {
-            sampleReadLatencyNanos = metadata().params.speculativeRetry.calculateThreshold(metric.coordinatorReadLatency.getSnapshot(), sampleReadLatencyNanos);
-            additionalWriteLatencyNanos = metadata().params.additionalWritePolicy.calculateThreshold(metric.coordinatorWriteLatency.getSnapshot(), additionalWriteLatencyNanos);
-        }
-        catch (Throwable e)
-        {
-            logger.error("Exception caught while calculating speculative retry threshold for {}: {}", metadata(), e);
-        }
-    }
-
-    public TableWriteHandler getWriteHandler()
-    {
-        return writeHandler;
-    }
-
-    public TableStreamManager getStreamManager()
-    {
-        return streamManager;
-    }
-
-    public TableRepairManager getRepairManager()
-    {
-        return repairManager;
-    }
-
-    public TableMetadata metadata()
-    {
-        return metadata.get();
-    }
-
-    public Directories getDirectories()
-    {
-        return directories;
-    }
-
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, int sstableLevel, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
-    {
-        MetadataCollector collector = new MetadataCollector(metadata().comparator).sstableLevel(sstableLevel);
-        return createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, collector, header, lifecycleNewTracker);
-    }
-
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, UUID pendingRepair, boolean isTransient, MetadataCollector metadataCollector, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
-    {
-        return getCompactionStrategyManager().createSSTableMultiWriter(descriptor, keyCount, repairedAt, pendingRepair, isTransient, metadataCollector, header, indexManager.listIndexes(), lifecycleNewTracker);
-    }
-
-    public boolean supportsEarlyOpen()
-    {
-        return compactionStrategyManager.supportsEarlyOpen();
     }
 
     /** call when dropping or renaming a CF. Performs mbean housekeeping and invalidates CFS to other operations */
@@ -528,12 +488,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
         }
 
-        compactionStrategyManager.shutdown();
-        SystemKeyspace.removeTruncationRecord(metadata.id);
-
+        latencyCalculator.cancel(false);
+        SystemKeyspace.removeTruncationRecord(metadata.cfId);
         data.dropSSTables();
-        LifecycleTransaction.waitForDeletions();
-        indexManager.dropAllIndexes();
+        indexManager.invalidate();
 
         invalidateCaches();
     }
@@ -547,45 +505,32 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         data.removeUnreadableSSTables(directory);
     }
 
-    void unregisterMBean() throws MalformedObjectNameException
+    void unregisterMBean() throws MalformedObjectNameException, InstanceNotFoundException, MBeanRegistrationException
     {
-        ObjectName[] objectNames = {new ObjectName(mbeanName), new ObjectName(oldMBeanName)};
-        for (ObjectName objectName : objectNames)
-        {
-            if (MBeanWrapper.instance.isRegistered(objectName))
-                MBeanWrapper.instance.unregisterMBean(objectName);
-        }
+        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+        ObjectName nameObj = new ObjectName(mbeanName);
+        if (mbs.isRegistered(nameObj))
+            mbs.unregisterMBean(nameObj);
 
         // unregister metrics
         metric.release();
     }
 
 
-    public static ColumnFamilyStore createColumnFamilyStore(Keyspace keyspace, TableMetadataRef metadata, boolean loadSSTables)
+    public static ColumnFamilyStore createColumnFamilyStore(Keyspace keyspace, CFMetaData metadata, boolean loadSSTables)
     {
-        return createColumnFamilyStore(keyspace, metadata.name, metadata, loadSSTables);
+        return createColumnFamilyStore(keyspace, metadata.cfName, StorageService.getPartitioner(), metadata, loadSSTables);
     }
 
     public static synchronized ColumnFamilyStore createColumnFamilyStore(Keyspace keyspace,
                                                                          String columnFamily,
-                                                                         TableMetadataRef metadata,
+                                                                         IPartitioner partitioner,
+                                                                         CFMetaData metadata,
                                                                          boolean loadSSTables)
     {
-        Directories directories = new Directories(metadata.get());
-        return createColumnFamilyStore(keyspace, columnFamily, metadata, directories, loadSSTables, true, false);
-    }
-
-    /** This is only directly used by offline tools */
-    public static synchronized ColumnFamilyStore createColumnFamilyStore(Keyspace keyspace,
-                                                                         String columnFamily,
-                                                                         TableMetadataRef metadata,
-                                                                         Directories directories,
-                                                                         boolean loadSSTables,
-                                                                         boolean registerBookkeeping,
-                                                                         boolean offline)
-    {
         // get the max generation number, to prevent generation conflicts
-        Directories.SSTableLister lister = directories.sstableLister(Directories.OnTxnErr.IGNORE).includeBackups(true);
+        Directories directories = new Directories(metadata);
+        Directories.SSTableLister lister = directories.sstableLister().includeBackups(true);
         List<Integer> generations = new ArrayList<Integer>();
         for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
         {
@@ -593,48 +538,60 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             generations.add(desc.generation);
             if (!desc.isCompatible())
                 throw new RuntimeException(String.format("Incompatible SSTable found. Current version %s is unable to read file: %s. Please run upgradesstables.",
-                                                         desc.getFormat().getLatestVersion(), desc));
+                        desc.getFormat().getLatestVersion(), desc));
         }
         Collections.sort(generations);
         int value = (generations.size() > 0) ? (generations.get(generations.size() - 1)) : 0;
 
-        return new ColumnFamilyStore(keyspace, columnFamily, value, metadata, directories, loadSSTables, registerBookkeeping, offline);
+        return new ColumnFamilyStore(keyspace, columnFamily, partitioner, value, metadata, directories, loadSSTables);
     }
 
     /**
      * Removes unnecessary files from the cf directory at startup: these include temp files, orphans, zero-length files
      * and compacted sstables. Files that cannot be recognized will be ignored.
      */
-    public static void  scrubDataDirectories(TableMetadata metadata) throws StartupException
+    public static void scrubDataDirectories(CFMetaData metadata)
     {
         Directories directories = new Directories(metadata);
-        Set<File> cleanedDirectories = new HashSet<>();
 
-         // clear ephemeral snapshots that were not properly cleared last session (CASSANDRA-7357)
+        // clear ephemeral snapshots that were not properly cleared last session (CASSANDRA-7357)
         clearEphemeralSnapshots(directories);
 
-        directories.removeTemporaryDirectories();
+        // remove any left-behind SSTables from failed/stalled streaming
+        FileFilter filter = new FileFilter()
+        {
+            public boolean accept(File pathname)
+            {
+                return pathname.getPath().endsWith(StreamLockfile.FILE_EXT);
+            }
+        };
+        for (File dir : directories.getCFDirectories())
+        {
+            File[] lockfiles = dir.listFiles(filter);
+            // lock files can be null if I/O error happens
+            if (lockfiles == null || lockfiles.length == 0)
+                continue;
+            logger.info("Removing SSTables from failed streaming session. Found {} files to cleanup.", lockfiles.length);
 
-        logger.trace("Removing temporary or obsoleted files from unfinished operations for table {}", metadata.name);
-        if (!LifecycleTransaction.removeUnfinishedLeftovers(metadata))
-            throw new StartupException(StartupException.ERR_WRONG_DISK_STATE,
-                                       String.format("Cannot remove temporary or obsoleted files for %s due to a problem with transaction " +
-                                                     "log files. Please check records with problems in the log messages above and fix them. " +
-                                                     "Refer to the 3.0 upgrading instructions in NEWS.txt " +
-                                                     "for a description of transaction log files.", metadata.toString()));
+            for (File lockfile : lockfiles)
+            {
+                StreamLockfile streamLockfile = new StreamLockfile(lockfile);
+                streamLockfile.cleanup();
+                streamLockfile.delete();
+            }
+        }
 
-        logger.trace("Further extra check for orphan sstable files for {}", metadata.name);
-        for (Map.Entry<Descriptor,Set<Component>> sstableFiles : directories.sstableLister(Directories.OnTxnErr.IGNORE).list().entrySet())
+        logger.trace("Removing compacted SSTable files from {} (see http://wiki.apache.org/cassandra/MemtableSSTable)", metadata.cfName);
+
+        for (Map.Entry<Descriptor,Set<Component>> sstableFiles : directories.sstableLister().list().entrySet())
         {
             Descriptor desc = sstableFiles.getKey();
-            File directory = desc.directory;
             Set<Component> components = sstableFiles.getValue();
 
-            if (!cleanedDirectories.contains(directory))
+            if (desc.type.isTemporary)
             {
-                cleanedDirectories.add(directory);
-                for (File tmpFile : desc.getTemporaryFiles())
-                    tmpFile.delete();
+                SSTable.delete(desc, components);
+                continue;
             }
 
             File dataFile = new File(desc.filenameFor(Component.DATA));
@@ -646,14 +603,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             logger.warn("Removing orphans for {}: {}", desc, components);
             for (Component component : components)
             {
-                File file = new File(desc.filenameFor(component));
-                if (file.exists())
-                    FileUtils.deleteWithConfirm(desc.filenameFor(component));
+                FileUtils.deleteWithConfirm(desc.filenameFor(component));
             }
         }
 
         // cleanup incomplete saved caches
-        Pattern tmpCacheFilePattern = Pattern.compile(metadata.keyspace + "-" + metadata.name + "-(Key|Row)Cache.*\\.tmp$");
+        Pattern tmpCacheFilePattern = Pattern.compile(metadata.ksName + "-" + metadata.cfName + "-(Key|Row)Cache.*\\.tmp$");
         File dir = new File(DatabaseDescriptor.getSavedCachesLocation());
 
         if (dir.exists())
@@ -666,125 +621,256 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
 
         // also clean out any index leftovers.
-        for (IndexMetadata index : metadata.indexes)
-            if (!index.isCustom())
+        for (ColumnDefinition def : metadata.allColumns())
+        {
+            if (def.isIndexed())
             {
-                TableMetadata indexMetadata = CassandraIndex.indexCfsMetadata(metadata, index);
-                scrubDataDirectories(indexMetadata);
+                CellNameType indexComparator = SecondaryIndex.getIndexComparator(metadata, def);
+                if (indexComparator != null)
+                {
+                    CFMetaData indexMetadata = CFMetaData.newIndexMetadata(metadata, def, indexComparator);
+                    scrubDataDirectories(indexMetadata);
+                }
             }
+        }
     }
 
     /**
-     * See #{@code StorageService.importNewSSTables} for more info
+     * Replacing compacted sstables is atomic as far as observers of Tracker are concerned, but not on the
+     * filesystem: first the new sstables are renamed to "live" status (i.e., the tmp marker is removed), then
+     * their ancestors are removed.
+     *
+     * If an unclean shutdown happens at the right time, we can thus end up with both the new ones and their
+     * ancestors "live" in the system.  This is harmless for normal data, but for counters it can cause overcounts.
+     *
+     * To prevent this, we record sstables being compacted in the system keyspace.  If we find unfinished
+     * compactions, we remove the new ones (since those may be incomplete -- under LCS, we may create multiple
+     * sstables from any given ancestor).
+     */
+    public static void removeUnfinishedCompactionLeftovers(CFMetaData metadata, Map<Integer, UUID> unfinishedCompactions)
+    {
+        Directories directories = new Directories(metadata);
+        Set<Integer> allGenerations = new HashSet<>();
+        for (Descriptor desc : directories.sstableLister().list().keySet())
+            allGenerations.add(desc.generation);
+
+        // sanity-check unfinishedCompactions
+        Set<Integer> unfinishedGenerations = unfinishedCompactions.keySet();
+        if (!allGenerations.containsAll(unfinishedGenerations))
+        {
+            HashSet<Integer> missingGenerations = new HashSet<>(unfinishedGenerations);
+            missingGenerations.removeAll(allGenerations);
+            logger.trace("Unfinished compactions of {}.{} reference missing sstables of generations {}",
+                         metadata.ksName, metadata.cfName, missingGenerations);
+        }
+
+        // remove new sstables from compactions that didn't complete, and compute
+        // set of ancestors that shouldn't exist anymore
+        Set<Integer> completedAncestors = new HashSet<>();
+        for (Map.Entry<Descriptor, Set<Component>> sstableFiles : directories.sstableLister().skipTemporary(true).list().entrySet())
+        {
+            // we rename the Data component last - if it does not exist as a final file, we should ignore this sstable and
+            // it will be removed during startup
+            if (!sstableFiles.getValue().contains(Component.DATA))
+                continue;
+
+            Descriptor desc = sstableFiles.getKey();
+
+            Set<Integer> ancestors;
+            try
+            {
+                CompactionMetadata compactionMetadata = (CompactionMetadata) desc.getMetadataSerializer().deserialize(desc, MetadataType.COMPACTION);
+                ancestors = compactionMetadata.ancestors;
+            }
+            catch (IOException e)
+            {
+                throw new FSReadError(e, desc.filenameFor(Component.STATS));
+            }
+            catch (NullPointerException e)
+            {
+                throw new FSReadError(e, "Failed to remove unfinished compaction leftovers (file: " + desc.filenameFor(Component.STATS) + ").  See log for details.");
+            }
+
+            if (!ancestors.isEmpty()
+                && unfinishedGenerations.containsAll(ancestors)
+                && allGenerations.containsAll(ancestors))
+            {
+                // any of the ancestors would work, so we'll just lookup the compaction task ID with the first one
+                UUID compactionTaskID = unfinishedCompactions.get(ancestors.iterator().next());
+                assert compactionTaskID != null;
+                logger.trace("Going to delete unfinished compaction product {}", desc);
+                SSTable.delete(desc, sstableFiles.getValue());
+                SystemKeyspace.finishCompaction(compactionTaskID);
+            }
+            else
+            {
+                completedAncestors.addAll(ancestors);
+            }
+        }
+
+        // remove old sstables from compactions that did complete
+        for (Map.Entry<Descriptor, Set<Component>> sstableFiles : directories.sstableLister().list().entrySet())
+        {
+            Descriptor desc = sstableFiles.getKey();
+            if (completedAncestors.contains(desc.generation))
+            {
+                // if any of the ancestors were participating in a compaction, finish that compaction
+                logger.trace("Going to delete leftover compaction ancestor {}", desc);
+                SSTable.delete(desc, sstableFiles.getValue());
+                UUID compactionTaskID = unfinishedCompactions.get(desc.generation);
+                if (compactionTaskID != null)
+                    SystemKeyspace.finishCompaction(unfinishedCompactions.get(desc.generation));
+            }
+        }
+    }
+
+    /**
+     * See #{@code StorageService.loadNewSSTables(String, String)} for more info
      *
      * @param ksName The keyspace name
      * @param cfName The columnFamily name
      */
-    public static void loadNewSSTables(String ksName, String cfName)
+    public static synchronized void loadNewSSTables(String ksName, String cfName)
     {
         /** ks/cf existence checks will be done by open and getCFS methods for us */
         Keyspace keyspace = Keyspace.open(ksName);
         keyspace.getColumnFamilyStore(cfName).loadNewSSTables();
     }
 
-    @Deprecated
-    public void loadNewSSTables()
-    {
-
-        SSTableImporter.Options options = SSTableImporter.Options.options().resetLevel(true).build();
-        sstableImporter.importNewSSTables(options);
-    }
-
     /**
      * #{@inheritDoc}
      */
-    public synchronized List<String> importNewSSTables(Set<String> srcPaths, boolean resetLevel, boolean clearRepaired, boolean verifySSTables, boolean verifyTokens, boolean invalidateCaches, boolean extendedVerify)
+    public synchronized void loadNewSSTables()
     {
-        SSTableImporter.Options options = SSTableImporter.Options.options(srcPaths)
-                                                                 .resetLevel(resetLevel)
-                                                                 .clearRepaired(clearRepaired)
-                                                                 .verifySSTables(verifySSTables)
-                                                                 .verifyTokens(verifyTokens)
-                                                                 .invalidateCaches(invalidateCaches)
-                                                                 .extendedVerify(extendedVerify).build();
+        logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
 
-        return sstableImporter.importNewSSTables(options);
-    }
+        Set<Descriptor> currentDescriptors = new HashSet<Descriptor>();
+        for (SSTableReader sstable : data.getView().sstables)
+            currentDescriptors.add(sstable.descriptor);
+        Set<SSTableReader> newSSTables = new HashSet<>();
 
-    Descriptor getUniqueDescriptorFor(Descriptor descriptor, File targetDirectory)
-    {
-        Descriptor newDescriptor;
-        do
+        Directories.SSTableLister lister = directories.sstableLister().skipTemporary(true);
+        for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
         {
-            newDescriptor = new Descriptor(descriptor.version,
-                                           targetDirectory,
-                                           descriptor.ksname,
-                                           descriptor.cfname,
-                                           // Increment the generation until we find a filename that doesn't exist. This is needed because the new
-                                           // SSTables that are being loaded might already use these generation numbers.
-                                           fileIndexGenerator.incrementAndGet(),
-                                           descriptor.formatType);
+            Descriptor descriptor = entry.getKey();
+
+            if (currentDescriptors.contains(descriptor))
+                continue; // old (initialized) SSTable found, skipping
+            if (descriptor.type.isTemporary) // in the process of being written
+                continue;
+
+            if (!descriptor.isCompatible())
+                throw new RuntimeException(String.format("Can't open incompatible SSTable! Current version %s, found file: %s",
+                        descriptor.getFormat().getLatestVersion(),
+                        descriptor));
+
+            // force foreign sstables to level 0
+            try
+            {
+                if (new File(descriptor.filenameFor(Component.STATS)).exists())
+                    descriptor.getMetadataSerializer().mutateLevel(descriptor, 0);
+            }
+            catch (IOException e)
+            {
+                SSTableReader.logOpenException(entry.getKey(), e);
+                continue;
+            }
+
+            // Increment the generation until we find a filename that doesn't exist. This is needed because the new
+            // SSTables that are being loaded might already use these generation numbers.
+            Descriptor newDescriptor;
+            do
+            {
+                newDescriptor = new Descriptor(descriptor.version,
+                                               descriptor.directory,
+                                               descriptor.ksname,
+                                               descriptor.cfname,
+                                               fileIndexGenerator.incrementAndGet(),
+                                               Descriptor.Type.FINAL,
+                                               descriptor.formatType);
+            }
+            while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
+
+            logger.info("Renaming new SSTable {} to {}", descriptor, newDescriptor);
+            SSTableWriter.rename(descriptor, newDescriptor, entry.getValue());
+
+            SSTableReader reader;
+            try
+            {
+                reader = SSTableReader.open(newDescriptor, entry.getValue(), metadata, partitioner);
+            }
+            catch (IOException e)
+            {
+                SSTableReader.logOpenException(entry.getKey(), e);
+                continue;
+            }
+            newSSTables.add(reader);
         }
-        while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
-        return newDescriptor;
+
+        if (newSSTables.isEmpty())
+        {
+            logger.info("No new SSTables were found for {}/{}", keyspace.getName(), name);
+            return;
+        }
+
+        logger.info("Loading new SSTables and building secondary indexes for {}/{}: {}", keyspace.getName(), name, newSSTables);
+
+        try (Refs<SSTableReader> refs = Refs.ref(newSSTables))
+        {
+            data.addSSTables(newSSTables);
+            indexManager.maybeBuildSecondaryIndexes(newSSTables, indexManager.allIndexesNames());
+        }
+
+        logger.info("Done loading load new SSTables for {}/{}", keyspace.getName(), name);
     }
 
     public void rebuildSecondaryIndex(String idxName)
     {
-        rebuildSecondaryIndex(keyspace.getName(), metadata.name, idxName);
+        rebuildSecondaryIndex(keyspace.getName(), metadata.cfName, idxName);
     }
 
     public static void rebuildSecondaryIndex(String ksName, String cfName, String... idxNames)
     {
         ColumnFamilyStore cfs = Keyspace.open(ksName).getColumnFamilyStore(cfName);
 
-        logger.info("User Requested secondary index re-build for {}/{} indexes: {}", ksName, cfName, Joiner.on(',').join(idxNames));
-        cfs.indexManager.rebuildIndexesBlocking(Sets.newHashSet(Arrays.asList(idxNames)));
-    }
+        Set<String> indexes = new HashSet<String>(Arrays.asList(idxNames));
 
-    public AbstractCompactionStrategy createCompactionStrategyInstance(CompactionParams compactionParams)
-    {
-        try
+        Collection<SSTableReader> sstables = cfs.getSSTables();
+
+        try (Refs<SSTableReader> refs = Refs.ref(sstables))
         {
-            Constructor<? extends AbstractCompactionStrategy> constructor =
-                compactionParams.klass().getConstructor(ColumnFamilyStore.class, Map.class);
-            return constructor.newInstance(this, compactionParams.options());
-        }
-        catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException | InstantiationException e)
-        {
-            throw new RuntimeException(e);
+            cfs.indexManager.setIndexRemoved(indexes);
+            logger.info(String.format("User Requested secondary index re-build for %s/%s indexes", ksName, cfName));
+            cfs.indexManager.maybeBuildSecondaryIndexes(sstables, indexes);
+            cfs.indexManager.setIndexBuilt(indexes);
         }
     }
 
-    @Deprecated
     public String getColumnFamilyName()
-    {
-        return getTableName();
-    }
-
-    public String getTableName()
     {
         return name;
     }
 
-    public Descriptor newSSTableDescriptor(File directory)
+    public String getTempSSTablePath(File directory)
     {
-        return newSSTableDescriptor(directory, SSTableFormat.Type.current().info.getLatestVersion(), SSTableFormat.Type.current());
+        return getTempSSTablePath(directory, DatabaseDescriptor.getSSTableFormat().info.getLatestVersion(), DatabaseDescriptor.getSSTableFormat());
     }
 
-    public Descriptor newSSTableDescriptor(File directory, SSTableFormat.Type format)
+    public String getTempSSTablePath(File directory, SSTableFormat.Type format)
     {
-        return newSSTableDescriptor(directory, format.info.getLatestVersion(), format);
+        return getTempSSTablePath(directory, format.info.getLatestVersion(), format);
     }
 
-    public Descriptor newSSTableDescriptor(File directory, Version version, SSTableFormat.Type format)
+    private String getTempSSTablePath(File directory, Version version, SSTableFormat.Type format)
     {
-        return new Descriptor(version,
-                              directory,
-                              keyspace.getName(),
-                              name,
-                              fileIndexGenerator.incrementAndGet(),
-                              format);
+        Descriptor desc = new Descriptor(version,
+                                         directory,
+                                         keyspace.getName(),
+                                         name,
+                                         fileIndexGenerator.incrementAndGet(),
+                                         Descriptor.Type.TEMP,
+                                         format);
+        return desc.filenameFor(Component.DATA);
     }
 
     /**
@@ -792,7 +878,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      *
      * @param memtable
      */
-    public ListenableFuture<CommitLogPosition> switchMemtableIfCurrent(Memtable memtable)
+    public ListenableFuture<ReplayPosition> switchMemtableIfCurrent(Memtable memtable)
     {
         synchronized (data)
         {
@@ -809,15 +895,37 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * not complete until the Memtable (and all prior Memtables) have been successfully flushed, and the CL
      * marked clean up to the position owned by the Memtable.
      */
-    public ListenableFuture<CommitLogPosition> switchMemtable()
+    public ListenableFuture<ReplayPosition> switchMemtable()
     {
         synchronized (data)
         {
+            if (previousFlushFailure != null)
+                throw new IllegalStateException("A flush previously failed with the error below. To prevent data loss, "
+                                              + "no flushes can be carried out until the node is restarted.",
+                                                previousFlushFailure);
             logFlush();
             Flush flush = new Flush(false);
-            flushExecutor.execute(flush);
-            postFlushExecutor.execute(flush.postFlushTask);
-            return flush.postFlushTask;
+            ListenableFutureTask<Void> flushTask = ListenableFutureTask.create(flush, null);
+            flushExecutor.execute(flushTask);
+            ListenableFutureTask<ReplayPosition> task = ListenableFutureTask.create(flush.postFlush);
+            postFlushExecutor.execute(task);
+
+            @SuppressWarnings("unchecked")
+            ListenableFuture<ReplayPosition> future = 
+                    // If either of the two tasks errors out, resulting future must also error out.
+                    // Combine the two futures and only return post-flush result after both have completed.
+                    // Note that flushTask will always yield null, but Futures.allAsList is
+                    // order preserving, which is why the transform function returns the result
+                    // from item 1 in it's input list (i.e. what was yielded by task).
+                    Futures.transform(Futures.allAsList(flushTask, task),
+                                      new Function<List<Object>, ReplayPosition>()
+                                      {
+                                          public ReplayPosition apply(List<Object> input)
+                                          {
+                                              return (ReplayPosition) input.get(1);
+                                          }
+                                      });
+            return future;
         }
     }
 
@@ -833,22 +941,20 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         onHeapTotal += memtable.getAllocator().onHeap().owns();
         offHeapTotal += memtable.getAllocator().offHeap().owns();
 
-        for (ColumnFamilyStore indexCfs : indexManager.getAllIndexColumnFamilyStores())
+        for (SecondaryIndex index : indexManager.getIndexes())
         {
-            MemtableAllocator allocator = indexCfs.getTracker().getView().getCurrentMemtable().getAllocator();
-            onHeapRatio += allocator.onHeap().ownershipRatio();
-            offHeapRatio += allocator.offHeap().ownershipRatio();
-            onHeapTotal += allocator.onHeap().owns();
-            offHeapTotal += allocator.offHeap().owns();
+            if (index.getIndexCfs() != null)
+            {
+                MemtableAllocator allocator = index.getIndexCfs().getTracker().getView().getCurrentMemtable().getAllocator();
+                onHeapRatio += allocator.onHeap().ownershipRatio();
+                offHeapRatio += allocator.offHeap().ownershipRatio();
+                onHeapTotal += allocator.onHeap().owns();
+                offHeapTotal += allocator.offHeap().owns();
+            }
         }
 
-        logger.debug("Enqueuing flush of {}: {}",
-                     name,
-                     String.format("%s (%.0f%%) on-heap, %s (%.0f%%) off-heap",
-                                   FBUtilities.prettyPrintMemory(onHeapTotal),
-                                   onHeapRatio * 100,
-                                   FBUtilities.prettyPrintMemory(offHeapTotal),
-                                   offHeapRatio * 100));
+        logger.debug("Enqueuing flush of {}: {}", name, String.format("%d (%.0f%%) on-heap, %d (%.0f%%) off-heap",
+                                                                     onHeapTotal, onHeapRatio * 100, offHeapTotal, offHeapRatio * 100));
     }
 
 
@@ -858,7 +964,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @return a Future yielding the commit log position that can be guaranteed to have been successfully written
      *         to sstables for this table once the future completes
      */
-    public ListenableFuture<CommitLogPosition> forceFlush()
+    public ListenableFuture<ReplayPosition> forceFlush()
     {
         synchronized (data)
         {
@@ -877,7 +983,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @return a Future yielding the commit log position that can be guaranteed to have been successfully written
      *         to sstables for this table once the future completes
      */
-    public ListenableFuture<?> forceFlush(CommitLogPosition flushIfDirtyBefore)
+    public ListenableFuture<ReplayPosition> forceFlush(ReplayPosition flushIfDirtyBefore)
     {
         // we don't loop through the remaining memtables since here we only care about commit log dirtiness
         // and this does not vary between a table and its table-backed indexes
@@ -891,20 +997,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @return a Future yielding the commit log position that can be guaranteed to have been successfully written
      *         to sstables for this table once the future completes
      */
-    private ListenableFuture<CommitLogPosition> waitForFlushes()
+    private ListenableFuture<ReplayPosition> waitForFlushes()
     {
         // we grab the current memtable; once any preceding memtables have flushed, we know its
         // commitLogLowerBound has been set (as this it is set with the upper bound of the preceding memtable)
         final Memtable current = data.getView().getCurrentMemtable();
-        ListenableFutureTask<CommitLogPosition> task = ListenableFutureTask.create(() -> {
-            logger.debug("forceFlush requested but everything is clean in {}", name);
-            return current.getCommitLogLowerBound();
+        ListenableFutureTask<ReplayPosition> task = ListenableFutureTask.create(new Callable<ReplayPosition>()
+        {
+            public ReplayPosition call()
+            {
+                logger.debug("forceFlush requested but everything is clean in {}", name);
+                return current.getCommitLogLowerBound();
+            }
         });
         postFlushExecutor.execute(task);
         return task;
     }
 
-    public CommitLogPosition forceBlockingFlush()
+    public ReplayPosition forceBlockingFlush()
     {
         return FBUtilities.waitOnFuture(forceFlush());
     }
@@ -913,19 +1023,49 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * Both synchronises custom secondary indexes and provides ordering guarantees for futures on switchMemtable/flush
      * etc, which expect to be able to wait until the flush (and all prior flushes) requested have completed.
      */
-    private final class PostFlush implements Callable<CommitLogPosition>
+    private final class PostFlush implements Callable<ReplayPosition>
     {
+        final boolean flushSecondaryIndexes;
+        final OpOrder.Barrier writeBarrier;
         final CountDownLatch latch = new CountDownLatch(1);
+        final ReplayPosition commitLogUpperBound;
         final List<Memtable> memtables;
-        volatile Throwable flushFailure = null;
+        final List<SSTableReader> readers;
 
-        private PostFlush(List<Memtable> memtables)
+        private PostFlush(boolean flushSecondaryIndexes, OpOrder.Barrier writeBarrier, ReplayPosition commitLogUpperBound,
+                          List<Memtable> memtables, List<SSTableReader> readers)
         {
+            this.writeBarrier = writeBarrier;
+            this.flushSecondaryIndexes = flushSecondaryIndexes;
+            this.commitLogUpperBound = commitLogUpperBound;
             this.memtables = memtables;
+            this.readers = readers;
         }
 
-        public CommitLogPosition call()
+        public ReplayPosition call()
         {
+            if (discardFlushResults == ColumnFamilyStore.this)
+                return commitLogUpperBound;
+
+            writeBarrier.await();
+
+            /**
+             * we can flush 2is as soon as the barrier completes, as they will be consistent with (or ahead of) the
+             * flushed memtables and CL position, which is as good as we can guarantee.
+             * TODO: SecondaryIndex should support setBarrier(), so custom implementations can co-ordinate exactly
+             * with CL as we do with memtables/CFS-backed SecondaryIndexes.
+             */
+
+            if (flushSecondaryIndexes)
+            {
+                for (SecondaryIndex index : indexManager.getIndexesNotBackedByCfs())
+                {
+                    // flush any non-cfs backed indexes
+                    logger.info("Flushing SecondaryIndex {}", index);
+                    index.forceBlockingFlush();
+                }
+            }
+
             try
             {
                 // we wait on the latch for the commitLogUpperBound to be set, and so that waiters
@@ -937,19 +1077,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 throw new IllegalStateException();
             }
 
-            CommitLogPosition commitLogUpperBound = CommitLogPosition.NONE;
-            // If a flush errored out but the error was ignored, make sure we don't discard the commit log.
-            if (flushFailure == null && !memtables.isEmpty())
+            CommitLog.instance.discardCompletedSegments(metadata.cfId, commitLogUpperBound);
+            for (int i = 0 ; i < memtables.size() ; i++)
             {
-                Memtable memtable = memtables.get(0);
-                commitLogUpperBound = memtable.getCommitLogUpperBound();
-                CommitLog.instance.discardCompletedSegments(metadata.id, memtable.getCommitLogLowerBound(), commitLogUpperBound);
+                Memtable memtable = memtables.get(i);
+                SSTableReader reader = readers.get(i);
+                memtable.cfs.data.permitCompactionOfFlushed(reader);
+                memtable.cfs.compactionStrategyWrapper.replaceFlushed(memtable, reader);
             }
-
             metric.pendingFlushes.dec();
-
-            if (flushFailure != null)
-                throw Throwables.propagate(flushFailure);
 
             return commitLogUpperBound;
         }
@@ -967,7 +1103,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         final OpOrder.Barrier writeBarrier;
         final List<Memtable> memtables = new ArrayList<>();
-        final ListenableFutureTask<CommitLogPosition> postFlushTask;
+        final List<SSTableReader> readers = new ArrayList<>();
         final PostFlush postFlush;
         final boolean truncate;
 
@@ -989,7 +1125,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             writeBarrier = keyspace.writeOrder.newBarrier();
 
             // submit flushes for the memtable for any indexed sub-cfses, and our own
-            AtomicReference<CommitLogPosition> commitLogUpperBound = new AtomicReference<>();
+            AtomicReference<ReplayPosition> commitLogUpperBound = new AtomicReference<>();
             for (ColumnFamilyStore cfs : concatWithIndexes())
             {
                 // switch all memtables, regardless of their dirty status, setting the barrier
@@ -1007,10 +1143,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
             // we then issue the barrier; this lets us wait for all operations started prior to the barrier to complete;
             // since this happens after wiring up the commitLogUpperBound, we also know all operations with earlier
-            // commit log segment position have also completed, i.e. the memtables are done and ready to flush
+            // replay positions have also completed, i.e. the memtables are done and ready to flush
             writeBarrier.issue();
-            postFlush = new PostFlush(memtables);
-            postFlushTask = ListenableFutureTask.create(postFlush);
+            postFlush = new PostFlush(!truncate, writeBarrier, commitLogUpperBound.get(), memtables, readers);
         }
 
         public void run()
@@ -1020,133 +1155,62 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             writeBarrier.markBlocking();
             writeBarrier.await();
 
-            // mark all memtables as flushing, removing them from the live memtable list
-            for (Memtable memtable : memtables)
+            // mark all memtables as flushing, removing them from the live memtable list, and
+            // remove any memtables that are already clean from the set we need to flush
+            Iterator<Memtable> iter = memtables.iterator();
+            while (iter.hasNext())
+            {
+                Memtable memtable = iter.next();
                 memtable.cfs.data.markFlushing(memtable);
+                if (memtable.isClean() || truncate)
+                {
+                    memtable.cfs.data.replaceFlushed(memtable, null);
+                    memtable.cfs.compactionStrategyWrapper.replaceFlushed(memtable, null);
+                    reclaim(memtable);
+                    iter.remove();
+                }
+            }
+
+            if (memtables.isEmpty())
+            {
+                postFlush.latch.countDown();
+                return;
+            }
 
             metric.memtableSwitchCount.inc();
 
             try
             {
-                // Flush "data" memtable with non-cf 2i first;
-                flushMemtable(memtables.get(0), true);
-                for (int i = 1; i < memtables.size(); i++)
-                    flushMemtable(memtables.get(i), false);
-            }
-            catch (Throwable t)
-            {
-                JVMStabilityInspector.inspectThrowable(t);
-                postFlush.flushFailure = t;
-            }
-            // signal the post-flush we've done our work
-            postFlush.latch.countDown();
-        }
-
-        public Collection<SSTableReader> flushMemtable(Memtable memtable, boolean flushNonCf2i)
-        {
-            if (memtable.isClean() || truncate)
-            {
-                memtable.cfs.replaceFlushed(memtable, Collections.emptyList());
-                reclaim(memtable);
-                return Collections.emptyList();
-            }
-
-            List<Future<SSTableMultiWriter>> futures = new ArrayList<>();
-            long totalBytesOnDisk = 0;
-            long maxBytesOnDisk = 0;
-            long minBytesOnDisk = Long.MAX_VALUE;
-            List<SSTableReader> sstables = new ArrayList<>();
-            try (LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.FLUSH))
-            {
-                List<Memtable.FlushRunnable> flushRunnables = null;
-                List<SSTableMultiWriter> flushResults = null;
-
-                try
+                for (Memtable memtable : memtables)
                 {
                     // flush the memtable
-                    flushRunnables = memtable.flushRunnables(txn);
-
-                    for (int i = 0; i < flushRunnables.size(); i++)
-                        futures.add(perDiskflushExecutors[i].submit(flushRunnables.get(i)));
-
-                    /**
-                     * we can flush 2is as soon as the barrier completes, as they will be consistent with (or ahead of) the
-                     * flushed memtables and CL position, which is as good as we can guarantee.
-                     * TODO: SecondaryIndex should support setBarrier(), so custom implementations can co-ordinate exactly
-                     * with CL as we do with memtables/CFS-backed SecondaryIndexes.
-                     */
-                    if (flushNonCf2i)
-                        indexManager.flushAllNonCFSBackedIndexesBlocking();
-
-                    flushResults = Lists.newArrayList(FBUtilities.waitOnFutures(futures));
-                }
-                catch (Throwable t)
-                {
-                    t = memtable.abortRunnables(flushRunnables, t);
-                    t = txn.abort(t);
-                    throw Throwables.propagate(t);
+                    SSTableReader reader = memtable.flush();
+                    memtable.cfs.data.replaceFlushed(memtable, reader);
+                    reclaim(memtable);
+                    readers.add(reader);
                 }
 
-                try
-                {
-                    Iterator<SSTableMultiWriter> writerIterator = flushResults.iterator();
-                    while (writerIterator.hasNext())
-                    {
-                        @SuppressWarnings("resource")
-                        SSTableMultiWriter writer = writerIterator.next();
-                        if (writer.getFilePointer() > 0)
-                        {
-                            writer.setOpenResult(true).prepareToCommit();
-                        }
-                        else
-                        {
-                            maybeFail(writer.abort(null));
-                            writerIterator.remove();
-                        }
-                    }
-                }
-                catch (Throwable t)
-                {
-                    for (SSTableMultiWriter writer : flushResults)
-                        t = writer.abort(t);
-                    t = txn.abort(t);
-                    Throwables.propagate(t);
-                }
-
-                txn.prepareToCommit();
-
-                Throwable accumulate = null;
-                for (SSTableMultiWriter writer : flushResults)
-                    accumulate = writer.commit(accumulate);
-
-                maybeFail(txn.commit(accumulate));
-
-                for (SSTableMultiWriter writer : flushResults)
-                {
-                    Collection<SSTableReader> flushedSSTables = writer.finished();
-                    for (SSTableReader sstable : flushedSSTables)
-                    {
-                        if (sstable != null)
-                        {
-                            sstables.add(sstable);
-                            long size = sstable.bytesOnDisk();
-                            totalBytesOnDisk += size;
-                            maxBytesOnDisk = Math.max(maxBytesOnDisk, size);
-                            minBytesOnDisk = Math.min(minBytesOnDisk, size);
-                        }
-                    }
-                }
+                // signal the post-flush we've done our work
+                // Note: This should not be done in case of error. Read more below.
+                postFlush.latch.countDown();
             }
-            memtable.cfs.replaceFlushed(memtable, sstables);
-            reclaim(memtable);
-            memtable.cfs.compactionStrategyManager.compactionLogger.flush(sstables);
-            logger.debug("Flushed to {} ({} sstables, {}), biggest {}, smallest {}",
-                         sstables,
-                         sstables.size(),
-                         FBUtilities.prettyPrintMemory(totalBytesOnDisk),
-                         FBUtilities.prettyPrintMemory(maxBytesOnDisk),
-                         FBUtilities.prettyPrintMemory(minBytesOnDisk));
-            return sstables;
+            catch (FSWriteError e)
+            {
+                JVMStabilityInspector.inspectThrowable(e);
+                // The call above may kill the process or the transports, or ignore the error.
+                // In any case we should not be passing on control to post-flush as a subsequent succeeding flush
+                // could mask the error and:
+                //   - let the commit log discard unpersisted data, resulting in data loss
+                //   - let truncations proceed, with the possibility of resurrecting the unflushed data
+                //   - let snapshots succeed with incomplete data
+
+                // Not passing control on means that all flushes from the moment of failure cannot complete
+                // (including snapshots).
+                // If the disk failure policy is ignore, this will cause memtables and the commit log to grow
+                // unboundedly until the node eventually fails.
+                previousFlushFailure = e;
+                throw e;
+            }
         }
 
         private void reclaim(final Memtable memtable)
@@ -1154,32 +1218,47 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             // issue a read barrier for reclaiming the memory, and offload the wait to another thread
             final OpOrder.Barrier readBarrier = readOrdering.newBarrier();
             readBarrier.issue();
-            postFlushTask.addListener(new WrappedRunnable()
+            reclaimExecutor.execute(new WrappedRunnable()
             {
-                public void runMayThrow()
+                public void runMayThrow() throws InterruptedException, ExecutionException
                 {
                     readBarrier.await();
                     memtable.setDiscarded();
                 }
-            }, reclaimExecutor);
+            });
         }
     }
 
     // atomically set the upper bound for the commit log
-    private static void setCommitLogUpperBound(AtomicReference<CommitLogPosition> commitLogUpperBound)
+    private static void setCommitLogUpperBound(AtomicReference<ReplayPosition> commitLogUpperBound)
     {
         // we attempt to set the holder to the current commit log context. at the same time all writes to the memtables are
         // also maintaining this value, so if somebody sneaks ahead of us somehow (should be rare) we simply retry,
         // so that we know all operations prior to the position have not reached it yet
-        CommitLogPosition lastReplayPosition;
+        ReplayPosition lastReplayPosition;
         while (true)
         {
-            lastReplayPosition = new Memtable.LastCommitLogPosition((CommitLog.instance.getCurrentPosition()));
-            CommitLogPosition currentLast = commitLogUpperBound.get();
+            lastReplayPosition = new Memtable.LastReplayPosition(CommitLog.instance.getContext());
+            ReplayPosition currentLast = commitLogUpperBound.get();
             if ((currentLast == null || currentLast.compareTo(lastReplayPosition) <= 0)
                 && commitLogUpperBound.compareAndSet(currentLast, lastReplayPosition))
                 break;
         }
+    }
+
+    @VisibleForTesting
+    // this method should ONLY be used for testing commit log behaviour; it discards the current memtable
+    // contents without marking the commit log clean, and prevents any proceeding flushes from marking
+    // the commit log as done, however they *will* terminate (unlike under typical failures) to ensure progress is made
+    public void simulateFailedFlush()
+    {
+        discardFlushResults = this;
+        data.markFlushing(data.switchMemtable(false, new Memtable(new AtomicReference<>(CommitLog.instance.getContext()), this)));
+    }
+
+    public void resumeFlushing()
+    {
+        discardFlushResults = null;
     }
 
     /**
@@ -1206,11 +1285,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 onHeap += current.getAllocator().onHeap().ownershipRatio();
                 offHeap += current.getAllocator().offHeap().ownershipRatio();
 
-                for (ColumnFamilyStore indexCfs : cfs.indexManager.getAllIndexColumnFamilyStores())
+                for (SecondaryIndex index : cfs.indexManager.getIndexes())
                 {
-                    MemtableAllocator allocator = indexCfs.getTracker().getView().getCurrentMemtable().getAllocator();
-                    onHeap += allocator.onHeap().ownershipRatio();
-                    offHeap += allocator.offHeap().ownershipRatio();
+                    if (index.getIndexCfs() != null)
+                    {
+                        MemtableAllocator allocator = index.getIndexCfs().getTracker().getView().getCurrentMemtable().getAllocator();
+                        onHeap += allocator.onHeap().ownershipRatio();
+                        offHeap += allocator.offHeap().ownershipRatio();
+                    }
                 }
 
                 float ratio = Math.max(onHeap, offHeap);
@@ -1231,7 +1313,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 float flushingOnHeap = Memtable.MEMORY_POOL.onHeap.reclaimingRatio();
                 float flushingOffHeap = Memtable.MEMORY_POOL.offHeap.reclaimingRatio();
                 float thisOnHeap = largest.getAllocator().onHeap().ownershipRatio();
-                float thisOffHeap = largest.getAllocator().offHeap().ownershipRatio();
+                float thisOffHeap = largest.getAllocator().onHeap().ownershipRatio();
                 logger.debug("Flushing largest {} to free up room. Used total: {}, live: {}, flushing: {}, this: {}",
                             largest.cfs, ratio(usedOnHeap, usedOffHeap), ratio(liveOnHeap, liveOffHeap),
                             ratio(flushingOnHeap, flushingOffHeap), ratio(thisOnHeap, thisOffHeap));
@@ -1245,6 +1327,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return String.format("%.2f/%.2f", onHeap, offHeap);
     }
 
+    public void maybeUpdateRowCache(DecoratedKey key)
+    {
+        if (!isRowCacheEnabled())
+            return;
+
+        RowCacheKey cacheKey = new RowCacheKey(metadata.ksAndCFName, key);
+        invalidateCachedRow(cacheKey);
+    }
+
     /**
      * Insert/Update the column family for this key.
      * Caller is responsible for acquiring Keyspace.switchLock
@@ -1252,35 +1343,108 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * param @ key - key for update/insert
      * param @ columnFamily - columnFamily changes
      */
-    public void apply(PartitionUpdate update, UpdateTransaction indexer, OpOrder.Group opGroup, CommitLogPosition commitLogPosition)
-
+    public void apply(DecoratedKey key, ColumnFamily columnFamily, SecondaryIndexManager.Updater indexer, OpOrder.Group opGroup, ReplayPosition replayPosition)
     {
         long start = System.nanoTime();
-        try
+        Memtable mt = data.getMemtableFor(opGroup, replayPosition);
+        final long timeDelta = mt.put(key, columnFamily, indexer, opGroup);
+        maybeUpdateRowCache(key);
+        metric.samplers.get(Sampler.WRITES).addSample(key.getKey(), key.hashCode(), 1);
+        metric.writeLatency.addNano(System.nanoTime() - start);
+        // CASSANDRA-11117 - certain resolution paths on memtable put can result in very
+        // large time deltas, either through a variety of sentinel timestamps (used for empty values, ensuring
+        // a minimal write, etc). This limits the time delta to the max value the histogram
+        // can bucket correctly. This also filters the Long.MAX_VALUE case where there was no previous value
+        // to update.
+        if(timeDelta < Long.MAX_VALUE)
+            metric.colUpdateTimeDeltaHistogram.update(Math.min(18165375903306L, timeDelta));
+    }
+
+    /**
+     * Purges gc-able top-level and range tombstones, returning `cf` if there are any columns or tombstones left,
+     * null otherwise.
+     * @param gcBefore a timestamp (in seconds); tombstones with a localDeletionTime before this will be purged
+     */
+    public static ColumnFamily removeDeletedCF(ColumnFamily cf, int gcBefore)
+    {
+        // purge old top-level and range tombstones
+        cf.purgeTombstones(gcBefore);
+
+        // if there are no columns or tombstones left, return null
+        return !cf.hasColumns() && !cf.isMarkedForDelete() ? null : cf;
+    }
+
+    /**
+     * Removes deleted columns and purges gc-able tombstones.
+     * @return an updated `cf` if any columns or tombstones remain, null otherwise
+     */
+    public static ColumnFamily removeDeleted(ColumnFamily cf, int gcBefore)
+    {
+        return removeDeleted(cf, gcBefore, SecondaryIndexManager.nullUpdater);
+    }
+
+    /*
+     This is complicated because we need to preserve deleted columns and columnfamilies
+     until they have been deleted for at least GC_GRACE_IN_SECONDS.  But, we do not need to preserve
+     their contents; just the object itself as a "tombstone" that can be used to repair other
+     replicas that do not know about the deletion.
+     */
+    public static ColumnFamily removeDeleted(ColumnFamily cf, int gcBefore, SecondaryIndexManager.Updater indexer)
+    {
+        if (cf == null)
         {
-            Memtable mt = data.getMemtableFor(opGroup, commitLogPosition);
-            long timeDelta = mt.put(update, indexer, opGroup);
-            DecoratedKey key = update.partitionKey();
-            invalidateCachedPartition(key);
-            metric.topWritePartitionFrequency.addSample(key.getKey(), 1);
-            if (metric.topWritePartitionSize.isEnabled()) // dont compute datasize if not needed
-                metric.topWritePartitionSize.addSample(key.getKey(), update.dataSize());
-            StorageHook.instance.reportWrite(metadata.id, update);
-            metric.writeLatency.addNano(System.nanoTime() - start);
-            // CASSANDRA-11117 - certain resolution paths on memtable put can result in very
-            // large time deltas, either through a variety of sentinel timestamps (used for empty values, ensuring
-            // a minimal write, etc). This limits the time delta to the max value the histogram
-            // can bucket correctly. This also filters the Long.MAX_VALUE case where there was no previous value
-            // to update.
-            if(timeDelta < Long.MAX_VALUE)
-                metric.colUpdateTimeDeltaHistogram.update(Math.min(18165375903306L, timeDelta));
+            return null;
         }
-        catch (RuntimeException e)
+
+        return removeDeletedCF(removeDeletedColumnsOnly(cf, gcBefore, indexer), gcBefore);
+    }
+
+    /**
+     * Removes only per-cell tombstones, cells that are shadowed by a row-level or range tombstone, or
+     * columns that have been dropped from the schema (for CQL3 tables only).
+     * @return the updated ColumnFamily
+     */
+    public static ColumnFamily removeDeletedColumnsOnly(ColumnFamily cf, int gcBefore, SecondaryIndexManager.Updater indexer)
+    {
+        BatchRemoveIterator<Cell> iter = cf.batchRemoveIterator();
+        DeletionInfo.InOrderTester tester = cf.inOrderDeletionTester();
+        boolean hasDroppedColumns = !cf.metadata.getDroppedColumns().isEmpty();
+        while (iter.hasNext())
         {
-            throw new RuntimeException(e.getMessage()
-                                       + " for ks: "
-                                       + keyspace.getName() + ", table: " + name, e);
+            Cell c = iter.next();
+            // remove columns if
+            // (a) the column itself is gcable or
+            // (b) the column is shadowed by a CF tombstone
+            // (c) the column has been dropped from the CF schema (CQL3 tables only)
+            if (c.getLocalDeletionTime() < gcBefore || tester.isDeleted(c) || (hasDroppedColumns && isDroppedColumn(c, cf.metadata())))
+            {
+                iter.remove();
+                indexer.remove(c);
+            }
         }
+        iter.commit();
+        return cf;
+    }
+
+    // returns true if
+    // 1. this column has been dropped from schema and
+    // 2. if it has been re-added since then, this particular column was inserted before the last drop
+    private static boolean isDroppedColumn(Cell c, CFMetaData meta)
+    {
+        Long droppedAt = meta.getDroppedColumns().get(c.name().cql3ColumnName(meta));
+        return droppedAt != null && c.timestamp() <= droppedAt;
+    }
+
+    private void removeDroppedColumns(ColumnFamily cf)
+    {
+        if (cf == null || cf.metadata.getDroppedColumns().isEmpty())
+            return;
+
+        BatchRemoveIterator<Cell> iter = cf.batchRemoveIterator();
+        while (iter.hasNext())
+            if (isDroppedColumn(iter.next(), metadata))
+                iter.remove();
+        iter.commit();
     }
 
     /**
@@ -1288,7 +1452,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @return sstables whose key range overlaps with that of the given sstables, not including itself.
      * (The given sstables may or may not overlap with each other.)
      */
-    public Collection<SSTableReader> getOverlappingLiveSSTables(Iterable<SSTableReader> sstables)
+    public Collection<SSTableReader> getOverlappingSSTables(Iterable<SSTableReader> sstables)
     {
         logger.trace("Checking for sstables overlapping {}", sstables);
 
@@ -1297,12 +1461,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         if (!sstables.iterator().hasNext())
             return ImmutableSet.of();
 
-        View view = data.getView();
+
 
         List<SSTableReader> sortedByFirst = Lists.newArrayList(sstables);
-        Collections.sort(sortedByFirst, (o1, o2) -> o1.first.compareTo(o2.first));
-
-        List<AbstractBounds<PartitionPosition>> bounds = new ArrayList<>();
+        Collections.sort(sortedByFirst, new Comparator<SSTableReader>()
+        {
+            @Override
+            public int compare(SSTableReader o1, SSTableReader o2)
+            {
+                return o1.first.compareTo(o2.first);
+            }
+        });
+        List<Interval<RowPosition, SSTableReader>> intervals = new ArrayList<>();
         DecoratedKey first = null, last = null;
         /*
         normalize the intervals covered by the sstables
@@ -1329,17 +1499,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 }
                 else
                 {
-                    bounds.add(AbstractBounds.bounds(first, true, last, true));
+                    intervals.add(Interval.<RowPosition, SSTableReader>create(first, last));
                     first = sstable.first;
                     last = sstable.last;
                 }
             }
         }
-        bounds.add(AbstractBounds.bounds(first, true, last, true));
+        intervals.add(Interval.<RowPosition, SSTableReader>create(first, last));
+        SSTableIntervalTree tree = data.getView().intervalTree;
         Set<SSTableReader> results = new HashSet<>();
 
-        for (AbstractBounds<PartitionPosition> bound : bounds)
-            Iterables.addAll(results, view.liveSSTablesInBounds(bound.left, bound.right));
+        for (Interval<RowPosition, SSTableReader> interval : intervals)
+            results.addAll(tree.search(interval));
 
         return Sets.difference(results, ImmutableSet.copyOf(sstables));
     }
@@ -1347,11 +1518,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     /**
      * like getOverlappingSSTables, but acquires references before returning
      */
-    public Refs<SSTableReader> getAndReferenceOverlappingLiveSSTables(Iterable<SSTableReader> sstables)
+    public Refs<SSTableReader> getAndReferenceOverlappingSSTables(Iterable<SSTableReader> sstables)
     {
         while (true)
         {
-            Iterable<SSTableReader> overlapped = getOverlappingLiveSSTables(sstables);
+            Iterable<SSTableReader> overlapped = getOverlappingSSTables(sstables);
             Refs<SSTableReader> refs = Refs.tryRef(overlapped);
             if (refs != null)
                 return refs;
@@ -1370,7 +1541,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public void addSSTable(SSTableReader sstable)
     {
         assert sstable.getColumnFamilyName().equals(name);
-        addSSTables(Collections.singletonList(sstable));
+        addSSTables(Arrays.asList(sstable));
     }
 
     public void addSSTables(Collection<SSTableReader> sstables)
@@ -1401,12 +1572,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         // cleanup size estimation only counts bytes for keys local to this node
         long expectedFileSize = 0;
-        Collection<Range<Token>> ranges = StorageService.instance.getLocalReplicas(keyspace.getName()).ranges();
+        Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(keyspace.getName());
         for (SSTableReader sstable : sstables)
         {
-            List<SSTableReader.PartitionPositionBounds> positions = sstable.getPositionsForRanges(ranges);
-            for (SSTableReader.PartitionPositionBounds position : positions)
-                expectedFileSize += position.upperPosition - position.lowerPosition;
+            List<Pair<Long, Long>> positions = sstable.getPositionsForRanges(ranges);
+            for (Pair<Long, Long> position : positions)
+                expectedFileSize += position.right - position.left;
         }
 
         double compressionRatio = metric.compressionRatio.getValue();
@@ -1439,13 +1610,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return CompactionManager.instance.performCleanup(ColumnFamilyStore.this, jobs);
     }
 
-    public CompactionManager.AllSSTableOpStatus scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, boolean reinsertOverflowedTTL, int jobs) throws ExecutionException, InterruptedException
+    public CompactionManager.AllSSTableOpStatus scrub(boolean disableSnapshot, boolean skipCorrupted, boolean checkData, int jobs) throws ExecutionException, InterruptedException
     {
-        return scrub(disableSnapshot, skipCorrupted, reinsertOverflowedTTL, false, checkData, jobs);
+        return scrub(disableSnapshot, skipCorrupted, false, checkData, jobs);
     }
 
     @VisibleForTesting
-    public CompactionManager.AllSSTableOpStatus scrub(boolean disableSnapshot, boolean skipCorrupted, boolean reinsertOverflowedTTL, boolean alwaysFail, boolean checkData, int jobs) throws ExecutionException, InterruptedException
+    public CompactionManager.AllSSTableOpStatus scrub(boolean disableSnapshot, boolean skipCorrupted, boolean alwaysFail, boolean checkData, int jobs) throws ExecutionException, InterruptedException
     {
         // skip snapshot creation during scrub, SEE JIRA 5891
         if(!disableSnapshot)
@@ -1453,7 +1624,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         try
         {
-            return CompactionManager.instance.performScrub(ColumnFamilyStore.this, skipCorrupted, checkData, reinsertOverflowedTTL, jobs);
+            return CompactionManager.instance.performScrub(ColumnFamilyStore.this, skipCorrupted, checkData, jobs);
         }
         catch(Throwable t)
         {
@@ -1472,40 +1643,36 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public boolean rebuildOnFailedScrub(Throwable failure)
     {
-        if (!isIndex() || !SecondaryIndexManager.isIndexColumnFamilyStore(this))
+        if (!isIndex())
+            return false;
+
+        SecondaryIndex index = null;
+        if (metadata.cfName.contains(Directories.SECONDARY_INDEX_NAME_SEPARATOR))
+        {
+            String[] parts = metadata.cfName.split("\\" + Directories.SECONDARY_INDEX_NAME_SEPARATOR, 2);
+            ColumnFamilyStore parentCfs = keyspace.getColumnFamilyStore(parts[0]);
+            index = parentCfs.indexManager.getIndexByName(metadata.cfName);
+            assert index != null;
+        }
+
+        if (index == null)
             return false;
 
         truncateBlocking();
 
         logger.warn("Rebuilding index for {} because of <{}>", name, failure.getMessage());
-
-        ColumnFamilyStore parentCfs = SecondaryIndexManager.getParentCfs(this);
-        assert parentCfs.indexManager.getAllIndexColumnFamilyStores().contains(this);
-
-        String indexName = SecondaryIndexManager.getIndexName(this);
-
-        parentCfs.rebuildSecondaryIndex(indexName);
+        index.getBaseCfs().rebuildSecondaryIndex(index.getIndexName());
         return true;
     }
 
-    public CompactionManager.AllSSTableOpStatus verify(Verifier.Options options) throws ExecutionException, InterruptedException
+    public CompactionManager.AllSSTableOpStatus verify(boolean extendedVerify) throws ExecutionException, InterruptedException
     {
-        return CompactionManager.instance.performVerify(ColumnFamilyStore.this, options);
+        return CompactionManager.instance.performVerify(ColumnFamilyStore.this, extendedVerify);
     }
 
     public CompactionManager.AllSSTableOpStatus sstablesRewrite(boolean excludeCurrentVersion, int jobs) throws ExecutionException, InterruptedException
     {
         return CompactionManager.instance.performSSTableRewrite(ColumnFamilyStore.this, excludeCurrentVersion, jobs);
-    }
-
-    public CompactionManager.AllSSTableOpStatus relocateSSTables(int jobs) throws ExecutionException, InterruptedException
-    {
-        return CompactionManager.instance.relocateSSTables(this, jobs);
-    }
-
-    public CompactionManager.AllSSTableOpStatus garbageCollect(TombstoneOption tombstoneOption, int jobs) throws ExecutionException, InterruptedException
-    {
-        return CompactionManager.instance.performGarbageCollection(this, tombstoneOption, jobs);
     }
 
     public void markObsolete(Collection<SSTableReader> sstables, OperationType compactionType)
@@ -1514,17 +1681,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         maybeFail(data.dropSSTables(Predicates.in(sstables), compactionType, null));
     }
 
-    void replaceFlushed(Memtable memtable, Collection<SSTableReader> sstables)
-    {
-        data.replaceFlushed(memtable, sstables);
-        if (sstables != null && !sstables.isEmpty())
-            CompactionManager.instance.submitBackground(this);
-    }
-
     public boolean isValid()
     {
         return valid;
     }
+
+
+
 
     /**
      * Package protected for access from the CompactionManager.
@@ -1534,57 +1697,296 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return data;
     }
 
-    public Set<SSTableReader> getLiveSSTables()
+    public Collection<SSTableReader> getSSTables()
     {
-        return data.getView().liveSSTables();
+        return data.getSSTables();
     }
 
-    public Iterable<SSTableReader> getSSTables(SSTableSet sstableSet)
+    public Iterable<SSTableReader> getPermittedToCompactSSTables()
     {
-        return data.getView().select(sstableSet);
+        return data.getPermittedToCompact();
     }
 
-    public Iterable<SSTableReader> getUncompactingSSTables()
+    public Set<SSTableReader> getUncompactingSSTables()
     {
         return data.getUncompacting();
     }
 
-    public boolean isFilterFullyCoveredBy(ClusteringIndexFilter filter,
-                                          DataLimits limits,
-                                          CachedPartition cached,
-                                          int nowInSec,
-                                          boolean enforceStrictLiveness)
+    public ColumnFamily getColumnFamily(DecoratedKey key,
+                                        Composite start,
+                                        Composite finish,
+                                        boolean reversed,
+                                        int limit,
+                                        long timestamp)
+    {
+        return getColumnFamily(QueryFilter.getSliceFilter(key, name, start, finish, reversed, limit, timestamp));
+    }
+
+    /**
+     * Fetch the row and columns given by filter.key if it is in the cache; if not, read it from disk and cache it
+     *
+     * If row is cached, and the filter given is within its bounds, we return from cache, otherwise from disk
+     *
+     * If row is not cached, we figure out what filter is "biggest", read that from disk, then
+     * filter the result and either cache that or return it.
+     *
+     * @param cfId the column family to read the row from
+     * @param filter the columns being queried.
+     * @return the requested data for the filter provided
+     */
+    private ColumnFamily getThroughCache(UUID cfId, QueryFilter filter)
+    {
+        assert isRowCacheEnabled()
+               : String.format("Row cache is not enabled on table [" + name + "]");
+
+        RowCacheKey key = new RowCacheKey(metadata.ksAndCFName, filter.key);
+
+        // attempt a sentinel-read-cache sequence.  if a write invalidates our sentinel, we'll return our
+        // (now potentially obsolete) data, but won't cache it. see CASSANDRA-3862
+        // TODO: don't evict entire rows on writes (#2864)
+        IRowCacheEntry cached = CacheService.instance.rowCache.get(key);
+        if (cached != null)
+        {
+            if (cached instanceof RowCacheSentinel)
+            {
+                // Some other read is trying to cache the value, just do a normal non-caching read
+                Tracing.trace("Row cache miss (race)");
+                metric.rowCacheMiss.inc();
+                return getTopLevelColumns(filter, Integer.MIN_VALUE);
+            }
+
+            ColumnFamily cachedCf = (ColumnFamily)cached;
+            if (isFilterFullyCoveredBy(filter.filter, cachedCf, filter.timestamp))
+            {
+                metric.rowCacheHit.inc();
+                Tracing.trace("Row cache hit");
+                ColumnFamily result = filterColumnFamily(cachedCf, filter);
+                metric.updateSSTableIterated(0);
+                return result;
+            }
+
+            metric.rowCacheHitOutOfRange.inc();
+            Tracing.trace("Ignoring row cache as cached value could not satisfy query");
+            return getTopLevelColumns(filter, Integer.MIN_VALUE);
+        }
+
+        metric.rowCacheMiss.inc();
+        Tracing.trace("Row cache miss");
+        RowCacheSentinel sentinel = new RowCacheSentinel();
+        boolean sentinelSuccess = CacheService.instance.rowCache.putIfAbsent(key, sentinel);
+        ColumnFamily data = null;
+        ColumnFamily toCache = null;
+        try
+        {
+            // If we are explicitely asked to fill the cache with full partitions, we go ahead and query the whole thing
+            if (metadata.getCaching().rowCache.cacheFullPartitions())
+            {
+                data = getTopLevelColumns(QueryFilter.getIdentityFilter(filter.key, name, filter.timestamp), Integer.MIN_VALUE);
+                toCache = data;
+                Tracing.trace("Populating row cache with the whole partition");
+                if (sentinelSuccess && toCache != null)
+                    CacheService.instance.rowCache.replace(key, sentinel, toCache);
+                return filterColumnFamily(data, filter);
+            }
+
+            // Otherwise, if we want to cache the result of the query we're about to do, we must make sure this query
+            // covers what needs to be cached. And if the user filter does not satisfy that, we sometimes extend said
+            // filter so we can populate the cache but only if:
+            //   1) we can guarantee it is a strict extension, i.e. that we will still fetch the data asked by the user.
+            //   2) the extension does not make us query more than getRowsPerPartitionToCache() (as a mean to limit the
+            //      amount of extra work we'll do on a user query for the purpose of populating the cache).
+            //
+            // In practice, we can only guarantee those 2 points if the filter is one that queries the head of the
+            // partition (and if that filter actually counts CQL3 rows since that's what we cache and it would be
+            // bogus to compare the filter count to the 'rows to cache' otherwise).
+            if (filter.filter.isHeadFilter() && filter.filter.countCQL3Rows(metadata.comparator))
+            {
+                SliceQueryFilter sliceFilter = (SliceQueryFilter)filter.filter;
+                int rowsToCache = metadata.getCaching().rowCache.rowsToCache;
+
+                SliceQueryFilter cacheSlice = readFilterForCache();
+                QueryFilter cacheFilter = new QueryFilter(filter.key, name, cacheSlice, filter.timestamp);
+
+                // If the filter count is less than the number of rows cached, we simply extend it to make sure we do cover the
+                // number of rows to cache, and if that count is greater than the number of rows to cache, we simply filter what
+                // needs to be cached afterwards.
+                if (sliceFilter.count < rowsToCache)
+                {
+                    toCache = getTopLevelColumns(cacheFilter, Integer.MIN_VALUE);
+                    if (toCache != null)
+                    {
+                        Tracing.trace("Populating row cache ({} rows cached)", cacheSlice.lastCounted());
+                        data = filterColumnFamily(toCache, filter);
+                    }
+                }
+                else
+                {
+                    data = getTopLevelColumns(filter, Integer.MIN_VALUE);
+                    if (data != null)
+                    {
+                        // The filter limit was greater than the number of rows to cache. But, if the filter had a non-empty
+                        // finish bound, we may have gotten less than what needs to be cached, in which case we shouldn't cache it
+                        // (otherwise a cache hit would assume the whole partition is cached which is not the case).
+                        if (sliceFilter.finish().isEmpty() || sliceFilter.lastCounted() >= rowsToCache)
+                        {
+                            toCache = filterColumnFamily(data, cacheFilter);
+                            Tracing.trace("Caching {} rows (out of {} requested)", cacheSlice.lastCounted(), sliceFilter.count);
+                        }
+                        else
+                        {
+                            Tracing.trace("Not populating row cache, not enough rows fetched ({} fetched but {} required for the cache)", sliceFilter.lastCounted(), rowsToCache);
+                        }
+                    }
+                }
+
+                if (sentinelSuccess && toCache != null)
+                    CacheService.instance.rowCache.replace(key, sentinel, toCache);
+                return data;
+            }
+            else
+            {
+                Tracing.trace("Fetching data but not populating cache as query does not query from the start of the partition");
+                return getTopLevelColumns(filter, Integer.MIN_VALUE);
+            }
+        }
+        finally
+        {
+            if (sentinelSuccess && toCache == null)
+                invalidateCachedRow(key);
+        }
+    }
+
+    public SliceQueryFilter readFilterForCache()
+    {
+        // We create a new filter everytime before for now SliceQueryFilter is unfortunatly mutable.
+        return new SliceQueryFilter(ColumnSlice.ALL_COLUMNS_ARRAY, false, metadata.getCaching().rowCache.rowsToCache, metadata.clusteringColumns().size());
+    }
+
+    public boolean isFilterFullyCoveredBy(IDiskAtomFilter filter, ColumnFamily cachedCf, long now)
     {
         // We can use the cached value only if we know that no data it doesn't contain could be covered
         // by the query filter, that is if:
         //   1) either the whole partition is cached
-        //   2) or we can ensure than any data the filter selects is in the cached partition
+        //   2) or we can ensure than any data the filter selects are in the cached partition
 
-        // We can guarantee that a partition is fully cached if the number of rows it contains is less than
-        // what we're caching. Wen doing that, we should be careful about expiring cells: we should count
-        // something expired that wasn't when the partition was cached, or we could decide that the whole
-        // partition is cached when it's not. This is why we use CachedPartition#cachedLiveRows.
-        if (cached.cachedLiveRows() < metadata().params.caching.rowsPerPartitionToCache())
-            return true;
+        // When counting rows to decide if the whole row is cached, we should be careful with expiring
+        // columns: if we use a timestamp newer than the one that was used when populating the cache, we might
+        // end up deciding the whole partition is cached when it's really not (just some rows expired since the
+        // cf was cached). This is the reason for Integer.MIN_VALUE below.
+        boolean wholePartitionCached = cachedCf.liveCQL3RowCount(Integer.MIN_VALUE) < metadata.getCaching().rowCache.rowsToCache;
 
-        // If the whole partition isn't cached, then we must guarantee that the filter cannot select data that
-        // is not in the cache. We can guarantee that if either the filter is a "head filter" and the cached
-        // partition has more live rows that queried (where live rows refers to the rows that are live now),
-        // or if we can prove that everything the filter selects is in the cached partition based on its content.
-        return (filter.isHeadFilter() && limits.hasEnoughLiveData(cached,
-                                                                  nowInSec,
-                                                                  filter.selectsAllPartition(),
-                                                                  enforceStrictLiveness))
-                || filter.isFullyCoveredBy(cached);
+        // Contrarily to the "wholePartitionCached" check above, we do want isFullyCoveredBy to take the
+        // timestamp of the query into account when dealing with expired columns. Otherwise, we could think
+        // the cached partition has enough live rows to satisfy the filter when it doesn't because some
+        // are now expired.
+        return wholePartitionCached || filter.isFullyCoveredBy(cachedCf, now);
     }
 
-    public int gcBefore(int nowInSec)
+    public int gcBefore(long now)
     {
-        return nowInSec - metadata().params.gcGraceSeconds;
+        return (int) (now / 1000) - metadata.getGcGraceSeconds();
+    }
+
+    /**
+     * get a list of columns starting from a given column, in a specified order.
+     * only the latest version of a column is returned.
+     * @return null if there is no data and no tombstones; otherwise a ColumnFamily
+     */
+    public ColumnFamily getColumnFamily(QueryFilter filter)
+    {
+        assert name.equals(filter.getColumnFamilyName()) : filter.getColumnFamilyName();
+
+        ColumnFamily result = null;
+
+        long start = System.nanoTime();
+        try
+        {
+            int gcBefore = gcBefore(filter.timestamp);
+            if (isRowCacheEnabled())
+            {
+                assert !isIndex(); // CASSANDRA-5732
+                UUID cfId = metadata.cfId;
+
+                ColumnFamily cached = getThroughCache(cfId, filter);
+                if (cached == null)
+                {
+                    logger.trace("cached row is empty");
+                    return null;
+                }
+
+                result = cached;
+            }
+            else
+            {
+                ColumnFamily cf = getTopLevelColumns(filter, gcBefore);
+
+                if (cf == null)
+                    return null;
+
+                result = removeDeletedCF(cf, gcBefore);
+            }
+
+            removeDroppedColumns(result);
+
+            if (filter.filter instanceof SliceQueryFilter)
+            {
+                // Log the number of tombstones scanned on single key queries
+                metric.tombstoneScannedHistogram.update(((SliceQueryFilter) filter.filter).lastTombstones());
+                metric.liveScannedHistogram.update(((SliceQueryFilter) filter.filter).lastLive());
+            }
+        }
+        finally
+        {
+            metric.readLatency.addNano(System.nanoTime() - start);
+        }
+
+        return result;
+    }
+
+    /**
+     *  Filter a cached row, which will not be modified by the filter, but may be modified by throwing out
+     *  tombstones that are no longer relevant.
+     *  The returned column family won't be thread safe.
+     */
+    ColumnFamily filterColumnFamily(ColumnFamily cached, QueryFilter filter)
+    {
+        if (cached == null)
+            return null;
+
+        ColumnFamily cf = cached.cloneMeShallow(ArrayBackedSortedColumns.factory, filter.filter.isReversed());
+        int gcBefore = gcBefore(filter.timestamp);
+        filter.collateOnDiskAtom(cf, filter.getIterator(cached), gcBefore);
+        return removeDeletedCF(cf, gcBefore);
+    }
+
+    public Set<SSTableReader> getUnrepairedSSTables()
+    {
+        Set<SSTableReader> unRepairedSSTables = new HashSet<>(getSSTables());
+        Iterator<SSTableReader> sstableIterator = unRepairedSSTables.iterator();
+        while(sstableIterator.hasNext())
+        {
+            SSTableReader sstable = sstableIterator.next();
+            if (sstable.isRepaired())
+                sstableIterator.remove();
+        }
+        return unRepairedSSTables;
+    }
+
+    public Set<SSTableReader> getRepairedSSTables()
+    {
+        Set<SSTableReader> repairedSSTables = new HashSet<>(getSSTables());
+        Iterator<SSTableReader> sstableIterator = repairedSSTables.iterator();
+        while(sstableIterator.hasNext())
+        {
+            SSTableReader sstable = sstableIterator.next();
+            if (!sstable.isRepaired())
+                sstableIterator.remove();
+        }
+        return repairedSSTables;
     }
 
     @SuppressWarnings("resource")
-    public RefViewFragment selectAndReference(Function<View, Iterable<SSTableReader>> filter)
+    public RefViewFragment selectAndReference(Function<View, List<SSTableReader>> filter)
     {
         long failingSince = -1L;
         while (true)
@@ -1610,27 +2012,92 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public ViewFragment select(Function<View, Iterable<SSTableReader>> filter)
+    public ViewFragment select(Function<View, List<SSTableReader>> filter)
     {
         View view = data.getView();
-        List<SSTableReader> sstables = Lists.newArrayList(filter.apply(view));
+        List<SSTableReader> sstables = view.intervalTree.isEmpty()
+                                       ? Collections.<SSTableReader>emptyList()
+                                       : filter.apply(view);
         return new ViewFragment(sstables, view.getAllMemtables());
     }
 
-    // WARNING: this returns the set of LIVE sstables only, which may be only partially written
-    public List<String> getSSTablesForKey(String key)
+
+    /**
+     * @return a ViewFragment containing the sstables and memtables that may need to be merged
+     * for the given @param key, according to the interval tree
+     */
+    public Function<View, List<SSTableReader>> viewFilter(final DecoratedKey key)
     {
-        return getSSTablesForKey(key, false);
+        assert !key.isMinimum();
+        return new Function<View, List<SSTableReader>>()
+        {
+            public List<SSTableReader> apply(View view)
+            {
+                return compactionStrategyWrapper.filterSSTablesForReads(view.intervalTree.search(key));
+            }
+        };
     }
 
-    public List<String> getSSTablesForKey(String key, boolean hexFormat)
+    /**
+     * @return a ViewFragment containing the sstables and memtables that may need to be merged
+     * for rows within @param rowBounds, inclusive, according to the interval tree.
+     */
+    public Function<View, List<SSTableReader>> viewFilter(final AbstractBounds<RowPosition> rowBounds)
     {
-        ByteBuffer keyBuffer = hexFormat ? ByteBufferUtil.hexToBytes(key) : metadata().partitionKeyType.fromString(key);
-        DecoratedKey dk = decorateKey(keyBuffer);
+        assert !AbstractBounds.strictlyWrapsAround(rowBounds.left, rowBounds.right);
+        return new Function<View, List<SSTableReader>>()
+        {
+            public List<SSTableReader> apply(View view)
+            {
+                // Note that View.sstablesInBounds always includes it's bound while rowBounds may not. This is ok however
+                // because the fact we restrict the sstables returned by this function is an optimization in the first
+                // place and the returned sstables will (almost) never cover *exactly* rowBounds anyway. It's also
+                // *very* unlikely that a sstable is included *just* because we consider one of the bound inclusively
+                // instead of exclusively, so the performance impact is negligible in practice.
+                return view.sstablesInBounds(rowBounds.left, rowBounds.right);
+            }
+        };
+    }
+
+    /**
+     * @return a ViewFragment containing the sstables and memtables that may need to be merged
+     * for rows for all of @param rowBoundsCollection, inclusive, according to the interval tree.
+     */
+    public Function<View, List<SSTableReader>> viewFilter(final Collection<AbstractBounds<RowPosition>> rowBoundsCollection, final boolean includeRepaired)
+    {
+        assert AbstractBounds.noneStrictlyWrapsAround(rowBoundsCollection);
+        return new Function<View, List<SSTableReader>>()
+        {
+            public List<SSTableReader> apply(View view)
+            {
+                Set<SSTableReader> sstables = Sets.newHashSet();
+                for (AbstractBounds<RowPosition> rowBounds : rowBoundsCollection)
+                {
+                    // Note that View.sstablesInBounds always includes it's bound while rowBounds may not. This is ok however
+                    // because the fact we restrict the sstables returned by this function is an optimization in the first
+                    // place and the returned sstables will (almost) never cover *exactly* rowBounds anyway. It's also
+                    // *very* unlikely that a sstable is included *just* because we consider one of the bound inclusively
+                    // instead of exclusively, so the performance impact is negligible in practice.
+                    for (SSTableReader sstable : view.sstablesInBounds(rowBounds.left, rowBounds.right))
+                    {
+                        if (includeRepaired || !sstable.isRepaired())
+                            sstables.add(sstable);
+                    }
+                }
+
+                logger.trace("ViewFilter for {}/{} sstables", sstables.size(), getSSTables().size());
+                return ImmutableList.copyOf(sstables);
+            }
+        };
+    }
+
+    public List<String> getSSTablesForKey(String key)
+    {
+        DecoratedKey dk = partitioner.decorateKey(metadata.getKeyValidator().fromString(key));
         try (OpOrder.Group op = readOrdering.start())
         {
             List<String> files = new ArrayList<>();
-            for (SSTableReader sstr : select(View.select(SSTableSet.LIVE, dk)).sstables)
+            for (SSTableReader sstr : select(viewFilter(dk)).sstables)
             {
                 // check if the key actually exists in this sstable, without updating cache and stats
                 if (sstr.getPosition(dk, SSTableReader.Operator.EQ, false) != null)
@@ -1640,69 +2107,313 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public void beginLocalSampling(String sampler, int capacity, int durationMillis)
+    public ColumnFamily getTopLevelColumns(QueryFilter filter, int gcBefore)
     {
-        metric.samplers.get(SamplerType.valueOf(sampler)).beginSampling(capacity, durationMillis);
-    }
-
-    @SuppressWarnings({ "rawtypes", "unchecked" })
-    public List<CompositeData> finishLocalSampling(String sampler, int count) throws OpenDataException
-    {
-        Sampler samplerImpl = metric.samplers.get(SamplerType.valueOf(sampler));
-        List<Sample> samplerResults = samplerImpl.finishSampling(count);
-        List<CompositeData> result = new ArrayList<>(count);
-        for (Sample counter : samplerResults)
+        Tracing.trace("Executing single-partition query on {}", name);
+        CollationController controller = new CollationController(this, filter, gcBefore);
+        ColumnFamily columns;
+        try (OpOrder.Group op = readOrdering.start())
         {
-            //Not duplicating the buffer for safety because AbstractSerializer and ByteBufferUtil.bytesToHex
-            //don't modify position or limit
-            result.add(new CompositeDataSupport(COUNTER_COMPOSITE_TYPE, COUNTER_NAMES, new Object[] {
-                    keyspace.getName() + "." + name,
-                    counter.count,
-                    counter.error,
-                    samplerImpl.toString(counter.value) })); // string
+            columns = controller.getTopLevelColumns(Memtable.MEMORY_POOL.needToCopyOnHeap());
         }
-        return result;
+        if (columns != null)
+            metric.samplers.get(Sampler.READS).addSample(filter.key.getKey(), filter.key.hashCode(), 1);
+        metric.updateSSTableIterated(controller.getSstablesIterated());
+        return columns;
     }
 
-    public boolean isCompactionDiskSpaceCheckEnabled()
+    public void beginLocalSampling(String sampler, int capacity)
     {
-        return compactionSpaceCheck;
+        metric.samplers.get(Sampler.valueOf(sampler)).beginSampling(capacity);
     }
 
-    public void compactionDiskSpaceCheck(boolean enable)
+    public CompositeData finishLocalSampling(String sampler, int count) throws OpenDataException
     {
-        compactionSpaceCheck = enable;
+        SamplerResult<ByteBuffer> samplerResults = metric.samplers.get(Sampler.valueOf(sampler))
+                .finishSampling(count);
+        TabularDataSupport result = new TabularDataSupport(COUNTER_TYPE);
+        for (Counter<ByteBuffer> counter : samplerResults.topK)
+        {
+            byte[] key = counter.getItem().array();
+            result.put(new CompositeDataSupport(COUNTER_COMPOSITE_TYPE, COUNTER_NAMES, new Object[] {
+                    Hex.bytesToHex(key), // raw
+                    counter.getCount(),  // count
+                    counter.getError(),  // error
+                    metadata.getKeyValidator().getString(ByteBuffer.wrap(key)) })); // string
+        }
+        return new CompositeDataSupport(SAMPLING_RESULT, SAMPLER_NAMES, new Object[]{
+                samplerResults.cardinality, result});
     }
 
     public void cleanupCache()
     {
-        Collection<Range<Token>> ranges = StorageService.instance.getLocalReplicas(keyspace.getName()).ranges();
+        Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(keyspace.getName());
 
         for (Iterator<RowCacheKey> keyIter = CacheService.instance.rowCache.keyIterator();
              keyIter.hasNext(); )
         {
             RowCacheKey key = keyIter.next();
-            DecoratedKey dk = decorateKey(ByteBuffer.wrap(key.key));
-            if (key.sameTable(metadata()) && !Range.isInRanges(dk.getToken(), ranges))
-                invalidateCachedPartition(dk);
+            DecoratedKey dk = partitioner.decorateKey(ByteBuffer.wrap(key.key));
+            if (key.ksAndCFName.equals(metadata.ksAndCFName) && !Range.isInRanges(dk.getToken(), ranges))
+                invalidateCachedRow(dk);
         }
 
-        if (metadata().isCounter())
+        if (metadata.isCounter())
         {
             for (Iterator<CounterCacheKey> keyIter = CacheService.instance.counterCache.keyIterator();
                  keyIter.hasNext(); )
             {
                 CounterCacheKey key = keyIter.next();
-                DecoratedKey dk = decorateKey(key.partitionKey());
-                if (key.sameTable(metadata()) && !Range.isInRanges(dk.getToken(), ranges))
+                DecoratedKey dk = partitioner.decorateKey(ByteBuffer.wrap(key.partitionKey));
+                if (key.ksAndCFName.equals(metadata.ksAndCFName) && !Range.isInRanges(dk.getToken(), ranges))
                     CacheService.instance.counterCache.remove(key);
             }
         }
     }
 
-    public ClusteringComparator getComparator()
+    public static abstract class AbstractScanIterator extends AbstractIterator<Row> implements CloseableIterator<Row>
     {
-        return metadata().comparator;
+        public boolean needsFiltering()
+        {
+            return true;
+        }
+    }
+
+    /**
+      * Iterate over a range of rows and columns from memtables/sstables.
+      *
+      * @param range The range of keys and columns within those keys to fetch
+     */
+    @SuppressWarnings("resource")
+    private AbstractScanIterator getSequentialIterator(final DataRange range, long now)
+    {
+        assert !(range.keyRange() instanceof Range) || !((Range<?>)range.keyRange()).isWrapAround() || range.keyRange().right.isMinimum() : range.keyRange();
+
+        final ViewFragment view = select(viewFilter(range.keyRange()));
+        Tracing.trace("Executing seq scan across {} sstables for {}", view.sstables.size(), range.keyRange().getString(metadata.getKeyValidator()));
+
+        final CloseableIterator<Row> iterator = RowIteratorFactory.getIterator(view.memtables, view.sstables, range, this, now);
+
+        // todo this could be pushed into SSTableScanner
+        return new AbstractScanIterator()
+        {
+            protected Row computeNext()
+            {
+                while (true)
+                {
+                    // pull a row out of the iterator
+                    if (!iterator.hasNext())
+                        return endOfData();
+
+                    Row current = iterator.next();
+                    DecoratedKey key = current.key;
+
+                    if (!range.stopKey().isMinimum() && range.stopKey().compareTo(key) < 0)
+                        return endOfData();
+
+                    // skipping outside of assigned range
+                    if (!range.contains(key))
+                        continue;
+
+                    if (logger.isTraceEnabled())
+                        logger.trace("scanned {}", metadata.getKeyValidator().getString(key.getKey()));
+
+                    return current;
+                }
+            }
+
+            public void close() throws IOException
+            {
+                iterator.close();
+            }
+        };
+    }
+
+    @VisibleForTesting
+    public List<Row> getRangeSlice(final AbstractBounds<RowPosition> range,
+                                   List<IndexExpression> rowFilter,
+                                   IDiskAtomFilter columnFilter,
+                                   int maxResults)
+    {
+        return getRangeSlice(range, rowFilter, columnFilter, maxResults, System.currentTimeMillis());
+    }
+
+    public List<Row> getRangeSlice(final AbstractBounds<RowPosition> range,
+                                   List<IndexExpression> rowFilter,
+                                   IDiskAtomFilter columnFilter,
+                                   int maxResults,
+                                   long now)
+    {
+        return getRangeSlice(makeExtendedFilter(range, columnFilter, rowFilter, maxResults, false, false, now));
+    }
+
+    /**
+     * Allows generic range paging with the slice column filter.
+     * Typically, suppose we have rows A, B, C ... Z having each some columns in [1, 100].
+     * And suppose we want to page through the query that for all rows returns the columns
+     * within [25, 75]. For that, we need to be able to do a range slice starting at (row r, column c)
+     * and ending at (row Z, column 75), *but* that only return columns in [25, 75].
+     * That is what this method allows. The columnRange is the "window" of  columns we are interested
+     * in each row, and columnStart (resp. columnEnd) is the start (resp. end) for the first
+     * (resp. last) requested row.
+     */
+    public ExtendedFilter makeExtendedFilter(AbstractBounds<RowPosition> keyRange,
+                                             SliceQueryFilter columnRange,
+                                             Composite columnStart,
+                                             Composite columnStop,
+                                             List<IndexExpression> rowFilter,
+                                             int maxResults,
+                                             boolean countCQL3Rows,
+                                             long now)
+    {
+        DataRange dataRange = new DataRange.Paging(keyRange, columnRange, columnStart, columnStop, metadata);
+        return ExtendedFilter.create(this, dataRange, rowFilter, maxResults, countCQL3Rows, now);
+    }
+
+    public List<Row> getRangeSlice(AbstractBounds<RowPosition> range,
+                                   List<IndexExpression> rowFilter,
+                                   IDiskAtomFilter columnFilter,
+                                   int maxResults,
+                                   long now,
+                                   boolean countCQL3Rows,
+                                   boolean isPaging)
+    {
+        return getRangeSlice(makeExtendedFilter(range, columnFilter, rowFilter, maxResults, countCQL3Rows, isPaging, now));
+    }
+
+    public ExtendedFilter makeExtendedFilter(AbstractBounds<RowPosition> range,
+                                             IDiskAtomFilter columnFilter,
+                                             List<IndexExpression> rowFilter,
+                                             int maxResults,
+                                             boolean countCQL3Rows,
+                                             boolean isPaging,
+                                             long timestamp)
+    {
+        DataRange dataRange;
+        if (isPaging)
+        {
+            assert columnFilter instanceof SliceQueryFilter;
+            SliceQueryFilter sfilter = (SliceQueryFilter)columnFilter;
+            assert sfilter.slices.length == 1;
+            // create a new SliceQueryFilter that selects all cells, but pass the original slice start and finish
+            // through to DataRange.Paging to be used on the first and last partitions
+            SliceQueryFilter newFilter = new SliceQueryFilter(ColumnSlice.ALL_COLUMNS_ARRAY, sfilter.isReversed(), sfilter.count);
+            dataRange = new DataRange.Paging(range, newFilter, sfilter.start(), sfilter.finish(), metadata);
+        }
+        else
+        {
+            dataRange = new DataRange(range, columnFilter);
+        }
+        return ExtendedFilter.create(this, dataRange, rowFilter, maxResults, countCQL3Rows, timestamp);
+    }
+
+    public List<Row> getRangeSlice(ExtendedFilter filter)
+    {
+        long start = System.nanoTime();
+        try (OpOrder.Group op = readOrdering.start())
+        {
+            return filter(getSequentialIterator(filter.dataRange, filter.timestamp), filter);
+        }
+        finally
+        {
+            metric.rangeLatency.addNano(System.nanoTime() - start);
+        }
+    }
+
+    @VisibleForTesting
+    public List<Row> search(AbstractBounds<RowPosition> range,
+                            List<IndexExpression> clause,
+                            IDiskAtomFilter dataFilter,
+                            int maxResults)
+    {
+        return search(range, clause, dataFilter, maxResults, System.currentTimeMillis());
+    }
+
+    public List<Row> search(AbstractBounds<RowPosition> range,
+                            List<IndexExpression> clause,
+                            IDiskAtomFilter dataFilter,
+                            int maxResults,
+                            long now)
+    {
+        return search(makeExtendedFilter(range, dataFilter, clause, maxResults, false, false, now));
+    }
+
+    public List<Row> search(ExtendedFilter filter)
+    {
+        Tracing.trace("Executing indexed scan for {}", filter.dataRange.keyRange().getString(metadata.getKeyValidator()));
+        return indexManager.search(filter);
+    }
+
+    public List<Row> filter(AbstractScanIterator rowIterator, ExtendedFilter filter)
+    {
+        logger.trace("Filtering {} for rows matching {}", rowIterator, filter);
+        List<Row> rows = new ArrayList<Row>();
+        int columnsCount = 0;
+        int total = 0, matched = 0;
+        boolean ignoreTombstonedPartitions = filter.ignoreTombstonedPartitions();
+
+        try
+        {
+            while (rowIterator.hasNext() && matched < filter.maxRows() && columnsCount < filter.maxColumns())
+            {
+                // get the raw columns requested, and additional columns for the expressions if necessary
+                Row rawRow = rowIterator.next();
+                total++;
+                ColumnFamily data = rawRow.cf;
+
+                if (rowIterator.needsFiltering())
+                {
+                    IDiskAtomFilter extraFilter = filter.getExtraFilter(rawRow.key, data);
+                    if (extraFilter != null)
+                    {
+                        ColumnFamily cf = filter.cfs.getColumnFamily(new QueryFilter(rawRow.key, name, extraFilter, filter.timestamp));
+                        if (cf != null)
+                            data.addAll(cf);
+                    }
+
+                    removeDroppedColumns(data);
+
+                    if (!filter.isSatisfiedBy(rawRow.key, data, null, null))
+                        continue;
+
+                    logger.trace("{} satisfies all filter expressions", data);
+                    // cut the resultset back to what was requested, if necessary
+                    data = filter.prune(rawRow.key, data);
+                }
+                else
+                {
+                    removeDroppedColumns(data);
+                }
+
+                rows.add(new Row(rawRow.key, data));
+                if (!ignoreTombstonedPartitions || !data.hasOnlyTombstones(filter.timestamp))
+                    matched++;
+
+                if (data != null)
+                    columnsCount += filter.lastCounted(data);
+                // Update the underlying filter to avoid querying more columns per slice than necessary and to handle paging
+                filter.updateFilter(columnsCount);
+            }
+
+            return rows;
+        }
+        finally
+        {
+            try
+            {
+                rowIterator.close();
+                Tracing.trace("Scanned {} rows and matched {}", total, matched);
+            }
+            catch (IOException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    public CellNameType getComparator()
+    {
+        return metadata.comparator;
     }
 
     public void snapshotWithoutFlush(String snapshotName)
@@ -1719,10 +2430,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (ColumnFamilyStore cfs : concatWithIndexes())
         {
             final JSONArray filesJSONArr = new JSONArray();
-            try (RefViewFragment currentView = cfs.selectAndReference(View.select(SSTableSet.CANONICAL, (x) -> predicate == null || predicate.apply(x))))
+            try (RefViewFragment currentView = cfs.selectAndReference(CANONICAL_SSTABLES))
             {
                 for (SSTableReader ssTable : currentView.sstables)
                 {
+                    if (predicate != null && !predicate.apply(ssTable))
+                        continue;
+
                     File snapshotDirectory = Directories.getSnapshotDirectory(ssTable.descriptor, snapshotName);
                     ssTable.createLinks(snapshotDirectory.getPath()); // hard links
                     filesJSONArr.add(ssTable.descriptor.relativeFilenameFor(Component.DATA));
@@ -1733,8 +2447,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 }
 
                 writeSnapshotManifest(filesJSONArr, snapshotName);
-                if (!SchemaConstants.isLocalSystemKeyspace(metadata.keyspace) && !SchemaConstants.isReplicatedSystemKeyspace(metadata.keyspace))
-                    writeSnapshotSchema(snapshotName);
             }
         }
         if (ephemeral)
@@ -1744,7 +2456,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     private void writeSnapshotManifest(final JSONArray filesJSONArr, final String snapshotName)
     {
-        final File manifestFile = getDirectories().getSnapshotManifestFile(snapshotName);
+        final File manifestFile = directories.getSnapshotManifestFile(snapshotName);
 
         try
         {
@@ -1764,30 +2476,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    private void writeSnapshotSchema(final String snapshotName)
-    {
-        final File schemaFile = getDirectories().getSnapshotSchemaFile(snapshotName);
-
-        try
-        {
-            if (!schemaFile.getParentFile().exists())
-                schemaFile.getParentFile().mkdirs();
-
-            try (PrintStream out = new PrintStream(schemaFile))
-            {
-                for (String s: TableCQLHelper.dumpReCreateStatements(metadata()))
-                    out.println(s);
-            }
-        }
-        catch (IOException e)
-        {
-            throw new FSWriteError(e, schemaFile);
-        }
-    }
-
     private void createEphemeralSnapshotMarkerFile(final String snapshot)
     {
-        final File ephemeralSnapshotMarker = getDirectories().getNewEphemeralSnapshotMarkerFile(snapshot);
+        final File ephemeralSnapshotMarker = directories.getNewEphemeralSnapshotMarkerFile(snapshot);
 
         try
         {
@@ -1795,8 +2486,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 ephemeralSnapshotMarker.getParentFile().mkdirs();
 
             Files.createFile(ephemeralSnapshotMarker.toPath());
-            if (logger.isTraceEnabled())
-                logger.trace("Created ephemeral snapshot marker file on {}.", ephemeralSnapshotMarker.getAbsolutePath());
+            logger.trace("Created ephemeral snapshot marker file on {}.", ephemeralSnapshotMarker.getAbsolutePath());
         }
         catch (IOException e)
         {
@@ -1816,12 +2506,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public Refs<SSTableReader> getSnapshotSSTableReaders(String tag) throws IOException
+    public Refs<SSTableReader> getSnapshotSSTableReader(String tag) throws IOException
     {
         Map<Integer, SSTableReader> active = new HashMap<>();
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
+        for (SSTableReader sstable : data.getView().sstables)
             active.put(sstable.descriptor.generation, sstable);
-        Map<Descriptor, Set<Component>> snapshots = getDirectories().sstableLister(Directories.OnTxnErr.IGNORE).snapshots(tag).list();
+        Map<Descriptor, Set<Component>> snapshots = directories.sstableLister().snapshots(tag).list();
         Refs<SSTableReader> refs = new Refs<>();
         try
         {
@@ -1834,8 +2524,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 {
                     if (logger.isTraceEnabled())
                         logger.trace("using snapshot sstable {}", entries.getKey());
-                    // open offline so we don't modify components or track hotness.
-                    sstable = SSTableReader.open(entries.getKey(), entries.getValue(), metadata, true, true);
+                    // open without tracking hotness
+                    sstable = SSTableReader.open(entries.getKey(), entries.getValue(), metadata, partitioner, true, false);
                     refs.tryRef(sstable);
                     // release the self ref as we never add the snapshot sstable to DataTracker where it is otherwise released
                     sstable.selfRef().release();
@@ -1846,7 +2536,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 }
             }
         }
-        catch (FSReadError | RuntimeException e)
+        catch (IOException | RuntimeException e)
         {
             // In case one of the snapshot sstables fails to open,
             // we must release the references to the ones we opened so far
@@ -1863,42 +2553,27 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public Set<SSTableReader> snapshot(String snapshotName)
     {
-        return snapshot(snapshotName, false);
-    }
-
-    /**
-     * Take a snap shot of this columnfamily store.
-     *
-     * @param snapshotName the name of the associated with the snapshot
-     * @param skipFlush Skip blocking flush of memtable
-     */
-    public Set<SSTableReader> snapshot(String snapshotName, boolean skipFlush)
-    {
-        return snapshot(snapshotName, null, false, skipFlush);
+        return snapshot(snapshotName, null, false);
     }
 
 
     /**
      * @param ephemeral If this flag is set to true, the snapshot will be cleaned up during next startup
-     * @param skipFlush Skip blocking flush of memtable
      */
-    public Set<SSTableReader> snapshot(String snapshotName, Predicate<SSTableReader> predicate, boolean ephemeral, boolean skipFlush)
+    public Set<SSTableReader> snapshot(String snapshotName, Predicate<SSTableReader> predicate, boolean ephemeral)
     {
-        if (!skipFlush)
-        {
-            forceBlockingFlush();
-        }
+        forceBlockingFlush();
         return snapshotWithoutFlush(snapshotName, predicate, ephemeral);
     }
 
     public boolean snapshotExists(String snapshotName)
     {
-        return getDirectories().snapshotExists(snapshotName);
+        return directories.snapshotExists(snapshotName);
     }
 
     public long getSnapshotCreationTime(String snapshotName)
     {
-        return getDirectories().snapshotCreationTime(snapshotName);
+        return directories.snapshotCreationTime(snapshotName);
     }
 
     /**
@@ -1909,7 +2584,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public void clearSnapshot(String snapshotName)
     {
-        List<File> snapshotDirs = getDirectories().getCFDirectories();
+        List<File> snapshotDirs = directories.getCFDirectories();
         Directories.clearSnapshot(snapshotName, snapshotDirs);
     }
     /**
@@ -1917,33 +2592,39 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @return  Return a map of all snapshots to space being used
      * The pair for a snapshot has true size and size on disk.
      */
-    public Map<String, Directories.SnapshotSizeDetails> getSnapshotDetails()
+    public Map<String, Pair<Long,Long>> getSnapshotDetails()
     {
-        return getDirectories().getSnapshotDetails();
+        return directories.getSnapshotDetails();
+    }
+
+    public boolean hasUnreclaimedSpace()
+    {
+        return metric.liveDiskSpaceUsed.getCount() < metric.totalDiskSpaceUsed.getCount();
     }
 
     /**
-     * @return the cached partition for @param key if it is already present in the cache.
-     * Not that this will not readAndCache the parition if it is not present, nor
+     * @return the cached row for @param key if it is already present in the cache.
+     * That is, unlike getThroughCache, it will not readAndCache the row if it is not present, nor
      * are these calls counted in cache statistics.
      *
-     * Note that this WILL cause deserialization of a SerializingCache partition, so if all you
-     * need to know is whether a partition is present or not, use containsCachedParition instead.
+     * Note that this WILL cause deserialization of a SerializingCache row, so if all you
+     * need to know is whether a row is present or not, use containsCachedRow instead.
      */
-    public CachedPartition getRawCachedPartition(DecoratedKey key)
+    public ColumnFamily getRawCachedRow(DecoratedKey key)
     {
         if (!isRowCacheEnabled())
             return null;
-        IRowCacheEntry cached = CacheService.instance.rowCache.getInternal(new RowCacheKey(metadata(), key));
-        return cached == null || cached instanceof RowCacheSentinel ? null : (CachedPartition)cached;
+
+        IRowCacheEntry cached = CacheService.instance.rowCache.getInternal(new RowCacheKey(metadata.ksAndCFName, key));
+        return cached == null || cached instanceof RowCacheSentinel ? null : (ColumnFamily)cached;
     }
 
     private void invalidateCaches()
     {
-        CacheService.instance.invalidateKeyCacheForCf(metadata());
-        CacheService.instance.invalidateRowCacheForCf(metadata());
-        if (metadata().isCounter())
-            CacheService.instance.invalidateCounterCacheForCf(metadata());
+        CacheService.instance.invalidateKeyCacheForCf(metadata.ksAndCFName);
+        CacheService.instance.invalidateRowCacheForCf(metadata.ksAndCFName);
+        if (metadata.isCounter())
+            CacheService.instance.invalidateCounterCacheForCf(metadata.ksAndCFName);
     }
 
     public int invalidateRowCache(Collection<Bounds<Token>> boundsToInvalidate)
@@ -1953,13 +2634,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
              keyIter.hasNext(); )
         {
             RowCacheKey key = keyIter.next();
-            DecoratedKey dk = decorateKey(ByteBuffer.wrap(key.key));
-            if (key.sameTable(metadata()) && Bounds.isInBounds(dk.getToken(), boundsToInvalidate))
+            DecoratedKey dk = partitioner.decorateKey(ByteBuffer.wrap(key.key));
+            if (key.ksAndCFName.equals(metadata.ksAndCFName) && Bounds.isInBounds(dk.getToken(), boundsToInvalidate))
             {
-                invalidateCachedPartition(dk);
+                invalidateCachedRow(dk);
                 invalidatedKeys++;
             }
         }
+
         return invalidatedKeys;
     }
 
@@ -1970,8 +2652,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
              keyIter.hasNext(); )
         {
             CounterCacheKey key = keyIter.next();
-            DecoratedKey dk = decorateKey(key.partitionKey());
-            if (key.sameTable(metadata()) && Bounds.isInBounds(dk.getToken(), boundsToInvalidate))
+            DecoratedKey dk = partitioner.decorateKey(ByteBuffer.wrap(key.partitionKey));
+            if (key.ksAndCFName.equals(metadata.ksAndCFName) && Bounds.isInBounds(dk.getToken(), boundsToInvalidate))
             {
                 CacheService.instance.counterCache.remove(key);
                 invalidatedKeys++;
@@ -1983,36 +2665,37 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     /**
      * @return true if @param key is contained in the row cache
      */
-    public boolean containsCachedParition(DecoratedKey key)
+    public boolean containsCachedRow(DecoratedKey key)
     {
-        return CacheService.instance.rowCache.getCapacity() != 0 && CacheService.instance.rowCache.containsKey(new RowCacheKey(metadata(), key));
+        return CacheService.instance.rowCache.getCapacity() != 0 && CacheService.instance.rowCache.containsKey(new RowCacheKey(metadata.ksAndCFName, key));
     }
 
-    public void invalidateCachedPartition(RowCacheKey key)
+    public void invalidateCachedRow(RowCacheKey key)
     {
         CacheService.instance.rowCache.remove(key);
     }
 
-    public void invalidateCachedPartition(DecoratedKey key)
+    public void invalidateCachedRow(DecoratedKey key)
     {
-        if (!isRowCacheEnabled())
-            return;
+        UUID cfId = Schema.instance.getId(keyspace.getName(), this.name);
+        if (cfId == null)
+            return; // secondary index
 
-        invalidateCachedPartition(new RowCacheKey(metadata(), key));
+        invalidateCachedRow(new RowCacheKey(metadata.ksAndCFName, key));
     }
 
-    public ClockAndCount getCachedCounter(ByteBuffer partitionKey, Clustering clustering, ColumnMetadata column, CellPath path)
+    public ClockAndCount getCachedCounter(ByteBuffer partitionKey, CellName cellName)
     {
         if (CacheService.instance.counterCache.getCapacity() == 0L) // counter cache disabled.
             return null;
-        return CacheService.instance.counterCache.get(CounterCacheKey.create(metadata(), partitionKey, clustering, column, path));
+        return CacheService.instance.counterCache.get(CounterCacheKey.create(metadata.ksAndCFName, partitionKey, cellName));
     }
 
-    public void putCachedCounter(ByteBuffer partitionKey, Clustering clustering, ColumnMetadata column, CellPath path, ClockAndCount clockAndCount)
+    public void putCachedCounter(ByteBuffer partitionKey, CellName cellName, ClockAndCount clockAndCount)
     {
         if (CacheService.instance.counterCache.getCapacity() == 0L) // counter cache disabled.
             return;
-        CacheService.instance.counterCache.put(CounterCacheKey.create(metadata(), partitionKey, clustering, column, path), clockAndCount);
+        CacheService.instance.counterCache.put(CounterCacheKey.create(metadata.ksAndCFName, partitionKey, cellName), clockAndCount);
     }
 
     public void forceMajorCompaction() throws InterruptedException, ExecutionException
@@ -2020,14 +2703,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         forceMajorCompaction(false);
     }
 
+
     public void forceMajorCompaction(boolean splitOutput) throws InterruptedException, ExecutionException
     {
         CompactionManager.instance.performMaximal(this, splitOutput);
-    }
-
-    public void forceCompactionForTokenRange(Collection<Range<Token>> tokenRanges) throws ExecutionException, InterruptedException
-    {
-        CompactionManager.instance.forceCompactionForTokenRange(this, tokenRanges);
     }
 
     public static Iterable<ColumnFamilyStore> all()
@@ -2042,7 +2721,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public Iterable<DecoratedKey> keySamples(Range<Token> range)
     {
-        try (RefViewFragment view = selectAndReference(View.selectFunction(SSTableSet.CANONICAL)))
+        try (RefViewFragment view = selectAndReference(CANONICAL_SSTABLES))
         {
             Iterable<DecoratedKey>[] samples = new Iterable[view.sstables.size()];
             int i = 0;
@@ -2056,7 +2735,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public long estimatedKeysForRange(Range<Token> range)
     {
-        try (RefViewFragment view = selectAndReference(View.selectFunction(SSTableSet.CANONICAL)))
+        try (RefViewFragment view = selectAndReference(CANONICAL_SSTABLES))
         {
             long count = 0;
             for (SSTableReader sstable : view.sstables)
@@ -2079,10 +2758,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             {
                 public Void call()
                 {
-                    cfs.data.reset(new Memtable(new AtomicReference<>(CommitLogPosition.NONE), cfs));
+                    cfs.data.reset(new Memtable(new AtomicReference<>(ReplayPosition.NONE), cfs));
+                    cfs.getCompactionStrategy().shutdown();
+                    cfs.getCompactionStrategy().startup();
                     return null;
                 }
-            }, true, false);
+            }, true);
         }
     }
 
@@ -2091,6 +2772,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public void truncateBlocking()
     {
+        truncateBlocking(DatabaseDescriptor.isAutoSnapshot());
+    }
+
+    /**
+     * Truncate deletes the column family's data with no expensive tombstone creation,
+     * optionally snapshotting the data.
+     *
+     * @param takeSnapshot whether or not to take a snapshot <code>true</code> if snapshot should be taken,
+     *                     <code>false</code> otherwise
+     */
+    public void truncateBlocking(final boolean takeSnapshot)
+    {
         // We have two goals here:
         // - truncate should delete everything written before truncate was invoked
         // - but not delete anything that isn't part of the snapshot we create.
@@ -2098,39 +2791,37 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // recording the timestamp IN BETWEEN those actions. Any sstables created
         // with this timestamp or greater time, will not be marked for delete.
         //
-        // Bonus complication: since we store commit log segment position in sstable metadata,
+        // Bonus complication: since we store replay position in sstable metadata,
         // truncating those sstables means we will replay any CL segments from the
         // beginning if we restart before they [the CL segments] are discarded for
         // normal reasons post-truncate.  To prevent this, we store truncation
         // position in the System keyspace.
-        logger.info("Truncating {}.{}", keyspace.getName(), name);
+        logger.trace("truncating {}", name);
 
         final long truncatedAt;
-        final CommitLogPosition replayAfter;
+        final ReplayPosition replayAfter;
 
-        if (keyspace.getMetadata().params.durableWrites || DatabaseDescriptor.isAutoSnapshot())
+        if (keyspace.getMetadata().durableWrites || takeSnapshot)
         {
             replayAfter = forceBlockingFlush();
-            viewManager.forceBlockingFlush();
         }
         else
         {
             // just nuke the memtable data w/o writing to disk first
-            viewManager.dumpMemtables();
-            try
+            Future<ReplayPosition> replayAfterFuture;
+            synchronized (data)
             {
-                replayAfter = dumpMemtable().get();
+                final Flush flush = new Flush(true);
+                flushExecutor.execute(flush);
+                replayAfterFuture = postFlushExecutor.submit(flush.postFlush);
             }
-            catch (Exception e)
-            {
-                throw new RuntimeException(e);
-            }
+            replayAfter = FBUtilities.waitOnFuture(replayAfterFuture);
         }
 
         long now = System.currentTimeMillis();
         // make sure none of our sstables are somehow in the future (clock drift, perhaps)
         for (ColumnFamilyStore cfs : concatWithIndexes())
-            for (SSTableReader sstable : cfs.getLiveSSTables())
+            for (SSTableReader sstable : cfs.data.getSSTables())
                 now = Math.max(now, sstable.maxDataAge);
         truncatedAt = now;
 
@@ -2141,13 +2832,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 logger.debug("Discarding sstable data for truncated CF + indexes");
                 data.notifyTruncated(truncatedAt);
 
-                if (DatabaseDescriptor.isAutoSnapshot())
-                    snapshot(Keyspace.getTimestampedSnapshotNameWithPrefix(name, SNAPSHOT_TRUNCATE_PREFIX));
+                if (takeSnapshot)
+                    snapshot(Keyspace.getTimestampedSnapshotName(name));
 
                 discardSSTables(truncatedAt);
 
-                indexManager.truncateAllIndexesBlocking(truncatedAt);
-                viewManager.truncateBlocking(replayAfter, truncatedAt);
+                for (SecondaryIndex index : indexManager.getIndexes())
+                    index.truncateBlocking(truncatedAt);
 
                 SystemKeyspace.saveTruncationRecord(ColumnFamilyStore.this, truncatedAt, replayAfter);
                 logger.trace("cleaning out row cache");
@@ -2155,68 +2846,33 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
         };
 
-        runWithCompactionsDisabled(Executors.callable(truncateRunnable), true, true);
-        logger.info("Truncate of {}.{} is complete", keyspace.getName(), name);
+        runWithCompactionsDisabled(Executors.callable(truncateRunnable), true);
+        logger.trace("truncate complete");
     }
 
-    /**
-     * Drops current memtable without flushing to disk. This should only be called when truncating a column family which is not durable.
-     */
-    public Future<CommitLogPosition> dumpMemtable()
-    {
-        synchronized (data)
-        {
-            final Flush flush = new Flush(true);
-            flushExecutor.execute(flush);
-            postFlushExecutor.execute(flush.postFlushTask);
-            return flush.postFlushTask;
-        }
-    }
-
-    public <V> V runWithCompactionsDisabled(Callable<V> callable, boolean interruptValidation, boolean interruptViews)
-    {
-        return runWithCompactionsDisabled(callable, (sstable) -> true, interruptValidation, interruptViews, true);
-    }
-
-    /**
-     * Runs callable with compactions paused and compactions including sstables matching sstablePredicate stopped
-     *
-     * @param callable what to do when compactions are paused
-     * @param sstablesPredicate which sstables should we cancel compactions for
-     * @param interruptValidation if we should interrupt validation compactions
-     * @param interruptViews if we should interrupt view compactions
-     * @param interruptIndexes if we should interrupt compactions on indexes. NOTE: if you set this to true your sstablePredicate
-     *                         must be able to handle LocalPartitioner sstables!
-     */
-    public <V> V runWithCompactionsDisabled(Callable<V> callable, Predicate<SSTableReader> sstablesPredicate, boolean interruptValidation, boolean interruptViews, boolean interruptIndexes)
+    public <V> V runWithCompactionsDisabled(Callable<V> callable, boolean interruptValidation)
     {
         // synchronize so that concurrent invocations don't re-enable compactions partway through unexpectedly,
         // and so we only run one major compaction at a time
         synchronized (this)
         {
-            logger.trace("Cancelling in-progress compactions for {}", metadata.name);
-            Iterable<ColumnFamilyStore> toInterruptFor = interruptIndexes
-                                                         ? concatWithIndexes()
-                                                         : Collections.singleton(this);
+            logger.trace("Cancelling in-progress compactions for {}", metadata.cfName);
 
-            toInterruptFor = interruptViews
-                             ? Iterables.concat(toInterruptFor, viewManager.allViewsCfs())
-                             : toInterruptFor;
-
-            for (ColumnFamilyStore cfs : toInterruptFor)
-                cfs.getCompactionStrategyManager().pause();
+            Iterable<ColumnFamilyStore> selfWithIndexes = concatWithIndexes();
+            for (ColumnFamilyStore cfs : selfWithIndexes)
+                cfs.getCompactionStrategy().pause();
             try
             {
                 // interrupt in-progress compactions
-                CompactionManager.instance.interruptCompactionForCFs(toInterruptFor, sstablesPredicate, interruptValidation);
-                CompactionManager.instance.waitForCessation(toInterruptFor, sstablesPredicate);
+                CompactionManager.instance.interruptCompactionForCFs(selfWithIndexes, interruptValidation);
+                CompactionManager.instance.waitForCessation(selfWithIndexes);
 
                 // doublecheck that we finished, instead of timing out
-                for (ColumnFamilyStore cfs : toInterruptFor)
+                for (ColumnFamilyStore cfs : selfWithIndexes)
                 {
-                    if (cfs.getTracker().getCompacting().stream().anyMatch(sstablesPredicate))
+                    if (!cfs.getTracker().getCompacting().isEmpty())
                     {
-                        logger.warn("Unable to cancel in-progress compactions for {}.  Perhaps there is an unusually large row in progress somewhere, or the system is simply overloaded.", metadata.name);
+                        logger.warn("Unable to cancel in-progress compactions for {}.  Perhaps there is an unusually large row in progress somewhere, or the system is simply overloaded.", metadata.cfName);
                         return null;
                     }
                 }
@@ -2234,8 +2890,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
             finally
             {
-                for (ColumnFamilyStore cfs : toInterruptFor)
-                    cfs.getCompactionStrategyManager().resume();
+                for (ColumnFamilyStore cfs : selfWithIndexes)
+                    cfs.getCompactionStrategy().resume();
             }
         }
     }
@@ -2244,18 +2900,19 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         Callable<LifecycleTransaction> callable = new Callable<LifecycleTransaction>()
         {
-            public LifecycleTransaction call()
+            public LifecycleTransaction call() throws Exception
             {
                 assert data.getCompacting().isEmpty() : data.getCompacting();
-                Iterable<SSTableReader> sstables = getLiveSSTables();
+                Iterable<SSTableReader> sstables = getPermittedToCompactSSTables();
                 sstables = AbstractCompactionStrategy.filterSuspectSSTables(sstables);
+                sstables = ImmutableList.copyOf(sstables);
                 LifecycleTransaction modifier = data.tryModify(sstables, operationType);
                 assert modifier != null: "something marked things compacting while compactions are disabled";
                 return modifier;
             }
         };
 
-        return runWithCompactionsDisabled(callable, false, false);
+        return runWithCompactionsDisabled(callable, false);
     }
 
 
@@ -2272,7 +2929,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         // we don't use CompactionStrategy.pause since we don't want users flipping that on and off
         // during runWithCompactionsDisabled
-        compactionStrategyManager.disable();
+        this.compactionStrategyWrapper.disable();
     }
 
     public void enableAutoCompaction()
@@ -2287,7 +2944,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     @VisibleForTesting
     public void enableAutoCompaction(boolean waitForFutures)
     {
-        compactionStrategyManager.enable();
+        this.compactionStrategyWrapper.enable();
         List<Future<?>> futures = CompactionManager.instance.submitBackground(this);
         if (waitForFutures)
             FBUtilities.waitOnFutures(futures);
@@ -2295,7 +2952,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public boolean isAutoCompactionDisabled()
     {
-        return !this.compactionStrategyManager.isEnabled();
+        return !this.compactionStrategyWrapper.isEnabled();
     }
 
     /*
@@ -2307,33 +2964,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
        - get/set memtime
      */
 
-    public CompactionStrategyManager getCompactionStrategyManager()
+    public AbstractCompactionStrategy getCompactionStrategy()
     {
-        return compactionStrategyManager;
-    }
-
-    public void setCrcCheckChance(double crcCheckChance)
-    {
-        try
-        {
-            TableParams.builder().crcCheckChance(crcCheckChance).build().validate();
-            for (ColumnFamilyStore cfs : concatWithIndexes())
-            {
-                cfs.crcCheckChance.set(crcCheckChance);
-                for (SSTableReader sstable : cfs.getSSTables(SSTableSet.LIVE))
-                    sstable.setCrcCheckChance(crcCheckChance);
-            }
-        }
-        catch (ConfigurationException e)
-        {
-            throw new IllegalArgumentException(e.getMessage());
-        }
-    }
-
-
-    public Double getCrcCheckChance()
-    {
-        return crcCheckChance.value();
+        return compactionStrategyWrapper;
     }
 
     public void setCompactionThresholds(int minThreshold, int maxThreshold)
@@ -2380,94 +3013,53 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     // End JMX get/set.
 
-    public int getMeanEstimatedCellPerPartitionCount()
+    public int getMeanColumns()
     {
         long sum = 0;
         long count = 0;
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
+        for (SSTableReader sstable : getSSTables())
         {
-            long n = sstable.getEstimatedCellPerPartitionCount().count();
-            sum += sstable.getEstimatedCellPerPartitionCount().mean() * n;
+            long n = sstable.getEstimatedColumnCount().count();
+            sum += sstable.getEstimatedColumnCount().mean() * n;
             count += n;
         }
         return count > 0 ? (int) (sum / count) : 0;
     }
 
-    public double getMeanPartitionSize()
-    {
-        long sum = 0;
-        long count = 0;
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
-        {
-            long n = sstable.getEstimatedPartitionSize().count();
-            sum += sstable.getEstimatedPartitionSize().mean() * n;
-            count += n;
-        }
-        return count > 0 ? sum * 1.0 / count : 0;
-    }
-
-    public int getMeanRowCount()
-    {
-        long totalRows = 0;
-        long totalPartitions = 0;
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
-        {
-            totalPartitions += sstable.getEstimatedPartitionSize().count();
-            totalRows += sstable.getTotalRows();
-        }
-
-        return totalPartitions > 0 ? (int) (totalRows / totalPartitions) : 0;
-    }
-
     public long estimateKeys()
     {
         long n = 0;
-        for (SSTableReader sstable : getSSTables(SSTableSet.CANONICAL))
+        for (SSTableReader sstable : getSSTables())
             n += sstable.estimatedKeys();
         return n;
-    }
-
-    public IPartitioner getPartitioner()
-    {
-        return metadata().partitioner;
-    }
-
-    public DecoratedKey decorateKey(ByteBuffer key)
-    {
-        return getPartitioner().decorateKey(key);
     }
 
     /** true if this CFS contains secondary index data */
     public boolean isIndex()
     {
-        return metadata().isIndex();
+        return partitioner instanceof LocalPartitioner;
     }
 
     public Iterable<ColumnFamilyStore> concatWithIndexes()
     {
         // we return the main CFS first, which we rely on for simplicity in switchMemtable(), for getting the
-        // latest commit log segment position
-        return Iterables.concat(Collections.singleton(this), indexManager.getAllIndexColumnFamilyStores());
+        // latest replay position
+        return Iterables.concat(Collections.singleton(this), indexManager.getIndexesBackedByCfs());
     }
 
     public List<String> getBuiltIndexes()
     {
-       return indexManager.getBuiltIndexNames();
+       return indexManager.getBuiltIndexes();
     }
 
     public int getUnleveledSSTables()
     {
-        return compactionStrategyManager.getUnleveledSSTables();
+        return this.compactionStrategyWrapper.getUnleveledSSTables();
     }
 
     public int[] getSSTableCountPerLevel()
     {
-        return compactionStrategyManager.getSSTableCountPerLevel();
-    }
-
-    public int getLevelFanoutSize()
-    {
-        return compactionStrategyManager.getLevelFanoutSize();
+        return compactionStrategyWrapper.getSSTableCountPerLevel();
     }
 
     public static class ViewFragment
@@ -2505,25 +3097,23 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public boolean isEmpty()
     {
-        return data.getView().isEmpty();
+        View view = data.getView();
+        return view.sstables.isEmpty() && view.getCurrentMemtable().getOperations() == 0 && view.liveMemtables.size() <= 1 && view.flushingMemtables.size() == 0;
     }
 
     public boolean isRowCacheEnabled()
     {
-
-        boolean retval = metadata().params.caching.cacheRows() && CacheService.instance.rowCache.getCapacity() > 0;
-        assert(!retval || !isIndex());
-        return retval;
+        return metadata.getCaching().rowCache.isEnabled() && CacheService.instance.rowCache.getCapacity() > 0;
     }
 
     public boolean isCounterCacheEnabled()
     {
-        return metadata().isCounter() && CacheService.instance.counterCache.getCapacity() > 0;
+        return metadata.isCounter() && CacheService.instance.counterCache.getCapacity() > 0;
     }
 
     public boolean isKeyCacheEnabled()
     {
-        return metadata().params.caching.cacheKeys() && CacheService.instance.keyCache.getCapacity() > 0;
+        return metadata.getCaching().keyCache.isEnabled() && CacheService.instance.keyCache.getCapacity() > 0;
     }
 
     /**
@@ -2540,7 +3130,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         List<SSTableReader> truncatedSSTables = new ArrayList<>();
 
-        for (SSTableReader sstable : getSSTables(SSTableSet.LIVE))
+        for (SSTableReader sstable : getSSTables())
         {
             if (!sstable.newSince(truncatedAt))
                 truncatedSSTables.add(sstable);
@@ -2556,36 +3146,72 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         long allColumns = 0;
         int localTime = (int)(System.currentTimeMillis()/1000);
 
-        for (SSTableReader sstable : getSSTables(SSTableSet.LIVE))
+        for (SSTableReader sstable : getSSTables())
         {
-            allDroppable += sstable.getDroppableTombstonesBefore(localTime - metadata().params.gcGraceSeconds);
-            allColumns += sstable.getEstimatedCellPerPartitionCount().mean() * sstable.getEstimatedCellPerPartitionCount().count();
+            allDroppable += sstable.getDroppableTombstonesBefore(localTime - sstable.metadata.getGcGraceSeconds());
+            allColumns += sstable.getEstimatedColumnCount().mean() * sstable.getEstimatedColumnCount().count();
         }
         return allColumns > 0 ? allDroppable / allColumns : 0;
     }
 
     public long trueSnapshotsSize()
     {
-        return getDirectories().trueSnapshotsSize();
+        return directories.trueSnapshotsSize();
     }
 
+    @VisibleForTesting
+    void resetFileIndexGenerator()
+    {
+        fileIndexGenerator.set(0);
+    }
+
+    // returns the "canonical" version of any current sstable, i.e. if an sstable is being replaced and is only partially
+    // visible to reads, this sstable will be returned as its original entirety, and its replacement will not be returned
+    // (even if it completely replaces it)
+    public static final Function<View, List<SSTableReader>> CANONICAL_SSTABLES = new Function<View, List<SSTableReader>>()
+    {
+        public List<SSTableReader> apply(View view)
+        {
+            List<SSTableReader> sstables = new ArrayList<>();
+            for (SSTableReader sstable : view.compacting)
+                if (sstable.openReason != SSTableReader.OpenReason.EARLY)
+                    sstables.add(sstable);
+            for (SSTableReader sstable : view.sstables)
+                if (!view.compacting.contains(sstable) && sstable.openReason != SSTableReader.OpenReason.EARLY)
+                    sstables.add(sstable);
+            return sstables;
+        }
+    };
+
+    public static final Function<View, List<SSTableReader>> UNREPAIRED_SSTABLES = new Function<View, List<SSTableReader>>()
+    {
+        public List<SSTableReader> apply(View view)
+        {
+            List<SSTableReader> sstables = new ArrayList<>();
+            for (SSTableReader sstable : CANONICAL_SSTABLES.apply(view))
+            {
+                if (!sstable.isRepaired())
+                    sstables.add(sstable);
+            }
+            return sstables;
+        }
+    };
+
     /**
-     * Returns a ColumnFamilyStore by id if it exists, null otherwise
+     * Returns a ColumnFamilyStore by cfId if it exists, null otherwise
      * Differently from others, this method does not throw exception if the table does not exist.
      */
-    public static ColumnFamilyStore getIfExists(TableId id)
+    public static ColumnFamilyStore getIfExists(UUID cfId)
     {
-        TableMetadata metadata = Schema.instance.getTableMetadata(id);
-        if (metadata == null)
+        Pair<String, String> kscf = Schema.instance.getCF(cfId);
+        if (kscf == null)
             return null;
 
-        Keyspace keyspace = Keyspace.open(metadata.keyspace);
+        Keyspace keyspace = Keyspace.open(kscf.left);
         if (keyspace == null)
             return null;
 
-        return keyspace.hasColumnFamilyStore(id)
-             ? keyspace.getColumnFamilyStore(id)
-             : null;
+        return keyspace.getColumnFamilyStore(cfId);
     }
 
     /**
@@ -2601,42 +3227,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         if (keyspace == null)
             return null;
 
-        TableMetadata table = Schema.instance.getTableMetadata(ksName, cfName);
-        if (table == null)
+        UUID id = Schema.instance.getId(ksName, cfName);
+        if (id == null)
             return null;
 
-        return keyspace.getColumnFamilyStore(table.id);
-    }
-
-    public static TableMetrics metricsFor(TableId tableId)
-    {
-        return getIfExists(tableId).metric;
-    }
-
-    public DiskBoundaries getDiskBoundaries()
-    {
-        return diskBoundaryManager.getDiskBoundaries(this);
-    }
-
-    public void invalidateDiskBoundaries()
-    {
-        diskBoundaryManager.invalidate();
-    }
-
-    @Override
-    public void setNeverPurgeTombstones(boolean value)
-    {
-        if (neverPurgeTombstones != value)
-            logger.info("Changing neverPurgeTombstones for {}.{} from {} to {}", keyspace.getName(), getTableName(), neverPurgeTombstones, value);
-        else
-            logger.info("Not changing neverPurgeTombstones for {}.{}, it is {}", keyspace.getName(), getTableName(), neverPurgeTombstones);
-
-        neverPurgeTombstones = value;
-    }
-
-    @Override
-    public boolean getNeverPurgeTombstones()
-    {
-        return neverPurgeTombstones;
+        return keyspace.getColumnFamilyStore(id);
     }
 }

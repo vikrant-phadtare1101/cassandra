@@ -34,10 +34,6 @@ public final class WindowsTimer
         {
             Native.register("winmm");
         }
-        catch (NoClassDefFoundError e)
-        {
-            logger.warn("JNA not found. winmm.dll cannot be registered. Performance will be negatively impacted on this node.");
-        }
         catch (Exception e)
         {
             logger.error("Failed to register winmm.dll. Performance will be negatively impacted on this node.");
@@ -55,7 +51,7 @@ public final class WindowsTimer
             return;
         assert(period > 0);
         if (timeBeginPeriod(period) != 0)
-            logger.warn("Failed to set timer to : {}. Performance will be degraded.", period);
+            logger.warn("Failed to set timer to : " + period + ". Performance will be degraded.");
     }
 
     public static void endTimerPeriod(int period)
@@ -64,6 +60,6 @@ public final class WindowsTimer
             return;
         assert(period > 0);
         if (timeEndPeriod(period) != 0)
-            logger.warn("Failed to end accelerated timer period. System timer will remain set to: {} ms.", period);
+            logger.warn("Failed to end accelerated timer period. System timer will remain set to: " + period + " ms.");
     }
 }

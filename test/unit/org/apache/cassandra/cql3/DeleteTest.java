@@ -17,17 +17,26 @@
  */
 package org.apache.cassandra.cql3;
 
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
 
-import com.datastax.driver.core.ConsistencyLevel;
+import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.Session;
+import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.service.EmbeddedCassandraService;
+import org.junit.Assert;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.junit.Test;
 
-public class DeleteTest extends CQLTester
+public class DeleteTest extends SchemaLoader
 {
+    private static EmbeddedCassandraService cassandra;
+
+    private static Cluster cluster;
+    private static Session session;
     private static PreparedStatement pstmtI;
     private static PreparedStatement pstmtU;
     private static PreparedStatement pstmtD;
@@ -37,13 +46,16 @@ public class DeleteTest extends CQLTester
     private static PreparedStatement pstmt4;
     private static PreparedStatement pstmt5;
 
-    @Before
-    public void prepare() throws Exception
+    @BeforeClass
+    public static void setup() throws Exception
     {
-        // Schema.instance.clear();
+        Schema.instance.clear();
 
-        Session session = sessionNet();
-        session.getCluster().getConfiguration().getQueryOptions().setConsistencyLevel(ConsistencyLevel.ONE);
+        cassandra = new EmbeddedCassandraService();
+        cassandra.start();
+
+        cluster = Cluster.builder().addContactPoint("127.0.0.1").withPort(DatabaseDescriptor.getNativeTransportPort()).build();
+        session = cluster.connect();
 
         session.execute("drop keyspace if exists junit;");
         session.execute("create keyspace junit WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 2 };");
@@ -93,10 +105,15 @@ public class DeleteTest extends CQLTester
         pstmt5 = session.prepare("select id, cid, inh_c, val from junit.tpc_inherit_c where id=? and cid=?");
     }
 
+    @AfterClass
+    public static void tearDown() throws Exception
+    {
+        cluster.close();
+    }
+
     @Test
     public void lostDeletesTest()
     {
-        Session session = sessionNet();
 
         for (int i = 0; i < 500; i++)
         {
@@ -133,8 +150,6 @@ public class DeleteTest extends CQLTester
     }
 
     private ResultSetFuture[] load() {
-        Session session = sessionNet();
-
         return new ResultSetFuture[]{
                 session.executeAsync(pstmt1.bind(1, 1)),
                 session.executeAsync(pstmt2.bind(1, 1)),

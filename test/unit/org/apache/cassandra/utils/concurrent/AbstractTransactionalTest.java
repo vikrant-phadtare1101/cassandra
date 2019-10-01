@@ -18,21 +18,14 @@
 */
 package org.apache.cassandra.utils.concurrent;
 
-import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
 
-import org.junit.Assert;
-import org.apache.cassandra.config.DatabaseDescriptor;
+import junit.framework.Assert;
 
 @Ignore
 public abstract class AbstractTransactionalTest
 {
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
 
     protected abstract TestableTransaction newTest() throws Exception;
 
@@ -94,29 +87,9 @@ public abstract class AbstractTransactionalTest
         txn = newTest();
         Throwable t = new RuntimeException();
         txn.testing.prepareToCommit();
-
-        if (txn.commitCanThrow())
-        {
-            try
-            {
-                txn.testing.commit(t);
-            }
-            catch (Throwable tt)
-            {
-                Assert.assertEquals(t, tt);
-            }
-
-            Assert.assertEquals(t, txn.testing.abort(t));
-            Assert.assertEquals(0, t.getSuppressed().length);
-        }
-        else
-        {
-            Assert.assertEquals(t, txn.testing.commit(t));
-            Assert.assertEquals(t, txn.testing.abort(t));
-            Assert.assertTrue(t.getSuppressed()[0] instanceof IllegalStateException);
-        }
-
-
+        Assert.assertEquals(t, txn.testing.commit(t));
+        Assert.assertEquals(t, txn.testing.abort(t));
+        Assert.assertTrue(t.getSuppressed()[0] instanceof IllegalStateException);
     }
 
     @Test
@@ -159,10 +132,5 @@ public abstract class AbstractTransactionalTest
         protected abstract void assertPrepared() throws Exception;
         protected abstract void assertAborted() throws Exception;
         protected abstract void assertCommitted() throws Exception;
-
-        protected boolean commitCanThrow()
-        {
-            return false;
-        }
     }
 }

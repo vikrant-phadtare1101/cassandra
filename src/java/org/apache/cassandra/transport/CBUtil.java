@@ -23,9 +23,9 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -33,19 +33,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.*;
 import io.netty.util.CharsetUtil;
-import io.netty.util.concurrent.FastThreadLocal;
+
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.TypeSizes;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.UUIDGen;
+import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
  * ByteBuf utility methods.
@@ -58,53 +54,17 @@ public abstract class CBUtil
 {
     public static final boolean USE_HEAP_ALLOCATOR = Boolean.getBoolean(Config.PROPERTY_PREFIX + "netty_use_heap_allocator");
     public static final ByteBufAllocator allocator = USE_HEAP_ALLOCATOR ? new UnpooledByteBufAllocator(false) : new PooledByteBufAllocator(true);
-    private static final int UUID_SIZE = 16;
 
-    private final static FastThreadLocal<CharsetDecoder> TL_UTF8_DECODER = new FastThreadLocal<CharsetDecoder>()
+    private CBUtil() {}
+
+    private final static ThreadLocal<CharsetDecoder> decoder = new ThreadLocal<CharsetDecoder>()
     {
         @Override
         protected CharsetDecoder initialValue()
         {
-            return StandardCharsets.UTF_8.newDecoder();
+            return Charset.forName("UTF-8").newDecoder();
         }
     };
-
-    private final static FastThreadLocal<CharBuffer> TL_CHAR_BUFFER = new FastThreadLocal<>();
-
-    private CBUtil() {}
-
-
-    // Taken from Netty's ChannelBuffers.decodeString(). We need to use our own decoder to properly handle invalid
-    // UTF-8 sequences.  See CASSANDRA-8101 for more details.  This can be removed once https://github.com/netty/netty/pull/2999
-    // is resolved in a release used by Cassandra.
-    private static String decodeString(ByteBuffer src) throws CharacterCodingException
-    {
-        // the decoder needs to be reset every time we use it, hence the copy per thread
-        CharsetDecoder theDecoder = TL_UTF8_DECODER.get();
-        theDecoder.reset();
-        CharBuffer dst = TL_CHAR_BUFFER.get();
-        int capacity = (int) ((double) src.remaining() * theDecoder.maxCharsPerByte());
-        if (dst == null)
-        {
-            capacity = Math.max(capacity, 4096);
-            dst = CharBuffer.allocate(capacity);
-            TL_CHAR_BUFFER.set(dst);
-        }
-        else
-        {
-            dst.clear();
-            if (dst.capacity() < capacity)
-            {
-                dst = CharBuffer.allocate(capacity);
-                TL_CHAR_BUFFER.set(dst);
-            }
-        }
-        CoderResult cr = theDecoder.decode(src, dst, true);
-        if (!cr.isUnderflow())
-            cr.throwException();
-
-        return dst.flip().toString();
-    }
 
     private static String readString(ByteBuf cb, int length)
     {
@@ -137,12 +97,34 @@ public abstract class CBUtil
         }
     }
 
+    // Taken from Netty's ChannelBuffers.decodeString(). We need to use our own decoder to properly handle invalid
+    // UTF-8 sequences.  See CASSANDRA-8101 for more details.  This can be removed once https://github.com/netty/netty/pull/2999
+    // is resolved in a release used by Cassandra.
+    private static String decodeString(ByteBuffer src) throws CharacterCodingException
+    {
+        // the decoder needs to be reset every time we use it, hence the copy per thread
+        CharsetDecoder theDecoder = decoder.get();
+        theDecoder.reset();
+
+        final CharBuffer dst = CharBuffer.allocate(
+                (int) ((double) src.remaining() * theDecoder.maxCharsPerByte()));
+
+        CoderResult cr = theDecoder.decode(src, dst, true);
+        if (!cr.isUnderflow())
+            cr.throwException();
+
+        cr = theDecoder.flush(dst);
+        if (!cr.isUnderflow())
+            cr.throwException();
+
+        return dst.flip().toString();
+    }
+
     public static void writeString(String str, ByteBuf cb)
     {
-        int writerIndex = cb.writerIndex();
-        cb.writeShort(0);
-        int written = ByteBufUtil.writeUtf8(cb, str);
-        cb.setShort(writerIndex, written);
+        byte[] bytes = str.getBytes(CharsetUtil.UTF_8);
+        cb.writeShort(bytes.length);
+        cb.writeBytes(bytes);
     }
 
     public static int sizeOfString(String str)
@@ -165,15 +147,14 @@ public abstract class CBUtil
 
     public static void writeLongString(String str, ByteBuf cb)
     {
-        int writerIndex = cb.writerIndex();
-        cb.writeInt(0);
-        int written = ByteBufUtil.writeUtf8(cb, str);
-        cb.setInt(writerIndex, written);
+        byte[] bytes = str.getBytes(CharsetUtil.UTF_8);
+        cb.writeInt(bytes.length);
+        cb.writeBytes(bytes);
     }
 
     public static int sizeOfLongString(String str)
     {
-        return 4 + TypeSizes.encodedUTF8Length(str);
+        return 4 + str.getBytes(CharsetUtil.UTF_8).length;
     }
 
     public static byte[] readBytes(ByteBuf cb)
@@ -276,9 +257,9 @@ public abstract class CBUtil
 
     public static UUID readUUID(ByteBuf cb)
     {
-        ByteBuffer buffer = cb.nioBuffer(cb.readerIndex(), UUID_SIZE);
-        cb.skipBytes(buffer.remaining());
-        return UUIDGen.getUUID(buffer);
+        byte[] bytes = new byte[16];
+        cb.readBytes(bytes);
+        return UUIDGen.getUUID(ByteBuffer.wrap(bytes));
     }
 
     public static void writeUUID(UUID uuid, ByteBuf cb)
@@ -288,7 +269,7 @@ public abstract class CBUtil
 
     public static int sizeOfUUID(UUID uuid)
     {
-        return UUID_SIZE;
+        return 16;
     }
 
     public static List<String> readStringList(ByteBuf cb)
@@ -388,27 +369,17 @@ public abstract class CBUtil
         int length = cb.readInt();
         if (length < 0)
             return null;
+        ByteBuf slice = cb.readSlice(length);
 
-        return ByteBuffer.wrap(readRawBytes(cb, length));
+        return ByteBuffer.wrap(readRawBytes(slice));
     }
 
-    public static ByteBuffer readValueNoCopy(ByteBuf cb)
-    {
-        int length = cb.readInt();
-        if (length < 0)
-            return null;
-
-        ByteBuffer buffer = cb.nioBuffer(cb.readerIndex(), length);
-        cb.skipBytes(length);
-        return buffer;
-    }
-
-    public static ByteBuffer readBoundValue(ByteBuf cb, ProtocolVersion protocolVersion)
+    public static ByteBuffer readBoundValue(ByteBuf cb, int protocolVersion)
     {
         int length = cb.readInt();
         if (length < 0)
         {
-            if (protocolVersion.isSmallerThan(ProtocolVersion.V4)) // backward compatibility for pre-version 4
+            if (protocolVersion < 4) // backward compatibility for pre-version 4
                 return null;
             if (length == -1)
                 return null;
@@ -417,7 +388,9 @@ public abstract class CBUtil
             else
                 throw new ProtocolException("Invalid ByteBuf length " + length);
         }
-        return ByteBuffer.wrap(readRawBytes(cb, length));
+        ByteBuf slice = cb.readSlice(length);
+
+        return ByteBuffer.wrap(readRawBytes(slice));
     }
 
     public static void writeValue(byte[] bytes, ByteBuf cb)
@@ -457,14 +430,7 @@ public abstract class CBUtil
         return 4 + (bytes == null ? 0 : bytes.remaining());
     }
 
-    // The size of serializing a value given the size (in bytes) of said value. The provided size can be negative
-    // to indicate that the value is null.
-    public static int sizeOfValue(int valueSize)
-    {
-        return 4 + (valueSize < 0 ? 0 : valueSize);
-    }
-
-    public static List<ByteBuffer> readValueList(ByteBuf cb, ProtocolVersion protocolVersion)
+    public static List<ByteBuffer> readValueList(ByteBuf cb, int protocolVersion)
     {
         int size = cb.readUnsignedShort();
         if (size == 0)
@@ -491,7 +457,7 @@ public abstract class CBUtil
         return size;
     }
 
-    public static Pair<List<String>, List<ByteBuffer>> readNameAndValueList(ByteBuf cb, ProtocolVersion protocolVersion)
+    public static Pair<List<String>, List<ByteBuffer>> readNameAndValueList(ByteBuf cb, int protocolVersion)
     {
         int size = cb.readUnsignedShort();
         if (size == 0)
@@ -509,7 +475,7 @@ public abstract class CBUtil
 
     public static InetSocketAddress readInet(ByteBuf cb)
     {
-        int addrSize = cb.readByte() & 0xFF;
+        int addrSize = cb.readByte();
         byte[] address = new byte[addrSize];
         cb.readBytes(address);
         int port = cb.readInt();
@@ -538,52 +504,14 @@ public abstract class CBUtil
         return 1 + address.length + 4;
     }
 
-    public static InetAddress readInetAddr(ByteBuf cb)
-    {
-        int addressSize = cb.readByte() & 0xFF;
-        byte[] address = new byte[addressSize];
-        cb.readBytes(address);
-        try
-        {
-            return InetAddress.getByAddress(address);
-        }
-        catch (UnknownHostException e)
-        {
-            throw new ProtocolException("Invalid IP address while deserializing inet address");
-        }
-    }
-
-    public static void writeInetAddr(InetAddress inetAddr, ByteBuf cb)
-    {
-        byte[] address = inetAddr.getAddress();
-        cb.writeByte(address.length);
-        cb.writeBytes(address);
-    }
-
-    public static int sizeOfInetAddr(InetAddress inetAddr)
-    {
-        return 1 + inetAddr.getAddress().length;
-    }
-
     /*
      * Reads *all* readable bytes from {@code cb} and return them.
      */
     public static byte[] readRawBytes(ByteBuf cb)
     {
-        return readRawBytes(cb, cb.readableBytes());
-    }
-
-    private static byte[] readRawBytes(ByteBuf cb, int length)
-    {
-        byte[] bytes = new byte[length];
+        byte[] bytes = new byte[cb.readableBytes()];
         cb.readBytes(bytes);
         return bytes;
     }
 
-    public static int readUnsignedShort(ByteBuf buf)
-    {
-        int ch1 = buf.readByte() & 0xFF;
-        int ch2 = buf.readByte() & 0xFF;
-        return (ch1 << 8) + (ch2);
-    }
 }

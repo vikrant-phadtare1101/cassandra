@@ -19,10 +19,8 @@
  */
 package org.apache.cassandra.tracing;
 
-import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,44 +29,23 @@ import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.util.concurrent.FastThreadLocal;
 import org.apache.cassandra.concurrent.ExecutorLocal;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.marshal.TimeUUIDType;
-import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataInputPlus;
-import org.apache.cassandra.io.util.DataOutputPlus;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.ParamType;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.UUIDGen;
 
 
 /**
  * A trace session context. Able to track and store trace sessions. A session is usually a user initiated query, and may
- * have multiple local and remote events before it is completed.
+ * have multiple local and remote events before it is completed. All events and sessions are stored at keyspace.
  */
-public abstract class Tracing implements ExecutorLocal<TraceState>
+public class Tracing implements ExecutorLocal<TraceState>
 {
-    public static final IVersionedSerializer<TraceType> traceTypeSerializer = new IVersionedSerializer<TraceType>()
-    {
-        public void serialize(TraceType traceType, DataOutputPlus out, int version) throws IOException
-        {
-            out.write((byte)traceType.ordinal());
-        }
-
-        public TraceType deserialize(DataInputPlus in, int version) throws IOException
-        {
-            return TraceType.deserialize(in.readByte());
-        }
-
-        public long serializedSize(TraceType traceType, int version)
-        {
-            return 1;
-        }
-    };
+    public static final String TRACE_HEADER = "TraceSession";
+    public static final String TRACE_TYPE = "TraceType";
 
     public enum TraceType
     {
@@ -100,35 +77,15 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
         }
     }
 
-    protected static final Logger logger = LoggerFactory.getLogger(Tracing.class);
+    static final Logger logger = LoggerFactory.getLogger(Tracing.class);
 
-    private final InetAddressAndPort localAddress = FBUtilities.getLocalAddressAndPort();
+    private final InetAddress localAddress = FBUtilities.getLocalAddress();
 
-    private final FastThreadLocal<TraceState> state = new FastThreadLocal<>();
+    private final ThreadLocal<TraceState> state = new ThreadLocal<>();
 
-    protected final ConcurrentMap<UUID, TraceState> sessions = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, TraceState> sessions = new ConcurrentHashMap<>();
 
-    public static final Tracing instance;
-
-    static
-    {
-        Tracing tracing = null;
-        String customTracingClass = System.getProperty("cassandra.custom_tracing_class");
-        if (null != customTracingClass)
-        {
-            try
-            {
-                tracing = FBUtilities.construct(customTracingClass, "Tracing");
-                logger.info("Using {} as tracing queries (as requested with -Dcassandra.custom_tracing_class)", customTracingClass);
-            }
-            catch (Exception e)
-            {
-                JVMStabilityInspector.inspectThrowable(e);
-                logger.error(String.format("Cannot use class %s for tracing, ignoring by defaulting to normal tracing", customTracingClass), e);
-            }
-        }
-        instance = null != tracing ? tracing : new TracingImpl();
-    }
+    public static final Tracing instance = new Tracing();
 
     public UUID getSessionId()
     {
@@ -153,37 +110,30 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
      */
     public static boolean isTracing()
     {
-        return instance.get() != null;
+        return instance.state.get() != null;
     }
 
-    public UUID newSession(Map<String,ByteBuffer> customPayload)
+    public UUID newSession()
     {
-        return newSession(
-                TimeUUIDType.instance.compose(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes())),
-                TraceType.QUERY,
-                customPayload);
+        return newSession(TraceType.QUERY);
     }
 
     public UUID newSession(TraceType traceType)
     {
-        return newSession(
-                TimeUUIDType.instance.compose(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes())),
-                traceType,
-                Collections.EMPTY_MAP);
+        return newSession(TimeUUIDType.instance.compose(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes())), traceType);
     }
 
-    public UUID newSession(UUID sessionId, Map<String,ByteBuffer> customPayload)
+    public UUID newSession(UUID sessionId)
     {
-        return newSession(sessionId, TraceType.QUERY, customPayload);
+        return newSession(sessionId, TraceType.QUERY);
     }
 
-    /** This method is intended to be overridden in tracing implementations that need access to the customPayload */
-    protected UUID newSession(UUID sessionId, TraceType traceType, Map<String,ByteBuffer> customPayload)
+    private UUID newSession(UUID sessionId, TraceType traceType)
     {
-        assert get() == null;
+        assert state.get() == null;
 
-        TraceState ts = newTraceState(localAddress, sessionId, traceType);
-        set(ts);
+        TraceState ts = new TraceState(localAddress, sessionId, traceType);
+        state.set(ts);
         sessions.put(sessionId, ts);
 
         return sessionId;
@@ -195,28 +145,29 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
             sessions.remove(state.sessionId);
     }
 
-
     /**
      * Stop the session and record its complete.  Called by coodinator when request is complete.
      */
     public void stopSession()
     {
-        TraceState state = get();
+        TraceState state = this.state.get();
         if (state == null) // inline isTracing to avoid implicit two calls to state.get()
         {
             logger.trace("request complete");
         }
         else
         {
-            stopSessionImpl();
+            final int elapsed = state.elapsed();
+            final ByteBuffer sessionId = state.sessionIdBytes;
+            final int ttl = state.ttl;
+
+            TraceState.executeMutation(TraceKeyspace.makeStopSessionMutation(sessionId, elapsed, ttl));
 
             state.stop();
             sessions.remove(state.sessionId);
-            set(null);
+            this.state.set(null);
         }
     }
-
-    protected abstract void stopSessionImpl();
 
     public TraceState get()
     {
@@ -238,80 +189,57 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
         return begin(request, null, parameters);
     }
 
-    public abstract TraceState begin(String request, InetAddress client, Map<String, String> parameters);
+    public TraceState begin(final String request, final InetAddress client, final Map<String, String> parameters)
+    {
+        assert isTracing();
+
+        final TraceState state = this.state.get();
+        final long startedAt = System.currentTimeMillis();
+        final ByteBuffer sessionId = state.sessionIdBytes;
+        final String command = state.traceType.toString();
+        final int ttl = state.ttl;
+
+        TraceState.executeMutation(TraceKeyspace.makeStartSessionMutation(sessionId, client, parameters, request, startedAt, command, ttl));
+
+        return state;
+    }
 
     /**
      * Determines the tracing context from a message.  Does NOT set the threadlocal state.
-     *
-     * @param header The internode message header
+     * 
+     * @param message The internode message
      */
-    public TraceState initializeFromMessage(final Message.Header header)
+    public TraceState initializeFromMessage(final MessageIn<?> message)
     {
-        final UUID sessionId = header.traceSession();
-        if (sessionId == null)
+        final byte[] sessionBytes = message.parameters.get(TRACE_HEADER);
+
+        if (sessionBytes == null)
             return null;
 
-        TraceState ts = get(sessionId);
+        assert sessionBytes.length == 16;
+        UUID sessionId = UUIDGen.getUUID(ByteBuffer.wrap(sessionBytes));
+        TraceState ts = sessions.get(sessionId);
         if (ts != null && ts.acquireReference())
             return ts;
 
-        TraceType traceType = header.traceType();
+        byte[] tmpBytes;
+        TraceType traceType = TraceType.QUERY;
+        if ((tmpBytes = message.parameters.get(TRACE_TYPE)) != null)
+            traceType = TraceType.deserialize(tmpBytes[0]);
 
-        if (header.verb.isResponse())
+        if (message.verb == MessagingService.Verb.REQUEST_RESPONSE)
         {
             // received a message for a session we've already closed out.  see CASSANDRA-5668
-            return new ExpiredTraceState(newTraceState(header.from, sessionId, traceType));
+            return new ExpiredTraceState(sessionId, traceType);
         }
         else
         {
-            ts = newTraceState(header.from, sessionId, traceType);
+            ts = new TraceState(message.from, sessionId, traceType);
             sessions.put(sessionId, ts);
             return ts;
         }
     }
 
-    /**
-     * Record any tracing data, if enabled on this message.
-     */
-    public void traceOutgoingMessage(Message<?> message, InetAddressAndPort sendTo)
-    {
-        try
-        {
-            final UUID sessionId = message.traceSession();
-            if (sessionId == null)
-                return;
-
-            String logMessage = String.format("Sending %s message to %s", message.verb(), sendTo);
-
-            TraceState state = get(sessionId);
-            if (state == null) // session may have already finished; see CASSANDRA-5668
-            {
-                TraceType traceType = message.traceType();
-                trace(ByteBuffer.wrap(UUIDGen.decompose(sessionId)), logMessage, traceType.getTTL());
-            }
-            else
-            {
-                state.trace(logMessage);
-                if (message.verb().isResponse())
-                    doneWithNonLocalSession(state);
-            }
-        }
-        catch (Exception e)
-        {
-            logger.warn("failed to capture the tracing info for an outbound message to {}, ignoring", sendTo, e);
-        }
-    }
-
-    public Map<ParamType, Object> addTraceHeaders(Map<ParamType, Object> addToMutable)
-    {
-        assert isTracing();
-
-        addToMutable.put(ParamType.TRACE_SESSION, Tracing.instance.getSessionId());
-        addToMutable.put(ParamType.TRACE_TYPE, Tracing.instance.getTraceType());
-        return addToMutable;
-    }
-
-    protected abstract TraceState newTraceState(InetAddressAndPort coordinator, UUID sessionId, Tracing.TraceType traceType);
 
     // repair just gets a varargs method since it's so heavyweight anyway
     public static void traceRepair(String format, Object... args)
@@ -359,9 +287,4 @@ public abstract class Tracing implements ExecutorLocal<TraceState>
 
         state.trace(format, args);
     }
-
-    /**
-     * Called for non-local traces (traces that are not initiated by local node == coordinator).
-     */
-    public abstract void trace(ByteBuffer sessionId, String message, int ttl);
 }
