@@ -36,7 +36,6 @@ import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
@@ -95,7 +94,7 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
     {
         public InstrumentedAcquisitionCallback(UUID parentRepairSession, RangesAtEndpoint ranges)
         {
-            super(parentRepairSession, ranges, () -> false);
+            super(parentRepairSession, ranges);
         }
 
         Set<TableId> submittedCompactions = new HashSet<>();
@@ -143,7 +142,7 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try
         {
-            pac = new PendingAntiCompaction(sessionID, tables, atEndpoint(ranges, NO_RANGES), executor, () -> false);
+            pac = new PendingAntiCompaction(sessionID, tables, atEndpoint(ranges, NO_RANGES), executor);
             pac.run().get();
         }
         finally
@@ -372,34 +371,8 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
                                                                  true,0,
                                                                  true,
                                                                  PreviewKind.NONE);
-        CompactionManager.instance.performAnticompaction(result.cfs, atEndpoint(FULL_RANGE, NO_RANGES), result.refs, result.txn, sessionID, () -> false);
+        CompactionManager.instance.performAnticompaction(result.cfs, atEndpoint(FULL_RANGE, NO_RANGES), result.refs, result.txn, sessionID);
 
-    }
-
-    @Test (expected = CompactionInterruptedException.class)
-    public void cancelledAntiCompaction() throws Exception
-    {
-        cfs.disableAutoCompaction();
-        makeSSTables(1);
-
-        PendingAntiCompaction.AcquisitionCallable acquisitionCallable = new PendingAntiCompaction.AcquisitionCallable(cfs, FULL_RANGE, UUIDGen.getTimeUUID(), 0, 0);
-        PendingAntiCompaction.AcquireResult result = acquisitionCallable.call();
-        UUID sessionID = UUIDGen.getTimeUUID();
-        ActiveRepairService.instance.registerParentRepairSession(sessionID,
-                                                                 InetAddressAndPort.getByName("127.0.0.1"),
-                                                                 Lists.newArrayList(cfs),
-                                                                 FULL_RANGE,
-                                                                 true,0,
-                                                                 true,
-                                                                 PreviewKind.NONE);
-
-        // attempt to anti-compact the sstable in half
-        SSTableReader sstable = Iterables.getOnlyElement(cfs.getLiveSSTables());
-        Token left = cfs.getPartitioner().midpoint(sstable.first.getToken(), sstable.last.getToken());
-        Token right = sstable.last.getToken();
-        CompactionManager.instance.performAnticompaction(result.cfs,
-                                                         atEndpoint(Collections.singleton(new Range<>(left, right)), NO_RANGES),
-                                                         result.refs, result.txn, sessionID, () -> true);
     }
 
     /**
@@ -412,11 +385,11 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
         makeSSTables(2);
         UUID prsid = UUID.randomUUID();
         ListeningExecutorService es = MoreExecutors.listeningDecorator(MoreExecutors.newDirectExecutorService());
-        PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), es, () -> false) {
+        PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), es) {
             @Override
             protected AcquisitionCallback getAcquisitionCallback(UUID prsId, RangesAtEndpoint tokenRanges)
             {
-                return new AcquisitionCallback(prsid, tokenRanges, () -> false)
+                return new AcquisitionCallback(prsid, tokenRanges)
                 {
                     @Override
                     ListenableFuture<?> submitPendingAntiCompaction(AcquireResult result)
@@ -458,13 +431,13 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
         {
             try (LifecycleTransaction txn = cfs.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
                  CompactionController controller = new CompactionController(cfs, sstables, 0);
-                 CompactionIterator ci = CompactionManager.getAntiCompactionIterator(scanners, controller, 0, UUID.randomUUID(), CompactionManager.instance.active, () -> false))
+                 CompactionIterator ci = CompactionManager.getAntiCompactionIterator(scanners, controller, 0, UUID.randomUUID(), CompactionManager.instance.active))
             {
                 // `ci` is our imaginary ongoing anticompaction which makes no progress until after 30s
                 // now we try to start a new AC, which will try to cancel all ongoing compactions
 
                 CompactionManager.instance.active.beginCompaction(ci);
-                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), 0, 0, es, () -> false);
+                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), 0, 0, es);
                 ListenableFuture fut = pac.run();
                 try
                 {
@@ -518,7 +491,7 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
                 // now we try to start a new AC, which will try to cancel all ongoing compactions
 
                 CompactionManager.instance.active.beginCompaction(ci);
-                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), es, () -> false);
+                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs), atEndpoint(FULL_RANGE, NO_RANGES), es);
                 ListenableFuture fut = pac.run();
                 try
                 {
@@ -720,7 +693,7 @@ public class PendingAntiCompactionTest extends AbstractPendingAntiCompactionTest
             // mark the sstables pending, with a 2i compaction going, which should be untouched;
             try (LifecycleTransaction txn = idx.getTracker().tryModify(idx.getLiveSSTables(), OperationType.COMPACTION))
             {
-                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs2), atEndpoint(FULL_RANGE, NO_RANGES), es, () -> false);
+                PendingAntiCompaction pac = new PendingAntiCompaction(prsid, Collections.singleton(cfs2), atEndpoint(FULL_RANGE, NO_RANGES), es);
                 pac.run().get();
             }
             // and make sure it succeeded;

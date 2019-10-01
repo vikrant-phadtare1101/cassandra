@@ -26,8 +26,6 @@ import org.slf4j.LoggerFactory;
 
 import com.clearspring.analytics.stream.StreamSummary;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-
 /**
  * Find the most frequent sample. A sample adds to the sum of its key ie
  * <p>add("x", 10); and add("x", 20); will result in "x" = 30</p> This uses StreamSummary to only store the
@@ -39,7 +37,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public abstract class FrequencySampler<T> extends Sampler<T>
 {
     private static final Logger logger = LoggerFactory.getLogger(FrequencySampler.class);
-    private long endTimeNanos = -1;
+    private long endTimeMillis = -1;
 
     private StreamSummary<T> summary;
 
@@ -53,10 +51,10 @@ public abstract class FrequencySampler<T> extends Sampler<T>
      */
     public synchronized void beginSampling(int capacity, int durationMillis)
     {
-        if (endTimeNanos == -1 || clock.now() > endTimeNanos)
+        if (endTimeMillis == -1 || clock.currentTimeMillis() > endTimeMillis)
         {
-            summary = new StreamSummary<>(capacity);
-            endTimeNanos = clock.now() + MILLISECONDS.toNanos(durationMillis);
+            summary = new StreamSummary<T>(capacity);
+            endTimeMillis = clock.currentTimeMillis() + durationMillis;
         }
         else
             throw new RuntimeException("Sampling already in progress");
@@ -69,9 +67,9 @@ public abstract class FrequencySampler<T> extends Sampler<T>
     public synchronized List<Sample<T>> finishSampling(int count)
     {
         List<Sample<T>> results = Collections.emptyList();
-        if (endTimeNanos != -1)
+        if (endTimeMillis != -1)
         {
-            endTimeNanos = -1;
+            endTimeMillis = -1;
             results = summary.topK(count)
                              .stream()
                              .map(c -> new Sample<T>(c.getItem(), c.getCount(), c.getError()))
@@ -84,7 +82,7 @@ public abstract class FrequencySampler<T> extends Sampler<T>
     {
         // samplerExecutor is single threaded but still need
         // synchronization against jmx calls to finishSampling
-        if (value > 0 && clock.now() <= endTimeNanos)
+        if (value > 0 && clock.currentTimeMillis() <= endTimeMillis)
         {
             try
             {
@@ -98,7 +96,7 @@ public abstract class FrequencySampler<T> extends Sampler<T>
 
     public boolean isEnabled()
     {
-        return endTimeNanos != -1 && clock.now() <= endTimeNanos;
+        return endTimeMillis != -1 && clock.currentTimeMillis() <= endTimeMillis;
     }
 
 }

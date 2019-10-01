@@ -20,7 +20,6 @@ package org.apache.cassandra.db;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.LongPredicate;
 
@@ -36,9 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.net.MessageFlag;
-import org.apache.cassandra.net.Verb;
-import org.apache.cassandra.utils.ApproximateTime;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.transform.RTBoundCloser;
@@ -55,8 +52,9 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.locator.ReplicaCollection;
 import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaConstants;
@@ -71,7 +69,6 @@ import org.apache.cassandra.utils.HashingUtils;
 
 import static com.google.common.collect.Iterables.any;
 import static com.google.common.collect.Iterables.filter;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * General interface for storage-engine read commands (common to both range and
@@ -167,8 +164,6 @@ public abstract class ReadCommand extends AbstractReadQuery
 
     public abstract boolean isLimitedToOnePartition();
 
-    public abstract boolean isRangeRequest();
-
     /**
      * Creates a new <code>ReadCommand</code> instance with new limits.
      *
@@ -182,7 +177,7 @@ public abstract class ReadCommand extends AbstractReadQuery
      *
      * @return the configured timeout for this command.
      */
-    public abstract long getTimeout(TimeUnit unit);
+    public abstract long getTimeout();
 
     /**
      * Whether this query is a digest one or not.
@@ -633,15 +628,14 @@ public abstract class ReadCommand extends AbstractReadQuery
         private boolean maybeAbort()
         {
             /**
-             * TODO: this is not a great way to abort early; why not expressly limit checks to 10ms intervals?
-             * The value returned by approxTime.now() is updated only every
-             * {@link org.apache.cassandra.utils.MonotonicClock.SampledClock.CHECK_INTERVAL_MS}, by default 2 millis. Since MonitorableImpl
-             * relies on approxTime, we don't need to check unless the approximate time has elapsed.
+             * The value returned by ApproximateTime.currentTimeMillis() is updated only every
+             * {@link ApproximateTime.CHECK_INTERVAL_MS}, by default 10 millis. Since MonitorableImpl
+             * relies on ApproximateTime, we don't need to check unless the approximate time has elapsed.
              */
-            if (lastChecked == approxTime.now())
+            if (lastChecked == ApproximateTime.currentTimeMillis())
                 return false;
 
-            lastChecked = approxTime.now();
+            lastChecked = ApproximateTime.currentTimeMillis();
 
             if (isAborted())
             {
@@ -667,14 +661,7 @@ public abstract class ReadCommand extends AbstractReadQuery
     /**
      * Creates a message for this command.
      */
-    public Message<ReadCommand> createMessage(boolean trackRepairedData)
-    {
-        return trackRepairedData
-             ? Message.outWithFlags(verb(), this, MessageFlag.CALL_BACK_ON_FAILURE, MessageFlag.TRACK_REPAIRED_DATA)
-             : Message.outWithFlag (verb(), this, MessageFlag.CALL_BACK_ON_FAILURE);
-    }
-
-    public abstract Verb verb();
+    public abstract MessageOut<ReadCommand> createMessage();
 
     protected abstract void appendCQLWhereClause(StringBuilder sb);
 

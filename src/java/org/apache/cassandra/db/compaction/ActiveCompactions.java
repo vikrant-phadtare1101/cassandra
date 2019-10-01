@@ -56,16 +56,13 @@ public class ActiveCompactions implements ActiveCompactionsTracker
     public CompactionInfo getCompactionForSSTable(SSTableReader sstable)
     {
         CompactionInfo toReturn = null;
-        synchronized (compactions)
+        for (CompactionInfo.Holder holder : compactions)
         {
-            for (CompactionInfo.Holder holder : compactions)
+            if (holder.getCompactionInfo().getSSTables().contains(sstable))
             {
-                if (holder.getCompactionInfo().getSSTables().contains(sstable))
-                {
-                    if (toReturn != null)
-                        throw new IllegalStateException("SSTable " + sstable + " involved in several compactions");
-                    toReturn = holder.getCompactionInfo();
-                }
+                if (toReturn != null)
+                    throw new IllegalStateException("SSTable "+sstable+" involved in several compactions");
+                toReturn = holder.getCompactionInfo();
             }
         }
         return toReturn;
