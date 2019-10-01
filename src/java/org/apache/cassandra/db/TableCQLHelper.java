@@ -22,12 +22,11 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.*;
-import java.util.regex.Pattern;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
 
-import org.apache.cassandra.cql3.statements.schema.IndexTarget;
+import org.apache.cassandra.cql3.statements.*;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.schema.*;
 import org.apache.cassandra.utils.*;
@@ -37,8 +36,6 @@ import org.apache.cassandra.utils.*;
  */
 public class TableCQLHelper
 {
-    private static final Pattern singleQuotePattern = Pattern.compile("'");
-
     public static List<String> dumpReCreateStatements(TableMetadata metadata)
     {
         List<String> l = new ArrayList<>();
@@ -313,7 +310,6 @@ public class TableCQLHelper
         builder.append("\n\tAND max_index_interval = ").append(tableParams.maxIndexInterval);
         builder.append("\n\tAND memtable_flush_period_in_ms = ").append(tableParams.memtableFlushPeriodInMs);
         builder.append("\n\tAND speculative_retry = '").append(tableParams.speculativeRetry).append("'");
-        builder.append("\n\tAND additional_write_policy = '").append(tableParams.additionalWritePolicy).append("'");
         builder.append("\n\tAND comment = ").append(singleQuote(tableParams.comment));
         builder.append("\n\tAND caching = ").append(toCQL(tableParams.caching.asMap()));
         builder.append("\n\tAND compaction = ").append(toCQL(tableParams.compaction.asMap()));
@@ -396,7 +392,7 @@ public class TableCQLHelper
 
     private static String singleQuote(String s)
     {
-        return String.format("'%s'", singleQuotePattern.matcher(s).replaceAll("''"));
+        return String.format("'%s'", s.replaceAll("'", "''"));
     }
 
     private static Consumer<StringBuilder> commaAppender(String afterComma)

@@ -27,13 +27,13 @@ import org.apache.cassandra.schema.TableMetadata;
 public class VariableSpecifications
 {
     private final List<ColumnIdentifier> variableNames;
-    private final List<ColumnSpecification> specs;
+    private final ColumnSpecification[] specs;
     private final ColumnMetadata[] targetColumns;
 
     public VariableSpecifications(List<ColumnIdentifier> variableNames)
     {
         this.variableNames = variableNames;
-        this.specs = Arrays.asList(new ColumnSpecification[variableNames.size()]);
+        this.specs = new ColumnSpecification[variableNames.size()];
         this.targetColumns = new ColumnMetadata[variableNames.size()];
     }
 
@@ -43,17 +43,17 @@ public class VariableSpecifications
      */
     public static VariableSpecifications empty()
     {
-        return new VariableSpecifications(Collections.emptyList());
+        return new VariableSpecifications(Collections.<ColumnIdentifier> emptyList());
     }
 
-    public boolean isEmpty()
+    public int size()
     {
-        return variableNames.isEmpty();
+        return variableNames.size();
     }
 
-    public List<ColumnSpecification> getBindVariables()
+    public List<ColumnSpecification> getSpecifications()
     {
-        return specs;
+        return Arrays.asList(specs);
     }
 
     /**
@@ -63,7 +63,7 @@ public class VariableSpecifications
      *
      * Callers of this method should ensure that all statements operate on the same table.
      */
-    public short[] getPartitionKeyBindVariableIndexes(TableMetadata metadata)
+    public short[] getPartitionKeyBindIndexes(TableMetadata metadata)
     {
         short[] partitionKeyPositions = new short[metadata.partitionKeyColumns().size()];
         boolean[] set = new boolean[partitionKeyPositions.length];
@@ -94,12 +94,12 @@ public class VariableSpecifications
         // Use the user name, if there is one
         if (bindMarkerName != null)
             spec = new ColumnSpecification(spec.ksName, spec.cfName, bindMarkerName, spec.type);
-        specs.set(bindIndex, spec);
+        specs[bindIndex] = spec;
     }
 
     @Override
     public String toString()
     {
-        return specs.toString();
+        return Arrays.toString(specs);
     }
 }

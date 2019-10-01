@@ -18,9 +18,6 @@
 package org.apache.cassandra.io.util;
 
 import java.io.*;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
@@ -37,13 +34,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.utils.SyncUtil;
+import sun.nio.ch.DirectBuffer;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.io.FSError;
@@ -52,9 +49,7 @@ import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.memory.MemoryUtil;
 
-import static com.google.common.base.Throwables.propagate;
 import static org.apache.cassandra.utils.Throwables.maybeFail;
 import static org.apache.cassandra.utils.Throwables.merge;
 
@@ -69,31 +64,24 @@ public final class FileUtils
     public static final long ONE_TB = 1024 * ONE_GB;
 
     private static final DecimalFormat df = new DecimalFormat("#.##");
+    public static final boolean isCleanerAvailable;
     private static final AtomicReference<Optional<FSErrorHandler>> fsErrorHandler = new AtomicReference<>(Optional.empty());
-
-    private static Class clsDirectBuffer;
-    private static MethodHandle mhDirectBufferCleaner;
-    private static MethodHandle mhCleanerClean;
 
     static
     {
+        boolean canClean = false;
         try
         {
-            clsDirectBuffer = Class.forName("sun.nio.ch.DirectBuffer");
-            Method mDirectBufferCleaner = clsDirectBuffer.getMethod("cleaner");
-            mhDirectBufferCleaner = MethodHandles.lookup().unreflect(mDirectBufferCleaner);
-            Method mCleanerClean = mDirectBufferCleaner.getReturnType().getMethod("clean");
-            mhCleanerClean = MethodHandles.lookup().unreflect(mCleanerClean);
-
             ByteBuffer buf = ByteBuffer.allocateDirect(1);
-            clean(buf);
+            ((DirectBuffer) buf).cleaner().clean();
+            canClean = true;
         }
         catch (Throwable t)
         {
-            logger.error("FATAL: Cannot initialize optimized memory deallocator. Some data, both in-memory and on-disk, may live longer due to garbage collection.");
             JVMStabilityInspector.inspectThrowable(t);
-            throw new RuntimeException(t);
+            logger.info("Cannot initialize un-mmaper.  (Are you using a non-Oracle JVM?)  Compacted data files will not be removed promptly.  Consider using an Oracle JVM or using standard disk access mode");
         }
+        isCleanerAvailable = canClean;
     }
 
     public static void createHardLink(String from, String to)
@@ -118,44 +106,11 @@ public final class FileUtils
         }
     }
 
-    private static final File tempDir = new File(System.getProperty("java.io.tmpdir"));
-    private static final AtomicLong tempFileNum = new AtomicLong();
-
-    public static File getTempDir()
-    {
-        return tempDir;
-    }
-
-    /**
-     * Pretty much like {@link File#createTempFile(String, String, File)}, but with
-     * the guarantee that the "random" part of the generated file name between
-     * {@code prefix} and {@code suffix} is a positive, increasing {@code long} value.
-     */
     public static File createTempFile(String prefix, String suffix, File directory)
     {
         try
         {
-            // Do not use java.io.File.createTempFile(), because some tests rely on the
-            // behavior that the "random" part in the temp file name is a positive 'long'.
-            // However, at least since Java 9 the code to generate the "random" part
-            // uses an _unsigned_ random long generated like this:
-            // Long.toUnsignedString(new java.util.Random.nextLong())
-
-            while (true)
-            {
-                // The contract of File.createTempFile() says, that it must not return
-                // the same file name again. We do that here in a very simple way,
-                // that probably doesn't cover all edge cases. Just rely on system
-                // wall clock and return strictly increasing values from that.
-                long num = tempFileNum.getAndIncrement();
-
-                // We have a positive long here, which is safe to use for example
-                // for CommitLogTest.
-                String fileName = prefix + Long.toString(num) + suffix;
-                File candidate = new File(directory, fileName);
-                if (candidate.createNewFile())
-                    return candidate;
-            }
+            return File.createTempFile(prefix, suffix, directory);
         }
         catch (IOException e)
         {
@@ -165,12 +120,12 @@ public final class FileUtils
 
     public static File createTempFile(String prefix, String suffix)
     {
-        return createTempFile(prefix, suffix, tempDir);
+        return createTempFile(prefix, suffix, new File(System.getProperty("java.io.tmpdir")));
     }
 
     public static File createDeletableTempFile(String prefix, String suffix)
     {
-        File f = createTempFile(prefix, suffix, getTempDir());
+        File f = createTempFile(prefix, suffix, new File(System.getProperty("java.io.tmpdir")));
         f.deleteOnExit();
         return f;
     }
@@ -312,7 +267,7 @@ public final class FileUtils
 
     public static void close(Iterable<? extends Closeable> cs) throws IOException
     {
-        Throwable e = null;
+        IOException e = null;
         for (Closeable c : cs)
         {
             try
@@ -320,14 +275,14 @@ public final class FileUtils
                 if (c != null)
                     c.close();
             }
-            catch (Throwable ex)
+            catch (IOException ex)
             {
-                if (e == null) e = ex;
-                else e.addSuppressed(ex);
+                e = ex;
                 logger.warn("Failed closing stream {}", c, ex);
             }
         }
-        maybeFail(e, IOException.class);
+        if (e != null)
+            throw e;
     }
 
     public static void closeQuietly(Iterable<? extends AutoCloseable> cs)
@@ -395,29 +350,13 @@ public final class FileUtils
 
     public static void clean(ByteBuffer buffer)
     {
-        if (buffer == null || !buffer.isDirect())
+        if (buffer == null)
             return;
-
-        // TODO Once we can get rid of Java 8, it's simpler to call sun.misc.Unsafe.invokeCleaner(ByteBuffer),
-        // but need to take care of the attachment handling (i.e. whether 'buf' is a duplicate or slice) - that
-        // is different in sun.misc.Unsafe.invokeCleaner and this implementation.
-
-        try
+        if (isCleanerAvailable && buffer.isDirect())
         {
-            Object cleaner = mhDirectBufferCleaner.bindTo(buffer).invoke();
-            if (cleaner != null)
-            {
-                // ((DirectBuffer) buf).cleaner().clean();
-                mhCleanerClean.bindTo(cleaner).invoke();
-            }
-        }
-        catch (RuntimeException e)
-        {
-            throw e;
-        }
-        catch (Throwable e)
-        {
-            throw new RuntimeException(e);
+            DirectBuffer db = (DirectBuffer) buffer;
+            if (db.cleaner() != null)
+                db.cleaner().clean();
         }
     }
 
@@ -577,20 +516,6 @@ public final class FileUtils
     public static void handleFSError(FSError e)
     {
         fsErrorHandler.get().ifPresent(handler -> handler.handleFSError(e));
-    }
-
-    /**
-     * handleFSErrorAndPropagate will invoke the disk failure policy error handler,
-     * which may or may not stop the daemon or transports. However, if we don't exit,
-     * we still want to propagate the exception to the caller in case they have custom
-     * exception handling
-     *
-     * @param e A filesystem error
-     */
-    public static void handleFSErrorAndPropagate(FSError e)
-    {
-        handleFSError(e);
-        throw propagate(e);
     }
 
     /**
