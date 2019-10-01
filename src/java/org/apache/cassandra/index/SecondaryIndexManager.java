@@ -71,8 +71,10 @@ import org.apache.cassandra.schema.Indexes;
 import org.apache.cassandra.service.pager.SinglePartitionPager;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.ProtocolVersion;
+import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.concurrent.OpOrder;
 import org.apache.cassandra.utils.concurrent.Refs;
 
 import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
@@ -927,7 +929,7 @@ public class SecondaryIndexManager implements IndexRegistry, INotificationConsum
         if (meanPartitionSize <= 0)
             return DEFAULT_PAGE_SIZE;
 
-        int meanCellsPerPartition = baseCfs.getMeanEstimatedCellPerPartitionCount();
+        int meanCellsPerPartition = baseCfs.getMeanColumns();
         if (meanCellsPerPartition <= 0)
             return DEFAULT_PAGE_SIZE;
 
