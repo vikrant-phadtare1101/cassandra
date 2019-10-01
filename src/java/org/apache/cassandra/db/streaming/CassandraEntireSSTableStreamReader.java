@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.util.Collection;
 
 import com.google.common.base.Throwables;
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -167,12 +166,12 @@ public class CassandraEntireSSTableStreamReader implements IStreamReader
         StreamReceiver streamReceiver = session.getAggregator(tableId);
         assert streamReceiver instanceof CassandraStreamReceiver;
 
-        LifecycleNewTracker lifecycleNewTracker = CassandraStreamReceiver.fromReceiver(session.getAggregator(tableId)).createLifecycleNewTracker();
+        LifecycleTransaction txn = CassandraStreamReceiver.fromReceiver(session.getAggregator(tableId)).getTransaction();
 
         Descriptor desc = cfs.newSSTableDescriptor(dataDir, header.version, header.format);
 
         logger.debug("[Table #{}] {} Components to write: {}", cfs.metadata(), desc.filenameFor(Component.DATA), components);
 
-        return new BigTableZeroCopyWriter(desc, cfs.metadata, lifecycleNewTracker, components);
+        return new BigTableZeroCopyWriter(desc, cfs.metadata, txn, components);
     }
 }

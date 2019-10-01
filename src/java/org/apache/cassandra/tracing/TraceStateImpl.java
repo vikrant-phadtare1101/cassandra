@@ -103,6 +103,11 @@ public class TraceStateImpl extends TraceState
 
     void executeMutation(final Mutation mutation)
     {
+        //Don't record trace state if an upgrade is in progress as version 3 nodes generates errors
+        //due to schema differences
+        if (Gossiper.instance.haveMajorVersion3Nodes())
+            return;
+
         CompletableFuture<Void> fut = CompletableFuture.runAsync(new WrappedRunnable()
         {
             protected void runMayThrow()
@@ -118,6 +123,11 @@ public class TraceStateImpl extends TraceState
 
     static void mutateWithCatch(Mutation mutation)
     {
+        //Don't record trace state if an upgrade is in progress as version 3 nodes generates errors
+        //due to schema differences
+        if (Gossiper.instance.haveMajorVersion3Nodes())
+            return;
+
         try
         {
             StorageProxy.mutate(Collections.singletonList(mutation), ConsistencyLevel.ANY, System.nanoTime());

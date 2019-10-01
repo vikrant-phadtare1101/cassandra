@@ -20,7 +20,6 @@ package org.apache.cassandra.cql3.statements;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 
 import org.slf4j.Logger;
@@ -626,8 +625,7 @@ public class SelectStatement implements CQLStatement
         return new ClusteringIndexNamesFilter(clusterings, isReversed);
     }
 
-    @VisibleForTesting
-    public Slices makeSlices(QueryOptions options)
+    private Slices makeSlices(QueryOptions options)
     throws InvalidRequestException
     {
         SortedSet<ClusteringBound> startBounds = restrictions.getClusteringColumnsBounds(Bound.START, options);
@@ -639,7 +637,7 @@ public class SelectStatement implements CQLStatement
         {
             ClusteringBound start = startBounds.first();
             ClusteringBound end = endBounds.first();
-            return Slice.isEmpty(table.comparator, start, end)
+            return table.comparator.compare(start, end) > 0
                  ? Slices.NONE
                  : Slices.with(table.comparator, Slice.make(start, end));
         }
@@ -653,7 +651,7 @@ public class SelectStatement implements CQLStatement
             ClusteringBound end = endIter.next();
 
             // Ignore slices that are nonsensical
-            if (Slice.isEmpty(table.comparator, start, end))
+            if (table.comparator.compare(start, end) > 0)
                 continue;
 
             builder.add(start, end);

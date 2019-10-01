@@ -1,3 +1,4 @@
+package org.apache.cassandra.service.paxos;
 /*
  * 
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -18,19 +19,18 @@
  * under the License.
  * 
  */
-package org.apache.cassandra.service.paxos;
+
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.WriteType;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
-import org.apache.cassandra.net.RequestCallback;
+import org.apache.cassandra.net.IAsyncCallback;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-
-public abstract class AbstractPaxosCallback<T> implements RequestCallback<T>
+public abstract class AbstractPaxosCallback<T> implements IAsyncCallback<T>
 {
     protected final CountDownLatch latch;
     protected final int targets;
@@ -45,6 +45,11 @@ public abstract class AbstractPaxosCallback<T> implements RequestCallback<T>
         this.queryStartNanoTime = queryStartNanoTime;
     }
 
+    public boolean isLatencyForSnitch()
+    {
+        return false;
+    }
+
     public int getResponseCount()
     {
         return (int) (targets - latch.getCount());
@@ -54,8 +59,8 @@ public abstract class AbstractPaxosCallback<T> implements RequestCallback<T>
     {
         try
         {
-            long timeout = DatabaseDescriptor.getWriteRpcTimeout(NANOSECONDS) - (System.nanoTime() - queryStartNanoTime);
-            if (!latch.await(timeout, NANOSECONDS))
+            long timeout = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getWriteRpcTimeout()) - (System.nanoTime() - queryStartNanoTime);
+            if (!latch.await(timeout, TimeUnit.NANOSECONDS))
                 throw new WriteTimeoutException(WriteType.CAS, consistency, getResponseCount(), targets);
         }
         catch (InterruptedException ex)
