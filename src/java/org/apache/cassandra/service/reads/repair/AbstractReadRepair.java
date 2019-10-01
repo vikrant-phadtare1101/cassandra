@@ -18,15 +18,12 @@
 
 package org.apache.cassandra.service.reads.repair;
 
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import com.google.common.base.Preconditions;
 
 import com.codahale.metrics.Meter;
-import com.google.common.base.Predicates;
-
-import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.ConsistencyLevel;
@@ -37,25 +34,21 @@ import org.apache.cassandra.db.partitions.PartitionIterator;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
 import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.locator.ReplicaPlan;
+import org.apache.cassandra.locator.ReplicaLayout;
 import org.apache.cassandra.metrics.ReadRepairMetrics;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.MessageFlag;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.service.StorageProxy;
+import org.apache.cassandra.net.ParameterType;
 import org.apache.cassandra.service.reads.DataResolver;
 import org.apache.cassandra.service.reads.DigestResolver;
 import org.apache.cassandra.service.reads.ReadCallback;
 import org.apache.cassandra.tracing.Tracing;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-
-public abstract class AbstractReadRepair<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-        implements ReadRepair<E, P>
+public abstract class AbstractReadRepair<E extends Endpoints<E>, L extends ReplicaLayout<E, L>> implements ReadRepair<E, L>
 {
     protected final ReadCommand command;
     protected final long queryStartNanoTime;
-    protected final ReplicaPlan.Shared<E, P> replicaPlan;
+    protected final L replicaLayout;
     protected final ColumnFamilyStore cfs;
 
     private volatile DigestRepair digestRepair = null;
@@ -75,60 +68,36 @@ public abstract class AbstractReadRepair<E extends Endpoints<E>, P extends Repli
     }
 
     public AbstractReadRepair(ReadCommand command,
-                              ReplicaPlan.Shared<E, P> replicaPlan,
+                              L replicaLayout,
                               long queryStartNanoTime)
     {
         this.command = command;
         this.queryStartNanoTime = queryStartNanoTime;
-        this.replicaPlan = replicaPlan;
+        this.replicaLayout = replicaLayout;
         this.cfs = Keyspace.openAndGetStore(command.metadata());
     }
 
-    protected P replicaPlan()
+    void sendReadCommand(Replica to, ReadCallback readCallback)
     {
-        return replicaPlan.get();
-    }
-
-    void sendReadCommand(Replica to, ReadCallback readCallback, boolean speculative)
-    {
-        ReadCommand command = this.command;
-
-        if (to.isSelf())
-        {
-            StageManager.getStage(Stage.READ).maybeExecuteImmediately(new StorageProxy.LocalReadRunnable(command, readCallback));
-            return;
-        }
-
-        if (to.isTransient())
-        {
-            // It's OK to send queries to transient nodes during RR, as we may have contacted them for their data request initially
-            // So long as we don't use these to generate repair mutations, we're fine, and this is enforced by requiring
-            // ReadOnlyReadRepair for transient keyspaces.
-            command = command.copyAsTransientQuery(to);
-        }
-
-        if (Tracing.isTracing())
-        {
-            String type;
-            if (speculative) type = to.isFull() ? "speculative full" : "speculative transient";
-            else type = to.isFull() ? "full" : "transient";
-            Tracing.trace("Enqueuing {} data read to {}", type, to);
-        }
+        MessageOut<ReadCommand> message = command.createMessage();
         // if enabled, request additional info about repaired data from any full replicas
-        Message<ReadCommand> message = command.createMessage(command.isTrackingRepairedStatus() && to.isFull());
-        MessagingService.instance().sendWithCallback(message, to.endpoint(), readCallback);
+        if (command.isTrackingRepairedStatus() && to.isFull())
+            message = message.withParameter(ParameterType.TRACK_REPAIRED_DATA, MessagingService.ONE_BYTE);
+
+        MessagingService.instance().sendRRWithFailure(message, to.endpoint(), readCallback);
     }
 
     abstract Meter getRepairMeter();
 
     // digestResolver isn't used here because we resend read requests to all participants
-    public void startRepair(DigestResolver<E, P> digestResolver, Consumer<PartitionIterator> resultConsumer)
+    public void startRepair(DigestResolver<E, L> digestResolver, Consumer<PartitionIterator> resultConsumer)
     {
         getRepairMeter().mark();
 
         // Do a full data read to resolve the correct response (and repair node that need be)
-        DataResolver<E, P> resolver = new DataResolver<>(command, replicaPlan, this, queryStartNanoTime);
-        ReadCallback<E, P> readCallback = new ReadCallback<>(resolver, command, replicaPlan, queryStartNanoTime);
+        DataResolver<E, L> resolver = new DataResolver<>(command, replicaLayout, this, queryStartNanoTime);
+        ReadCallback<E, L> readCallback = new ReadCallback<>(resolver, replicaLayout.consistencyLevel().blockFor(cfs.keyspace),
+                                                             command, replicaLayout, queryStartNanoTime);
 
         digestRepair = new DigestRepair(resolver, readCallback, resultConsumer);
 
@@ -136,10 +105,12 @@ public abstract class AbstractReadRepair<E extends Endpoints<E>, P extends Repli
         if (DatabaseDescriptor.getRepairedDataTrackingForPartitionReadsEnabled())
             command.trackRepairedStatus();
 
-        for (Replica replica : replicaPlan().contacts())
-            sendReadCommand(replica, readCallback, false);
-
-        ReadRepairDiagnostics.startRepair(this, replicaPlan(), digestResolver);
+        for (Replica replica : replicaLayout.selected())
+        {
+            Tracing.trace("Enqueuing full data read to {}", replica);
+            sendReadCommand(replica, readCallback);
+        }
+        ReadRepairDiagnostics.startRepair(this, replicaLayout.selected().endpoints(), digestResolver, replicaLayout.all().endpoints());
     }
 
     public void awaitReads() throws ReadTimeoutException
@@ -154,11 +125,11 @@ public abstract class AbstractReadRepair<E extends Endpoints<E>, P extends Repli
 
     private boolean shouldSpeculate()
     {
-        ConsistencyLevel consistency = replicaPlan().consistencyLevel();
+        ConsistencyLevel consistency = replicaLayout.consistencyLevel();
         ConsistencyLevel speculativeCL = consistency.isDatacenterLocal() ? ConsistencyLevel.LOCAL_QUORUM : ConsistencyLevel.QUORUM;
         return  consistency != ConsistencyLevel.EACH_QUORUM
                 && consistency.satisfies(speculativeCL, cfs.keyspace)
-                && cfs.sampleReadLatencyNanos <= command.getTimeout(NANOSECONDS);
+                && cfs.sampleReadLatencyNanos <= TimeUnit.MILLISECONDS.toNanos(command.getTimeout());
     }
 
     public void maybeSendAdditionalReads()
@@ -169,16 +140,17 @@ public abstract class AbstractReadRepair<E extends Endpoints<E>, P extends Repli
         if (repair == null)
             return;
 
-        if (shouldSpeculate() && !repair.readCallback.await(cfs.sampleReadLatencyNanos, NANOSECONDS))
+        if (shouldSpeculate() && !repair.readCallback.await(cfs.sampleReadLatencyNanos, TimeUnit.NANOSECONDS))
         {
-            Replica uncontacted = replicaPlan().firstUncontactedCandidate(Predicates.alwaysTrue());
-            if (uncontacted == null)
+            L uncontacted = replicaLayout.forNaturalUncontacted();
+            if (uncontacted.selected().isEmpty())
                 return;
 
-            replicaPlan.addToContacts(uncontacted);
-            sendReadCommand(uncontacted, repair.readCallback, true);
+            Replica replica = uncontacted.selected().iterator().next();
+            Tracing.trace("Enqueuing speculative full data read to {}", replica);
+            sendReadCommand(replica, repair.readCallback);
             ReadRepairMetrics.speculatedRead.mark();
-            ReadRepairDiagnostics.speculatedRead(this, uncontacted.endpoint(), replicaPlan());
+            ReadRepairDiagnostics.speculatedRead(this, replica.endpoint(), uncontacted.all().endpoints());
         }
     }
 }

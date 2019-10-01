@@ -102,8 +102,6 @@ public class SchemaLoader
         String ks_nocommit = testName + "NoCommitlogSpace";
         String ks_prsi = testName + "PerRowSecondaryIndex";
         String ks_cql = testName + "cql_keyspace";
-        String ks_cql_replicated = testName + "cql_keyspace_replicated";
-        String ks_with_transient = testName + "ks_with_transient";
 
         AbstractType bytes = BytesType.instance;
 
@@ -220,16 +218,16 @@ public class SchemaLoader
         schema.add(KeyspaceMetadata.create(ks_nocommit, KeyspaceParams.simpleTransient(1), Tables.of(
                 standardCFMD(ks_nocommit, "Standard1").build())));
 
-        String simpleTable = "CREATE TABLE table1 ("
-                             + "k int PRIMARY KEY,"
-                             + "v1 text,"
-                             + "v2 int"
-                             + ")";
         // CQLKeyspace
         schema.add(KeyspaceMetadata.create(ks_cql, KeyspaceParams.simple(1), Tables.of(
 
         // Column Families
-        CreateTableStatement.parse(simpleTable, ks_cql).build(),
+        CreateTableStatement.parse("CREATE TABLE table1 ("
+                                   + "k int PRIMARY KEY,"
+                                   + "v1 text,"
+                                   + "v2 int"
+                                   + ")", ks_cql)
+                            .build(),
 
         CreateTableStatement.parse("CREATE TABLE table2 ("
                                    + "k text,"
@@ -238,12 +236,6 @@ public class SchemaLoader
                                    + "PRIMARY KEY (k, c))", ks_cql)
                             .build()
         )));
-
-        schema.add(KeyspaceMetadata.create(ks_cql_replicated, KeyspaceParams.simple(3),
-                                           Tables.of(CreateTableStatement.parse(simpleTable, ks_cql_replicated).build())));
-
-        schema.add(KeyspaceMetadata.create(ks_with_transient, KeyspaceParams.simple("3/1"),
-                                           Tables.of(CreateTableStatement.parse(simpleTable, ks_with_transient).build())));
 
         if (DatabaseDescriptor.getPartitioner() instanceof Murmur3Partitioner)
         {
@@ -469,35 +461,6 @@ public class SchemaLoader
                                                        IndexMetadata.Kind.COMPOSITES,
                                                        Collections.EMPTY_MAP));
         }
-
-        return builder.indexes(indexes.build());
-    }
-
-    public static TableMetadata.Builder compositeMultipleIndexCFMD(String ksName, String cfName) throws ConfigurationException
-    {
-        TableMetadata.Builder builder = TableMetadata.builder(ksName, cfName)
-                                                     .addPartitionKeyColumn("key", AsciiType.instance)
-                                                     .addClusteringColumn("c1", AsciiType.instance)
-                                                     .addRegularColumn("birthdate", LongType.instance)
-                                                     .addRegularColumn("notbirthdate", LongType.instance)
-                                                     .compression(getCompressionParameters());
-
-
-        Indexes.Builder indexes = Indexes.builder();
-
-        indexes.add(IndexMetadata.fromIndexTargets(Collections.singletonList(
-                                                   new IndexTarget(new ColumnIdentifier("birthdate", true),
-                                                                   IndexTarget.Type.VALUES)),
-                                                   "birthdate_key_index",
-                                                   IndexMetadata.Kind.COMPOSITES,
-                                                   Collections.EMPTY_MAP));
-        indexes.add(IndexMetadata.fromIndexTargets(Collections.singletonList(
-                                                   new IndexTarget(new ColumnIdentifier("notbirthdate", true),
-                                                                   IndexTarget.Type.VALUES)),
-                                                   "notbirthdate_key_index",
-                                                   IndexMetadata.Kind.COMPOSITES,
-                                                   Collections.EMPTY_MAP));
-
 
         return builder.indexes(indexes.build());
     }

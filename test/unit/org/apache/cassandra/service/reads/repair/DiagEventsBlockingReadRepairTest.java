@@ -25,10 +25,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
 
 import com.google.common.collect.Lists;
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.BeforeClass;
@@ -44,7 +42,8 @@ import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.EndpointsForRange;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.locator.ReplicaLayout;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.service.reads.ReadCallback;
 import org.apache.cassandra.service.reads.repair.ReadRepairEvent.ReadRepairEventType;
 
@@ -81,8 +80,8 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
         repairs.put(replica2, repair2);
 
 
-        ReplicaPlan.ForRangeRead replicaPlan = replicaPlan(replicas, EndpointsForRange.copyOf(Lists.newArrayList(repairs.keySet())));
-        DiagnosticPartitionReadRepairHandler handler = createRepairHandler(repairs, 2, replicaPlan);
+        ReplicaLayout.ForRange replicaLayout = replicaLayout(replicas, EndpointsForRange.copyOf(Lists.newArrayList(repairs.keySet())));
+        DiagnosticPartitionReadRepairHandler handler = createRepairHandler(repairs, 2, replicaLayout);
 
         Assert.assertTrue(handler.updatesByEp.isEmpty());
 
@@ -107,20 +106,20 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
         Assert.assertTrue(handler.awaitRepairs(0, TimeUnit.NANOSECONDS));
     }
 
-    public InstrumentedReadRepair createInstrumentedReadRepair(ReadCommand command, ReplicaPlan.Shared<?,?> replicaPlan, long queryStartNanoTime)
+    public InstrumentedReadRepair createInstrumentedReadRepair(ReadCommand command, ReplicaLayout<?, ?> replicaLayout, long queryStartNanoTime)
     {
-        return new DiagnosticBlockingRepairHandler(command, replicaPlan, queryStartNanoTime);
+        return new DiagnosticBlockingRepairHandler(command, replicaLayout, queryStartNanoTime);
     }
 
-    private static DiagnosticPartitionReadRepairHandler createRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor, ReplicaPlan.ForRead<?> replicaPlan)
+    private static DiagnosticPartitionReadRepairHandler createRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor, ReplicaLayout<?, ?> replicaLayout)
     {
-        return new DiagnosticPartitionReadRepairHandler<>(key, repairs, maxBlockFor, replicaPlan);
+        return new DiagnosticPartitionReadRepairHandler(key, repairs, maxBlockFor, replicaLayout);
     }
 
     private static DiagnosticPartitionReadRepairHandler createRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor)
     {
         EndpointsForRange replicas = EndpointsForRange.copyOf(Lists.newArrayList(repairs.keySet()));
-        return createRepairHandler(repairs, maxBlockFor, replicaPlan(replicas, replicas));
+        return createRepairHandler(repairs, maxBlockFor, replicaLayout(replicas, replicas));
     }
 
     private static class DiagnosticBlockingRepairHandler extends BlockingReadRepair implements InstrumentedReadRepair
@@ -128,9 +127,9 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
         private Set<InetAddressAndPort> recipients = Collections.emptySet();
         private ReadCallback readCallback = null;
 
-        DiagnosticBlockingRepairHandler(ReadCommand command, ReplicaPlan.Shared<?,?> replicaPlan, long queryStartNanoTime)
+        DiagnosticBlockingRepairHandler(ReadCommand command, ReplicaLayout<?, ?> replicaLayout, long queryStartNanoTime)
         {
-            super(command, replicaPlan, queryStartNanoTime);
+            super(command, replicaLayout, queryStartNanoTime);
             DiagnosticEventService.instance().subscribe(ReadRepairEvent.class, this::onRepairEvent);
         }
 
@@ -142,7 +141,7 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
             Assert.assertNotNull(e.toMap());
         }
 
-        void sendReadCommand(Replica to, ReadCallback callback, boolean speculative)
+        void sendReadCommand(Replica to, ReadCallback callback)
         {
             assert readCallback == null || readCallback == callback;
             readCallback = callback;
@@ -164,20 +163,13 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
         }
     }
 
-    private static class DiagnosticPartitionReadRepairHandler<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-            extends BlockingPartitionRepair<E, P>
+    private static class DiagnosticPartitionReadRepairHandler<E extends Endpoints<E>, L extends ReplicaLayout<E, L>> extends BlockingPartitionRepair<E, L>
     {
         private final Map<InetAddressAndPort, String> updatesByEp = new HashMap<>();
 
-        private static Predicate<InetAddressAndPort> isLocal()
+        DiagnosticPartitionReadRepairHandler(DecoratedKey key, Map<Replica, Mutation> repairs, int maxBlockFor, L replicaLayout)
         {
-            List<InetAddressAndPort> candidates = targets;
-            return e -> candidates.contains(e);
-        }
-
-        DiagnosticPartitionReadRepairHandler(DecoratedKey key, Map<Replica, Mutation> repairs, int maxBlockFor, P replicaPlan)
-        {
-            super(key, repairs, maxBlockFor, replicaPlan, isLocal());
+            super(key, repairs, maxBlockFor, replicaLayout);
             DiagnosticEventService.instance().subscribe(PartitionRepairEvent.class, this::onRepairEvent);
         }
 
@@ -187,8 +179,21 @@ public class DiagEventsBlockingReadRepairTest extends AbstractReadRepairTest
             Assert.assertNotNull(e.toMap());
         }
 
-        protected void sendRR(Message<Mutation> message, InetAddressAndPort endpoint)
+        protected void sendRR(MessageOut<Mutation> message, InetAddressAndPort endpoint)
         {
+        }
+
+        List<InetAddressAndPort> candidates = targets;
+
+        protected List<InetAddressAndPort> getCandidateEndpoints()
+        {
+            return candidates;
+        }
+
+        @Override
+        protected boolean isLocal(InetAddressAndPort endpoint)
+        {
+            return targets.contains(endpoint);
         }
     }
 }
