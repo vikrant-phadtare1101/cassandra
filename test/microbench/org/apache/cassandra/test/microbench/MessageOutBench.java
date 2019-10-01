@@ -23,19 +23,23 @@ import java.util.EnumMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.net.InetAddresses;
+import com.google.common.primitives.Shorts;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.io.util.DataInputBuffer;
-import org.apache.cassandra.io.util.DataOutputBuffer;
+import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageIn.MessageInProcessor;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.NoPayload;
-import org.apache.cassandra.net.ParamType;
+import org.apache.cassandra.net.ParameterType;
+import org.apache.cassandra.net.async.ByteBufDataOutputPlus;
 import org.apache.cassandra.utils.UUIDGen;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -49,7 +53,7 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 
-import static org.apache.cassandra.net.Verb.ECHO_REQ;
+import static org.apache.cassandra.net.async.OutboundConnectionIdentifier.ConnectionType.SMALL_MESSAGE;
 
 @State(Scope.Thread)
 @Warmup(iterations = 4, time = 1, timeUnit = TimeUnit.SECONDS)
@@ -62,51 +66,52 @@ public class MessageOutBench
     @Param({ "true", "false" })
     private boolean withParams;
 
-    private Message msgOut;
+    private MessageOut msgOut;
     private ByteBuf buf;
-    private InetAddressAndPort addr;
+    MessageInProcessor processor40;
+    MessageInProcessor processorPre40;
 
     @Setup
     public void setup()
     {
         DatabaseDescriptor.daemonInitialization();
+        InetAddressAndPort addr = InetAddressAndPort.getByAddress(InetAddresses.forString("127.0.73.101"));
 
         UUID uuid = UUIDGen.getTimeUUID();
-        Map<ParamType, Object> parameters = new EnumMap<>(ParamType.class);
+        Map<ParameterType, Object> parameters = new EnumMap<>(ParameterType.class);
 
         if (withParams)
         {
-            parameters.put(ParamType.TRACE_SESSION, uuid);
+            parameters.put(ParameterType.FAILURE_RESPONSE, MessagingService.ONE_BYTE);
+            parameters.put(ParameterType.FAILURE_REASON, Shorts.checkedCast(RequestFailureReason.READ_TOO_MANY_TOMBSTONES.code));
+            parameters.put(ParameterType.TRACE_SESSION, uuid);
         }
 
-        addr = InetAddressAndPort.getByAddress(InetAddresses.forString("127.0.73.101"));
-        msgOut = Message.builder(ECHO_REQ, NoPayload.noPayload)
-                        .from(addr)
-                        .build();
+        msgOut = new MessageOut<>(addr, MessagingService.Verb.ECHO, null, null, ImmutableList.of(), SMALL_MESSAGE);
         buf = Unpooled.buffer(1024, 1024); // 1k should be enough for everybody!
+
+        processor40 = MessageIn.getProcessor(addr, MessagingService.VERSION_40, (messageIn, integer) -> {});
+        processorPre40 = MessageIn.getProcessor(addr, MessagingService.VERSION_30, (messageIn, integer) -> {});
     }
 
     @Benchmark
     public int serialize40() throws Exception
     {
-        return serialize(MessagingService.VERSION_40);
+        return serialize(MessagingService.VERSION_40, processor40);
     }
 
-    private int serialize(int messagingVersion) throws IOException
+    private int serialize(int messagingVersion, MessageInProcessor processor) throws IOException
     {
-        try (DataOutputBuffer out = new DataOutputBuffer())
-        {
-            Message.serializer.serialize(Message.builder(msgOut).withCreatedAt(System.nanoTime()).withId(42).build(),
-                                         out, messagingVersion);
-            DataInputBuffer in = new DataInputBuffer(out.buffer(), false);
-            Message.serializer.deserialize(in, addr, messagingVersion);
-            return msgOut.serializedSize(messagingVersion);
-        }
+        buf.resetReaderIndex();
+        buf.resetWriterIndex();
+        msgOut.serialize(new ByteBufDataOutputPlus(buf), messagingVersion, null, 42, System.nanoTime());
+        processor.process(buf);
+        return msgOut.serializedSize(messagingVersion);
     }
 
     @Benchmark
     public int serializePre40() throws Exception
     {
-        return serialize(MessagingService.VERSION_30);
+        return serialize(MessagingService.VERSION_30, processorPre40);
     }
 }

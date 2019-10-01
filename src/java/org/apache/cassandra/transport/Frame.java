@@ -72,7 +72,7 @@ public class Frame
 
     public static Frame create(Message.Type type, int streamId, ProtocolVersion version, EnumSet<Header.Flag> flags, ByteBuf body)
     {
-        Header header = new Header(version, flags, streamId, type, body.readableBytes());
+        Header header = new Header(version, flags, streamId, type);
         return new Frame(header, body);
     }
 
@@ -87,15 +87,13 @@ public class Frame
         public final EnumSet<Flag> flags;
         public final int streamId;
         public final Message.Type type;
-        public final long bodySizeInBytes;
 
-        private Header(ProtocolVersion version, EnumSet<Flag> flags, int streamId, Message.Type type, long bodySizeInBytes)
+        private Header(ProtocolVersion version, EnumSet<Flag> flags, int streamId, Message.Type type)
         {
             this.version = version;
             this.flags = flags;
             this.streamId = streamId;
             this.type = type;
-            this.bodySizeInBytes = bodySizeInBytes;
         }
 
         public enum Flag
@@ -176,7 +174,7 @@ public class Frame
             int firstByte = buffer.getByte(idx++);
             Message.Direction direction = Message.Direction.extractFromVersion(firstByte);
             int versionNum = firstByte & PROTOCOL_VERSION_MASK;
-            ProtocolVersion version = ProtocolVersion.decode(versionNum, DatabaseDescriptor.getNativeTransportAllowOlderProtocols());
+            ProtocolVersion version = ProtocolVersion.decode(versionNum);
 
             // Wait until we have the complete header
             if (readableBytes < Header.LENGTH)
@@ -229,7 +227,7 @@ public class Frame
             idx += bodyLength;
             buffer.readerIndex(idx);
 
-            return new Frame(new Header(version, decodedFlags, streamId, type, bodyLength), body);
+            return new Frame(new Header(version, decodedFlags, streamId, type), body);
         }
 
         @Override

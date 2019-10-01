@@ -37,6 +37,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.db.compaction.CompactionManager.CompactionExecutorStatsCollector;
 import org.apache.cassandra.db.compaction.writers.CompactionAwareWriter;
 import org.apache.cassandra.db.compaction.writers.DefaultCompactionWriter;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
@@ -52,7 +53,7 @@ public class CompactionTask extends AbstractCompactionTask
     protected final int gcBefore;
     protected final boolean keepOriginals;
     protected static long totalBytesCompacted = 0;
-    private ActiveCompactionsTracker activeCompactions;
+    private CompactionExecutorStatsCollector collector;
 
     public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore)
     {
@@ -77,9 +78,9 @@ public class CompactionTask extends AbstractCompactionTask
         return totalBytesCompacted += bytesCompacted;
     }
 
-    protected int executeInternal(ActiveCompactionsTracker activeCompactions)
+    protected int executeInternal(CompactionExecutorStatsCollector collector)
     {
-        this.activeCompactions = activeCompactions == null ? ActiveCompactionsTracker.NOOP : activeCompactions;
+        this.collector = collector;
         run();
         return transaction.originals().size();
     }
@@ -187,7 +188,8 @@ public class CompactionTask extends AbstractCompactionTask
                 if (!controller.cfs.getCompactionStrategyManager().isActive())
                     throw new CompactionInterruptedException(ci.getCompactionInfo());
 
-                activeCompactions.beginCompaction(ci);
+                if (collector != null)
+                    collector.beginCompaction(ci);
 
                 try (CompactionAwareWriter writer = getCompactionAwareWriter(cfs, getDirectories(), transaction, actuallyCompact))
                 {
@@ -217,8 +219,11 @@ public class CompactionTask extends AbstractCompactionTask
                 }
                 finally
                 {
-                    activeCompactions.finishCompaction(ci);
+                    if (collector != null)
+                        collector.finishCompaction(ci);
+
                     mergedRowCounts = ci.getMergedRowCounts();
+
                     totalSourceCQLRows = ci.getTotalSourceCQLRows();
                 }
             }
