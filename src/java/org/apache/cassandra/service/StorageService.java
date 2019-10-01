@@ -107,7 +107,6 @@ import org.apache.cassandra.utils.progress.jmx.JMXProgressSupport;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Iterables.tryFind;
 import static java.util.Arrays.asList;
-import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.stream.Collectors.toList;
@@ -4598,16 +4597,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             setMode(Mode.DRAINING, "starting drain process", !isFinalShutdown);
 
-            try
-            {
-                /* not clear this is reasonable time, but propagated from prior embedded behaviour */
-                BatchlogManager.instance.shutdownAndWait(1L, MINUTES);
-            }
-            catch (TimeoutException t)
-            {
-                logger.error("Batchlog manager timed out shutting down", t);
-            }
-
+            BatchlogManager.instance.shutdown();
             HintsService.instance.pauseDispatch();
 
             if (daemon != null)
@@ -4700,7 +4690,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
             // wait for miscellaneous tasks like sstable and commitlog segment deletion
             ScheduledExecutors.nonPeriodicTasks.shutdown();
-            if (!ScheduledExecutors.nonPeriodicTasks.awaitTermination(1, MINUTES))
+            if (!ScheduledExecutors.nonPeriodicTasks.awaitTermination(1, TimeUnit.MINUTES))
                 logger.warn("Failed to wait for non periodic tasks to shutdown");
 
             ColumnFamilyStore.shutdownPostFlushExecutor();
@@ -5458,14 +5448,5 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         DatabaseDescriptor.setCorruptedTombstoneStrategy(Config.CorruptedTombstoneStrategy.valueOf(strategy));
         logger.info("Setting corrupted tombstone strategy to {}", strategy);
-    }
-
-    @VisibleForTesting
-    public void shutdownServer()
-    {
-        if (drainOnShutdown != null)
-        {
-            Runtime.getRuntime().removeShutdownHook(drainOnShutdown);
-        }
     }
 }
