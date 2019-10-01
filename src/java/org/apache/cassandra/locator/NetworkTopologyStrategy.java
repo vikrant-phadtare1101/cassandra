@@ -32,7 +32,6 @@ import org.apache.cassandra.locator.TokenMetadata.Topology;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
-import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 
 /**
@@ -55,7 +54,6 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
     private final Map<String, ReplicationFactor> datacenters;
     private final ReplicationFactor aggregateRf;
     private static final Logger logger = LoggerFactory.getLogger(NetworkTopologyStrategy.class);
-    private static final String REPLICATION_FACTOR = "replication_factor";
 
     public NetworkTopologyStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions) throws ConfigurationException
     {
@@ -69,9 +67,8 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
             for (Entry<String, String> entry : configOptions.entrySet())
             {
                 String dc = entry.getKey();
-                // prepareOptions should have transformed any "replication_factor" options by now
-                if (dc.equalsIgnoreCase(REPLICATION_FACTOR))
-                    throw new ConfigurationException(REPLICATION_FACTOR + " should not appear as an option at construction time for NetworkTopologyStrategy");
+                if (dc.equalsIgnoreCase("replication_factor"))
+                    throw new ConfigurationException("replication_factor is an option for SimpleStrategy, not NetworkTopologyStrategy");
                 ReplicationFactor rf = ReplicationFactor.fromString(entry.getValue());
                 replicas += rf.allReplicas;
                 trans += rf.transientReplicas();
@@ -178,7 +175,7 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
         // all endpoints in each DC, so we can check when we have exhausted all the members of a DC
         Multimap<String, InetAddressAndPort> allEndpoints = topology.getDatacenterEndpoints();
         // all racks in a DC so we can check when we have exhausted all racks in a DC
-        Map<String, ImmutableMultimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
+        Map<String, Multimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
         assert !allEndpoints.isEmpty() && !racks.isEmpty() : "not aware of any cluster members";
 
         int dcsToFill = 0;
@@ -244,41 +241,6 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
         return Datacenters.getValidDatacenters();
     }
 
-    /**
-     * Support datacenter auto-expansion for CASSANDRA-14303. This hook allows us to safely auto-expand
-     * the "replication_factor" options out into the known datacenters. It is called via reflection from
-     * {@link AbstractReplicationStrategy#prepareReplicationStrategyOptions(Class, Map, Map)}.
-     *
-     * @param options The proposed strategy options that will be potentially mutated
-     * @param previousOptions Any previous strategy options in the case of an ALTER statement
-     */
-    protected static void prepareOptions(Map<String, String> options, Map<String, String> previousOptions)
-    {
-        String replication = options.remove(REPLICATION_FACTOR);
-
-        if (replication == null && options.size() == 0)
-        {
-            // Support direct alters from SimpleStrategy to NTS
-            replication = previousOptions.get(REPLICATION_FACTOR);
-        }
-        else if (replication != null)
-        {
-            // When datacenter auto-expansion occurs in e.g. an ALTER statement (meaning that the previousOptions
-            // map is not empty) we choose not to alter existing datacenter replication levels for safety.
-            previousOptions.entrySet().stream()
-                           .filter(e -> !e.getKey().equals(REPLICATION_FACTOR)) // SimpleStrategy conversions
-                           .forEach(e -> options.putIfAbsent(e.getKey(), e.getValue()));
-        }
-
-        if (replication != null) {
-            ReplicationFactor defaultReplicas = ReplicationFactor.fromString(replication);
-            Datacenters.getValidDatacenters()
-                       .forEach(dc -> options.putIfAbsent(dc, defaultReplicas.toParseableString()));
-        }
-
-        options.values().removeAll(Collections.singleton("0"));
-    }
-
     protected void validateExpectedOptions() throws ConfigurationException
     {
         // Do not accept query with no data centers specified.
@@ -295,9 +257,8 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
     {
         for (Entry<String, String> e : this.configOptions.entrySet())
         {
-            // prepareOptions should have transformed any "replication_factor" by now
-            if (e.getKey().equalsIgnoreCase(REPLICATION_FACTOR))
-                throw new ConfigurationException(REPLICATION_FACTOR + " should not appear as an option to NetworkTopologyStrategy");
+            if (e.getKey().equalsIgnoreCase("replication_factor"))
+                throw new ConfigurationException("replication_factor is an option for SimpleStrategy, not NetworkTopologyStrategy");
             validateReplicationFactor(e.getValue());
         }
     }

@@ -26,7 +26,6 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
-import org.apache.cassandra.db.lifecycle.LifecycleNewTracker;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -621,9 +620,9 @@ public class ScrubTest
 
     private static class TestMultiWriter extends SimpleSSTableMultiWriter
     {
-        TestMultiWriter(SSTableWriter writer, LifecycleNewTracker lifecycleNewTracker)
+        TestMultiWriter(SSTableWriter writer, LifecycleTransaction txn)
         {
-            super(writer, lifecycleNewTracker);
+            super(writer, txn);
         }
     }
 
