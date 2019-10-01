@@ -64,7 +64,6 @@ import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.service.NativeTransportService;
 import org.apache.cassandra.utils.ExecutorUtils;
 import org.apache.cassandra.utils.FBUtilities;
@@ -233,7 +232,7 @@ public final class SocketFactory
         if (options == null)
             return "disabled";
 
-        String encryptionType = SSLFactory.openSslIsAvailable() ? "openssl" : "jdk";
+        String encryptionType = OpenSsl.isAvailable() ? "openssl" : "jdk";
         return "enabled (" + encryptionType + ')';
     }
 
