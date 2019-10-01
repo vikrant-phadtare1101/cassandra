@@ -20,20 +20,13 @@ package org.apache.cassandra.hints;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
-import javax.annotation.Nullable;
 
 import com.google.common.collect.ImmutableMap;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.io.FSError;
 import org.apache.cassandra.io.FSReadError;
-import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.NativeLibrary;
 import org.apache.cassandra.utils.SyncUtil;
 
@@ -44,8 +37,6 @@ import static java.util.stream.Collectors.groupingBy;
  */
 final class HintsCatalog
 {
-    private static final Logger logger = LoggerFactory.getLogger(HintsCatalog.class);
-
     private final File hintsDirectory;
     private final Map<UUID, HintsStore> stores;
     private final ImmutableMap<String, Object> writerParams;
@@ -65,14 +56,12 @@ final class HintsCatalog
      */
     static HintsCatalog load(File hintsDirectory, ImmutableMap<String, Object> writerParams)
     {
-        try(Stream<Path> list = Files.list(hintsDirectory.toPath()))
+        try
         {
             Map<UUID, List<HintsDescriptor>> stores =
-                     list
+                Files.list(hintsDirectory.toPath())
                      .filter(HintsDescriptor::isHintFileName)
-                     .map(HintsDescriptor::readFromFileQuietly)
-                     .filter(Optional::isPresent)
-                     .map(Optional::get)
+                     .map(HintsDescriptor::readFromFile)
                      .collect(groupingBy(h -> h.hostId));
             return new HintsCatalog(hintsDirectory, writerParams, stores);
         }
@@ -101,12 +90,6 @@ final class HintsCatalog
         return store == null
              ? stores.computeIfAbsent(hostId, (id) -> HintsStore.create(id, hintsDirectory, writerParams, Collections.emptyList()))
              : store;
-    }
-
-    @Nullable
-    HintsStore getNullable(UUID hostId)
-    {
-        return stores.get(hostId);
     }
 
     /**
@@ -150,21 +133,8 @@ final class HintsCatalog
         int fd = NativeLibrary.tryOpenDirectory(hintsDirectory.getAbsolutePath());
         if (fd != -1)
         {
-            try
-            {
-                SyncUtil.trySync(fd);
-                NativeLibrary.tryCloseFD(fd);
-            }
-            catch (FSError e) // trySync failed
-            {
-                logger.error("Unable to sync directory {}", hintsDirectory.getAbsolutePath(), e);
-                FileUtils.handleFSErrorAndPropagate(e);
-            }
-        }
-        else
-        {
-            logger.error("Unable to open directory {}", hintsDirectory.getAbsolutePath());
-            FileUtils.handleFSErrorAndPropagate(new FSWriteError(new IOException(String.format("Unable to open hint directory %s", hintsDirectory.getAbsolutePath())), hintsDirectory.getAbsolutePath()));
+            SyncUtil.trySync(fd);
+            NativeLibrary.tryCloseFD(fd);
         }
     }
 

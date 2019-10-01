@@ -17,14 +17,32 @@
  */
 package org.apache.cassandra.metrics;
 
+import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadPoolExecutor;
 
 import com.codahale.metrics.Counter;
 import com.codahale.metrics.Gauge;
-import org.apache.cassandra.concurrent.LocalAwareExecutorService;
-import org.apache.cassandra.metrics.CassandraMetricsRegistry.MetricName;
+import com.codahale.metrics.JmxReporter;
+import java.util.concurrent.TimeUnit;
 
-import static java.lang.String.format;
+import javax.management.JMX;
+import javax.management.MBeanServerConnection;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+
+import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
+import org.apache.cassandra.concurrent.ScheduledExecutors;
+
+import com.codahale.metrics.Meter;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multimap;
 
 import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
@@ -33,40 +51,33 @@ import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
  */
 public class ThreadPoolMetrics
 {
-    public static final String ACTIVE_TASKS = "ActiveTasks";
-    public static final String PENDING_TASKS = "PendingTasks";
-    public static final String COMPLETED_TASKS = "CompletedTasks";
-    public static final String CURRENTLY_BLOCKED_TASKS = "CurrentlyBlockedTasks";
-    public static final String TOTAL_BLOCKED_TASKS = "TotalBlockedTasks";
-    public static final String MAX_POOL_SIZE = "MaxPoolSize";
-    public static final String MAX_TASKS_QUEUED = "MaxTasksQueued";
-
     /** Number of active tasks. */
     public final Gauge<Integer> activeTasks;
-
-    /** Number of tasks waiting to be executed. */
-    public final Gauge<Integer> pendingTasks;
-
-    /** Number of completed tasks. */
-    public final Gauge<Long> completedTasks;
-
+    /** Number of tasks that had blocked before being accepted (or rejected). */
+    public final Counter totalBlocked;
     /**
      * Number of tasks currently blocked, waiting to be accepted by
      * the executor (because all threads are busy and the backing queue is full).
      */
     public final Counter currentBlocked;
-
-    /** Number of tasks that had blocked before being accepted (or rejected). */
-    public final Counter totalBlocked;
-
+    /** Number of completed tasks. */
+    public final Gauge<Long> completedTasks;
+    /** Number of tasks waiting to be executed. */
+    public final Gauge<Long> pendingTasks;
     /** Maximum number of threads before it will start queuing tasks */
     public final Gauge<Integer> maxPoolSize;
 
-    /** Maximum number of tasks queued before a task get blocked */
-    public final Gauge<Integer> maxTasksQueued;
+    private ConcurrentMap<Long, ThreadMetricState> lastStatsByThreadId = new ConcurrentHashMap<>();
 
-    public final String path;
-    public final String poolName;
+    /** Approximate amount of cpu time (ns/s) spent on threads in this executor */
+    public final Meter cpu;
+    /** Approximate amount of allocations in bytes by threads in this executor */
+    public final Meter alloc;
+
+    private MetricNameFactory factory;
+    private final JMXEnabledThreadPoolExecutor executor;
+
+    private static final ThreadMXBean bean = ManagementFactory.getThreadMXBean();
 
     /**
      * Create metrics for given ThreadPoolExecutor.
@@ -75,51 +86,138 @@ public class ThreadPoolMetrics
      * @param path Type of thread pool
      * @param poolName Name of thread pool to identify metrics
      */
-    public ThreadPoolMetrics(LocalAwareExecutorService executor, String path, String poolName)
+    public ThreadPoolMetrics(final JMXEnabledThreadPoolExecutor executor, String path, String poolName)
     {
-        this.path = path;
-        this.poolName = poolName;
+        this.factory = new ThreadPoolMetricNameFactory("ThreadPools", path, poolName);
+        this.executor = executor;
 
-        totalBlocked = new Counter();
-        currentBlocked = new Counter();
-        activeTasks = executor::getActiveTaskCount;
-        pendingTasks = executor::getPendingTaskCount;
-        completedTasks = executor::getCompletedTaskCount;
-        maxPoolSize = executor::getMaximumPoolSize;
-        maxTasksQueued = executor::getMaxTasksQueued;
-    }
+        cpu = Metrics.meter(factory.createMetricName("CPU"));
+        alloc = Metrics.meter(factory.createMetricName("Allocations"));
 
-    public ThreadPoolMetrics register()
-    {
-        Metrics.register(makeMetricName(path, poolName, ACTIVE_TASKS), activeTasks);
-        Metrics.register(makeMetricName(path, poolName, PENDING_TASKS), pendingTasks);
-        Metrics.register(makeMetricName(path, poolName, COMPLETED_TASKS), completedTasks);
-        Metrics.register(makeMetricName(path, poolName, CURRENTLY_BLOCKED_TASKS), currentBlocked);
-        Metrics.register(makeMetricName(path, poolName, TOTAL_BLOCKED_TASKS), totalBlocked);
-        Metrics.register(makeMetricName(path, poolName, MAX_POOL_SIZE), maxPoolSize);
-        Metrics.register(makeMetricName(path, poolName, MAX_TASKS_QUEUED), maxTasksQueued);
-        return Metrics.register(this);
+        activeTasks = Metrics.register(factory.createMetricName("ActiveTasks"), new Gauge<Integer>()
+        {
+            public Integer getValue()
+            {
+                return executor.getActiveCount();
+            }
+        });
+        totalBlocked = Metrics.counter(factory.createMetricName("TotalBlockedTasks"));
+        currentBlocked = Metrics.counter(factory.createMetricName("CurrentlyBlockedTasks"));
+        completedTasks = Metrics.register(factory.createMetricName("CompletedTasks"), new Gauge<Long>()
+        {
+            public Long getValue()
+            {
+                return executor.getCompletedTaskCount();
+            }
+        });
+        pendingTasks = Metrics.register(factory.createMetricName("PendingTasks"), new Gauge<Long>()
+        {
+            public Long getValue()
+            {
+                return executor.getTaskCount() - executor.getCompletedTaskCount();
+            }
+        });
+        maxPoolSize = Metrics.register(factory.createMetricName("MaxPoolSize"), new Gauge<Integer>()
+        {
+            public Integer getValue()
+            {
+                return executor.getMaximumPoolSize();
+            }
+        });
+        ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(this::updateCpuAlloc, 30, 30, TimeUnit.SECONDS);
     }
 
     public void release()
     {
-        Metrics.remove(makeMetricName(path, poolName, ACTIVE_TASKS));
-        Metrics.remove(makeMetricName(path, poolName, PENDING_TASKS));
-        Metrics.remove(makeMetricName(path, poolName, COMPLETED_TASKS));
-        Metrics.remove(makeMetricName(path, poolName, CURRENTLY_BLOCKED_TASKS));
-        Metrics.remove(makeMetricName(path, poolName, TOTAL_BLOCKED_TASKS));
-        Metrics.remove(makeMetricName(path, poolName, MAX_POOL_SIZE));
-        Metrics.remove(makeMetricName(path, poolName, MAX_TASKS_QUEUED));
-        Metrics.remove(this);
+        Metrics.remove(factory.createMetricName("ActiveTasks"));
+        Metrics.remove(factory.createMetricName("PendingTasks"));
+        Metrics.remove(factory.createMetricName("CompletedTasks"));
+        Metrics.remove(factory.createMetricName("TotalBlockedTasks"));
+        Metrics.remove(factory.createMetricName("CurrentlyBlockedTasks"));
+        Metrics.remove(factory.createMetricName("MaxPoolSize"));
     }
 
-    private static MetricName makeMetricName(String path, String poolName, String metricName)
+    public static Object getJmxMetric(MBeanServerConnection mbeanServerConn, String jmxPath, String poolName, String metricName)
     {
-        return new MetricName("org.apache.cassandra.metrics",
-                              "ThreadPools",
-                              metricName,
-                              path + '.' + poolName,
-                              format("org.apache.cassandra.metrics:type=ThreadPools,path=%s,scope=%s,name=%s",
-                                     path, poolName, metricName));
+        String name = String.format("org.apache.cassandra.metrics:type=ThreadPools,path=%s,scope=%s,name=%s", jmxPath, poolName, metricName);
+
+        try
+        {
+            ObjectName oName = new ObjectName(name);
+            if (!mbeanServerConn.isRegistered(oName))
+            {
+                return "N/A";
+            }
+
+            switch (metricName)
+            {
+                case "CPU":
+                case "Allocations":
+                    double rate = JMX.newMBeanProxy(mbeanServerConn, oName, JmxReporter.JmxMeterMBean.class).getOneMinuteRate();
+                    rate = rate / 1_000_000; // bytes to mb, and ns to ms
+                    return Integer.toString((int) rate);
+                case "ActiveTasks":
+                case "PendingTasks":
+                case "CompletedTasks":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, JmxReporter.JmxGaugeMBean.class).getValue();
+                case "TotalBlockedTasks":
+                case "CurrentlyBlockedTasks":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, JmxReporter.JmxCounterMBean.class).getCount();
+                default:
+                    throw new AssertionError("Unknown metric name " + metricName);
+            }
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException("Error reading: " + name, e);
+        }
     }
+
+    public synchronized void updateCpuAlloc()
+    {
+        for (long tid : ImmutableList.copyOf(executor.threadIds))
+        {
+            updateThreadStats(tid);
+        }
+    }
+
+    public synchronized void updateThreadStats(long threadId)
+    {
+        ThreadMetricState state = lastStatsByThreadId.computeIfAbsent(threadId, t-> new ThreadMetricState(threadId, cpu, alloc));
+
+        ThreadInfo info = bean.getThreadInfo(threadId, 0);
+        if (info == null)
+        {
+            executor.threadIds.remove(threadId);
+            lastStatsByThreadId.remove(threadId);
+            return;
+        }
+
+        state.update();
+    }
+
+    public static Multimap<String, String> getJmxThreadPools(MBeanServerConnection mbeanServerConn)
+    {
+        try
+        {
+            Multimap<String, String> threadPools = HashMultimap.create();
+            Set<ObjectName> threadPoolObjectNames = mbeanServerConn.queryNames(new ObjectName("org.apache.cassandra.metrics:type=ThreadPools,*"),
+                                                                               null);
+            for (ObjectName oName : threadPoolObjectNames)
+            {
+                threadPools.put(oName.getKeyProperty("path"), oName.getKeyProperty("scope"));
+            }
+
+            return threadPools;
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException("Bad query to JMX server: ", e);
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException("Error getting threadpool names from JMX", e);
+        }
+    }
+
 }

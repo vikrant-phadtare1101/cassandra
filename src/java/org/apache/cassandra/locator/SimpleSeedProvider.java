@@ -52,9 +52,7 @@ public class SimpleSeedProvider implements SeedProvider
         {
             try
             {
-                if(!host.trim().isEmpty()) {
-                    seeds.add(InetAddressAndPort.getByName(host.trim()));
-                }
+                seeds.add(InetAddressAndPort.getByName(host.trim()));
             }
             catch (UnknownHostException ex)
             {

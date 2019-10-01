@@ -24,7 +24,7 @@ import com.google.common.base.Objects;
 import org.apache.cassandra.locator.InetAddressAndPort;
 
 /**
- * ProgressInfo contains stream transfer progress.
+ * ProgressInfo contains file transfer progress.
  */
 public class ProgressInfo implements Serializable
 {
@@ -69,7 +69,7 @@ public class ProgressInfo implements Serializable
     }
 
     /**
-     * @return true if transfer is completed
+     * @return true if file transfer is completed
      */
     public boolean isCompleted()
     {
