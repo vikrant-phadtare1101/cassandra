@@ -21,26 +21,25 @@ import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.io.*;
+import java.lang.management.ManagementFactory;
 import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.*;
 
-import org.apache.cassandra.locator.Replica;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.MBeanWrapper;
-
-import static org.apache.cassandra.utils.MonotonicClock.preciseTime;
 
 /**
  * This FailureDetector is an implementation of the paper titled
@@ -56,7 +55,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     private static final int DEBUG_PERCENTAGE = 80; // if the phi is larger than this percentage of the max, log a debug message
     private static final long DEFAULT_MAX_PAUSE = 5000L * 1000000L; // 5 seconds
     private static final long MAX_LOCAL_PAUSE_IN_NANOS = getMaxLocalPause();
-    private long lastInterpret = preciseTime.now();
+    private long lastInterpret = Clock.instance.nanoTime();
     private long lastPause = 0L;
 
     private static long getMaxLocalPause()
@@ -72,8 +71,6 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     }
 
     public static final IFailureDetector instance = new FailureDetector();
-    public static final Predicate<InetAddressAndPort> isEndpointAlive = instance::isAlive;
-    public static final Predicate<Replica> isReplicaAlive = r -> isEndpointAlive.test(r.endpoint());
 
     // this is useless except to provide backwards compatibility in phi_convict_threshold,
     // because everyone seems pretty accustomed to the default of 8, and users who have
@@ -87,7 +84,15 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     public FailureDetector()
     {
         // Register this instance with JMX
-        MBeanWrapper.instance.registerMBean(this, MBEAN_NAME);
+        try
+        {
+            MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+            mbs.registerMBean(this, new ObjectName(MBEAN_NAME));
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 
     private static long getInitialValue()
@@ -284,7 +289,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
 
     public void report(InetAddressAndPort ep)
     {
-        long now = preciseTime.now();
+        long now = Clock.instance.nanoTime();
         ArrivalWindow heartbeatWindow = arrivalSamples.get(ep);
         if (heartbeatWindow == null)
         {
@@ -311,7 +316,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
         {
             return;
         }
-        long now = preciseTime.now();
+        long now = Clock.instance.nanoTime();
         long diff = now - lastInterpret;
         lastInterpret = now;
         if (diff > MAX_LOCAL_PAUSE_IN_NANOS)
@@ -320,7 +325,7 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
             lastPause = now;
             return;
         }
-        if (preciseTime.now() - lastPause < MAX_LOCAL_PAUSE_IN_NANOS)
+        if (Clock.instance.nanoTime() - lastPause < MAX_LOCAL_PAUSE_IN_NANOS)
         {
             logger.debug("Still not marking nodes down due to local pause");
             return;

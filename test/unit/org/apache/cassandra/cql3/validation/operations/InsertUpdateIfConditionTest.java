@@ -1232,24 +1232,6 @@ public class InsertUpdateIfConditionTest extends CQLTester
         }
     }
 
-    @Test
-    public void testFrozenWithNullValues() throws Throwable
-    {
-        createTable(String.format("CREATE TABLE %%s (k int PRIMARY KEY, m %s)", "frozen<list<text>>"));
-        execute("INSERT INTO %s (k, m) VALUES (0, null)");
-
-        assertRows(execute("UPDATE %s SET m = ? WHERE k = 0 IF m = ?", list("test"), list("comparison")), row(false, null));
-
-        createTable(String.format("CREATE TABLE %%s (k int PRIMARY KEY, m %s)", "frozen<map<text,int>>"));
-        execute("INSERT INTO %s (k, m) VALUES (0, null)");
-
-        assertRows(execute("UPDATE %s SET m = ? WHERE k = 0 IF m = ?", map("test", 3), map("comparison", 2)), row(false, null));
-
-        createTable(String.format("CREATE TABLE %%s (k int PRIMARY KEY, m %s)", "frozen<set<text>>"));
-        execute("INSERT INTO %s (k, m) VALUES (0, null)");
-
-        assertRows(execute("UPDATE %s SET m = ? WHERE k = 0 IF m = ?", set("test"), set("comparison")), row(false, null));
-    }
     /**
      * Test expanded functionality from CASSANDRA-6839,
      * migrated from cql_tests.py:TestCQL.expanded_map_item_conditional_test()
@@ -1414,8 +1396,10 @@ public class InsertUpdateIfConditionTest extends CQLTester
     {
         String tableName = createTable("CREATE TABLE %s (id text PRIMARY KEY, value1 blob, value2 blob)with comment = 'foo'");
 
+        execute("use " + KEYSPACE);
+
         // try dropping when doesn't exist
-        schemaChange(format("DROP INDEX IF EXISTS %s.myindex", KEYSPACE));
+        schemaChange("DROP INDEX IF EXISTS myindex");
 
         // create and confirm
         createIndex("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
@@ -1426,7 +1410,7 @@ public class InsertUpdateIfConditionTest extends CQLTester
         execute("CREATE INDEX IF NOT EXISTS myindex ON %s (value1)");
 
         // drop and confirm
-        execute(format("DROP INDEX IF EXISTS %s.myindex", KEYSPACE));
+        execute("DROP INDEX IF EXISTS myindex");
 
         Object[][] rows = getRows(execute("select index_name from system.\"IndexInfo\" where table_name = ?", tableName));
         assertEquals(0, rows.length);

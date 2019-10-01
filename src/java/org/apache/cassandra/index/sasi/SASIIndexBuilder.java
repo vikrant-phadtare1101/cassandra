@@ -127,8 +127,7 @@ class SASIIndexBuilder extends SecondaryIndexBuilder
                                   OperationType.INDEX_BUILD,
                                   bytesProcessed,
                                   totalSizeInBytes,
-                                  compactionId,
-                                  sstables.keySet());
+                                  compactionId);
     }
 
     private long getPrimaryIndexLength(SSTable sstable)

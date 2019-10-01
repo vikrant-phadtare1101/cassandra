@@ -73,23 +73,20 @@ public class LatencyTrackingBench
     }
 
     @Setup(Level.Iteration)
-    public void setup() 
-    {
+    public void setup() {
         parent = new LatencyMetrics("test", "testCF");
         grandParent = new LatencyMetrics("test", "testCF");
 
         // Replicates behavior from ColumnFamilyStore metrics
         metrics = new LatencyMetrics(factory, "testCF", parent, grandParent);
         dehr = new DecayingEstimatedHistogramReservoir(false);
-        for(int i = 0; i < 1024; i++) 
-        {
+        for(int i = 0; i < 1024; i++) {
             values[i] = TimeUnit.MICROSECONDS.toNanos(ThreadLocalRandom.current().nextLong(346));
         }
     }
 
     @Setup(Level.Invocation)
-    public void reset() 
-    {
+    public void reset() {
         dehr = new DecayingEstimatedHistogramReservoir(false);
         metrics.release();
         metrics = new LatencyMetrics(factory, "testCF", parent, grandParent);
@@ -97,20 +94,16 @@ public class LatencyTrackingBench
 
     @Benchmark
     @OperationsPerInvocation(1024)
-    public void benchLatencyMetricsWrite() 
-    {
-        for(int i = 0; i < values.length; i++) 
-        {
+    public void benchLatencyMetricsWrite() {
+        for(int i = 0; i < values.length; i++) {
             metrics.addNano(values[i]);
         }
     }
 
     @Benchmark
     @OperationsPerInvocation(1024)
-    public void benchInsertToDEHR(Blackhole bh) 
-    {
-        for(int i = 0; i < values.length; i++) 
-        {
+    public void benchInsertToDEHR(Blackhole bh) {
+        for(int i = 0; i < values.length; i++) {
             dehr.update(values[i]);
         }
         bh.consume(dehr);
