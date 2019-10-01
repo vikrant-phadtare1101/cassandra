@@ -65,8 +65,7 @@ public class BulkLoader
                         buildSSLOptions(options.clientEncOptions),
                         options.allowServerPortDiscovery),
                         handler,
-                        options.connectionsPerHost,
-                        options.targetKeyspace);
+                        options.connectionsPerHost);
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
         DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(options.interDcThrottle);
         StreamResultFuture future = null;
@@ -265,7 +264,7 @@ public class BulkLoader
 
         return JdkSSLOptions.builder()
                             .withSSLContext(sslContext)
-                            .withCipherSuites(clientEncryptionOptions.cipher_suites.toArray(new String[0]))
+                            .withCipherSuites(clientEncryptionOptions.cipher_suites)
                             .build();
     }
 

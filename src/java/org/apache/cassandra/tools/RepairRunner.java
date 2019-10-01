@@ -119,9 +119,7 @@ public class RepairRunner extends JMXNotificationProgressListener
         out.println(message);
         if (type == ProgressEventType.ERROR)
         {
-            error = new RuntimeException(String.format("Repair job has failed with the error message: %s. " +
-                                                       "Check the logs on the repair participants for further details",
-                                                       message));
+            error = new RuntimeException("Repair job has failed with the error message: " + message);
         }
         if (type == ProgressEventType.COMPLETE)
         {

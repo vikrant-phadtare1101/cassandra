@@ -18,16 +18,17 @@
 
 package org.apache.cassandra.cql3.statements;
 
-import java.util.List;
+import java.util.Collection;
 
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.IMutation;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.schema.TableMetadata;
 
 public interface UpdatesCollector
 {
     PartitionUpdate.Builder getPartitionUpdateBuilder(TableMetadata metadata, DecoratedKey dk, ConsistencyLevel consistency);
-    List<IMutation> toMutations();
+    Collection<IMutation> toMutations();
 }

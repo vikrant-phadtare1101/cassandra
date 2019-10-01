@@ -39,12 +39,11 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
-import org.apache.cassandra.cql3.statements.schema.CreateTableStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.repair.messages.RepairOption;
 import org.apache.cassandra.schema.KeyspaceMetadata;
@@ -124,6 +123,7 @@ public final class SystemDistributedKeyspace
     {
         return CreateTableStatement.parse(format(cql, table), SchemaConstants.DISTRIBUTED_KEYSPACE_NAME)
                                    .id(TableId.forSystemTable(SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, table))
+                                   .dcLocalReadRepairChance(0.0)
                                    .comment(description)
                                    .build();
     }
@@ -186,17 +186,13 @@ public final class SystemDistributedKeyspace
         processSilent(fmtQuery);
     }
 
-    public static void startRepairs(UUID id, UUID parent_id, String keyspaceName, String[] cfnames, CommonRange commonRange)
+    public static void startRepairs(UUID id, UUID parent_id, String keyspaceName, String[] cfnames, Collection<Range<Token>> ranges, Iterable<InetAddressAndPort> endpoints)
     {
-        //Don't record repair history if an upgrade is in progress as version 3 nodes generates errors
-        //due to schema differences
-        boolean includeNewColumns = !Gossiper.instance.haveMajorVersion3Nodes();
-
         InetAddressAndPort coordinator = FBUtilities.getBroadcastAddressAndPort();
         Set<String> participants = Sets.newHashSet();
         Set<String> participants_v2 = Sets.newHashSet();
 
-        for (InetAddressAndPort endpoint : commonRange.endpoints)
+        for (InetAddressAndPort endpoint : endpoints)
         {
             participants.add(endpoint.getHostAddress(false));
             participants_v2.add(endpoint.toString());
@@ -205,43 +201,23 @@ public final class SystemDistributedKeyspace
         String query =
                 "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, coordinator_port, participants, participants_v2, status, started_at) " +
                         "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',        %d,               { '%s' },     { '%s' },        '%s',   toTimestamp(now()))";
-        String queryWithoutNewColumns =
-                "INSERT INTO %s.%s (keyspace_name, columnfamily_name, id, parent_id, range_begin, range_end, coordinator, participants, status, started_at) " +
-                        "VALUES (   '%s',          '%s',              %s, %s,        '%s',        '%s',      '%s',               { '%s' },        '%s',   toTimestamp(now()))";
 
         for (String cfname : cfnames)
         {
-            for (Range<Token> range : commonRange.ranges)
+            for (Range<Token> range : ranges)
             {
-                String fmtQry;
-                if (includeNewColumns)
-                {
-                    fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    coordinator.port,
-                                    Joiner.on("', '").join(participants),
-                                    Joiner.on("', '").join(participants_v2),
-                                    RepairState.STARTED.toString());
-                }
-                else
-                {
-                    fmtQry = format(queryWithoutNewColumns, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
-                                    keyspaceName,
-                                    cfname,
-                                    id.toString(),
-                                    parent_id.toString(),
-                                    range.left.toString(),
-                                    range.right.toString(),
-                                    coordinator.getHostAddress(false),
-                                    Joiner.on("', '").join(participants),
-                                    RepairState.STARTED.toString());
-                }
+                String fmtQry = format(query, SchemaConstants.DISTRIBUTED_KEYSPACE_NAME, REPAIR_HISTORY,
+                                              keyspaceName,
+                                              cfname,
+                                              id.toString(),
+                                              parent_id.toString(),
+                                              range.left.toString(),
+                                              range.right.toString(),
+                                              coordinator.getHostAddress(false),
+                                              coordinator.port,
+                                              Joiner.on("', '").join(participants),
+                                              Joiner.on("', '").join(participants_v2),
+                                              RepairState.STARTED.toString());
                 processSilent(fmtQry);
             }
         }

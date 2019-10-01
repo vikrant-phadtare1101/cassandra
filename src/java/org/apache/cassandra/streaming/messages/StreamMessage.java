@@ -23,8 +23,6 @@ import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.streaming.StreamSession;
 
-import static java.lang.Math.max;
-
 /**
  * StreamMessage is an abstract base class that every messages in streaming protocol inherit.
  *
@@ -32,9 +30,14 @@ import static java.lang.Math.max;
  */
 public abstract class StreamMessage
 {
+    /** Streaming protocol version */
+    public static final int VERSION_40 = 5;
+    public static final int CURRENT_VERSION = VERSION_40;
+
     public static void serialize(StreamMessage message, DataOutputStreamPlus out, int version, StreamSession session) throws IOException
     {
-        out.writeByte(message.type.id);
+        // message type
+        out.writeByte(message.type.type);
         message.type.outSerializer.serialize(message, out, version, session);
     }
 
@@ -45,7 +48,10 @@ public abstract class StreamMessage
 
     public static StreamMessage deserialize(DataInputPlus in, int version, StreamSession session) throws IOException
     {
-        Type type = Type.lookupById(in.readByte());
+        byte b = in.readByte();
+        if (b == 0)
+            b = -1;
+        Type type = Type.get(b);
         return type.inSerializer.deserialize(in, version, session);
     }
 
@@ -60,63 +66,41 @@ public abstract class StreamMessage
     /** StreamMessage types */
     public enum Type
     {
-        PREPARE_SYN    (1,  5, PrepareSynMessage.serializer   ),
-        STREAM         (2,  0, IncomingStreamMessage.serializer, OutgoingStreamMessage.serializer),
-        RECEIVED       (3,  4, ReceivedMessage.serializer     ),
-        COMPLETE       (5,  1, CompleteMessage.serializer     ),
-        SESSION_FAILED (6,  5, SessionFailedMessage.serializer),
-        KEEP_ALIVE     (7,  5, KeepAliveMessage.serializer    ),
-        PREPARE_SYNACK (8,  5, PrepareSynAckMessage.serializer),
-        PREPARE_ACK    (9,  5, PrepareAckMessage.serializer   ),
-        STREAM_INIT    (10, 5, StreamInitMessage.serializer   );
+        PREPARE_SYN(1, 5, PrepareSynMessage.serializer),
+        FILE(2, 0, IncomingFileMessage.serializer, OutgoingFileMessage.serializer),
+        RECEIVED(3, 4, ReceivedMessage.serializer),
+        COMPLETE(5, 1, CompleteMessage.serializer),
+        SESSION_FAILED(6, 5, SessionFailedMessage.serializer),
+        KEEP_ALIVE(7, 5, KeepAliveMessage.serializer),
+        PREPARE_SYNACK(8, 5, PrepareSynAckMessage.serializer),
+        PREPARE_ACK(9, 5, PrepareAckMessage.serializer),
+        STREAM_INIT(10, 5, StreamInitMessage.serializer);
 
-        private static final Type[] idToTypeMap;
-
-        static
+        public static Type get(byte type)
         {
-            Type[] values = values();
-
-            int max = Integer.MIN_VALUE;
-            for (Type t : values)
-                max = max(t.id, max);
-
-            Type[] idMap = new Type[max + 1];
-            for (Type t : values)
+            for (Type t : Type.values())
             {
-                if (idMap[t.id] != null)
-                    throw new RuntimeException("Two StreamMessage Types map to the same id: " + t.id);
-                idMap[t.id] = t;
+                if (t.type == type)
+                    return t;
             }
-
-            idToTypeMap = idMap;
+            throw new IllegalArgumentException("Unknown type " + type);
         }
 
-        public static Type lookupById(int id)
-        {
-            if (id < 0 || id >= idToTypeMap.length)
-                throw new IllegalArgumentException("Invalid type id: " + id);
-
-            return idToTypeMap[id];
-        }
-
-        public final int id;
+        private final byte type;
         public final int priority;
-
         public final Serializer<StreamMessage> inSerializer;
         public final Serializer<StreamMessage> outSerializer;
 
-        Type(int id, int priority, Serializer serializer)
+        @SuppressWarnings("unchecked")
+        private Type(int type, int priority, Serializer serializer)
         {
-            this(id, priority, serializer, serializer);
+            this(type, priority, serializer, serializer);
         }
 
         @SuppressWarnings("unchecked")
-        Type(int id, int priority, Serializer inSerializer, Serializer outSerializer)
+        private Type(int type, int priority, Serializer inSerializer, Serializer outSerializer)
         {
-            if (id < 0 || id > Byte.MAX_VALUE)
-                throw new IllegalArgumentException("StreamMessage Type id must be non-negative and less than " + Byte.MAX_VALUE);
-
-            this.id = id;
+            this.type = (byte) type;
             this.priority = priority;
             this.inSerializer = inSerializer;
             this.outSerializer = outSerializer;

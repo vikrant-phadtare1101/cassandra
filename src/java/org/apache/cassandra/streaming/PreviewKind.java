@@ -21,19 +21,26 @@ package org.apache.cassandra.streaming;
 
 import java.util.UUID;
 
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
+
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+
 public enum PreviewKind
 {
-    NONE(0),
-    ALL(1),
-    UNREPAIRED(2),
-    REPAIRED(3);
+    NONE(0, null),
+    ALL(1, Predicates.alwaysTrue()),
+    UNREPAIRED(2, Predicates.not(SSTableReader::isRepaired)),
+    REPAIRED(3, SSTableReader::isRepaired);
 
     private final int serializationVal;
+    private final Predicate<SSTableReader> streamingPredicate;
 
-    PreviewKind(int serializationVal)
+    PreviewKind(int serializationVal, Predicate<SSTableReader> streamingPredicate)
     {
         assert ordinal() == serializationVal;
         this.serializationVal = serializationVal;
+        this.streamingPredicate = streamingPredicate;
     }
 
     public int getSerializationVal()
@@ -46,6 +53,10 @@ public enum PreviewKind
         return values()[serializationVal];
     }
 
+    public Predicate<SSTableReader> getStreamingPredicate()
+    {
+        return streamingPredicate;
+    }
 
     public boolean isPreview()
     {
