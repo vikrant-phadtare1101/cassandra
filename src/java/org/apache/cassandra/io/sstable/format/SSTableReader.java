@@ -1943,9 +1943,9 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         return sstableMetadata.estimatedPartitionSize;
     }
 
-    public EstimatedHistogram getEstimatedCellPerPartitionCount()
+    public EstimatedHistogram getEstimatedColumnCount()
     {
-        return sstableMetadata.estimatedCellPerPartitionCount;
+        return sstableMetadata.estimatedColumnCount;
     }
 
     public double getEstimatedDroppableTombstoneRatio(int gcBefore)
@@ -2496,8 +2496,13 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public static void shutdownBlocking(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
     {
-
-        ExecutorUtils.shutdownNowAndWait(timeout, unit, syncExecutor);
+        if (syncExecutor != null)
+        {
+            syncExecutor.shutdownNow();
+            syncExecutor.awaitTermination(timeout, unit);
+            if (!syncExecutor.isTerminated())
+                throw new TimeoutException();
+        }
         resetTidying();
     }
 }
