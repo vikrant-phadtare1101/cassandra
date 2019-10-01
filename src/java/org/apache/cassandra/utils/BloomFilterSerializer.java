@@ -17,46 +17,54 @@
  */
 package org.apache.cassandra.utils;
 
-import java.io.DataInputStream;
+import java.io.DataInput;
 import java.io.IOException;
 
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.obs.IBitSet;
 import org.apache.cassandra.utils.obs.OffHeapBitSet;
+import org.apache.cassandra.utils.obs.OpenBitSet;
 
-public final class BloomFilterSerializer
+class BloomFilterSerializer implements ISerializer<BloomFilter>
 {
-    private BloomFilterSerializer()
-    {
-    }
-
-    public static void serialize(BloomFilter bf, DataOutputPlus out) throws IOException
+    public void serialize(BloomFilter bf, DataOutputPlus out) throws IOException
     {
         out.writeInt(bf.hashCount);
         bf.bitset.serialize(out);
     }
 
+    public BloomFilter deserialize(DataInput in) throws IOException
+    {
+        return deserialize(in, false);
+    }
+
     @SuppressWarnings("resource")
-    public static BloomFilter deserialize(DataInputStream in, boolean oldBfFormat) throws IOException
+    public BloomFilter deserialize(DataInput in, boolean offheap) throws IOException
     {
         int hashes = in.readInt();
-        IBitSet bs = OffHeapBitSet.deserialize(in, oldBfFormat);
+        IBitSet bs = offheap ? OffHeapBitSet.deserialize(in) : OpenBitSet.deserialize(in);
+        return createFilter(hashes, bs);
+    }
 
+    BloomFilter createFilter(int hashes, IBitSet bs)
+    {
         return new BloomFilter(hashes, bs);
     }
 
     /**
      * Calculates a serialized size of the given Bloom Filter
-     * @param bf Bloom filter to calculate serialized size
      * @see org.apache.cassandra.io.ISerializer#serialize(Object, org.apache.cassandra.io.util.DataOutputPlus)
+     *
+     * @param bf Bloom filter to calculate serialized size
      *
      * @return serialized size of the given bloom filter
      */
-    public static long serializedSize(BloomFilter bf)
+    public long serializedSize(BloomFilter bf, TypeSizes typeSizes)
     {
-        int size = TypeSizes.sizeof(bf.hashCount); // hash count
-        size += bf.bitset.serializedSize();
+        int size = typeSizes.sizeof(bf.hashCount); // hash count
+        size += bf.bitset.serializedSize(typeSizes);
         return size;
     }
 }

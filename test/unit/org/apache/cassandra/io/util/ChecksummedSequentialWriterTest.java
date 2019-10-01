@@ -24,21 +24,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.After;
-import org.junit.BeforeClass;
 
-import org.junit.Assert;
-import org.apache.cassandra.config.DatabaseDescriptor;
+import junit.framework.Assert;
 
 public class ChecksummedSequentialWriterTest extends SequentialWriterTest
 {
 
     private final List<TestableCSW> writers = new ArrayList<>();
-
-    @BeforeClass
-    public static void setupDD()
-    {
-        DatabaseDescriptor.daemonInitialization();
-    }
 
     @After
     public void cleanup()
@@ -67,9 +59,7 @@ public class ChecksummedSequentialWriterTest extends SequentialWriterTest
 
         private TestableCSW(File file, File crcFile) throws IOException
         {
-            this(file, crcFile, new ChecksummedSequentialWriter(file, crcFile, null, SequentialWriterOption.newBuilder()
-                                                                                                           .bufferSize(BUFFER_SIZE)
-                                                                                                           .build()));
+            this(file, crcFile, new ChecksummedSequentialWriter(file, BUFFER_SIZE, crcFile));
         }
 
         private TestableCSW(File file, File crcFile, SequentialWriter sw) throws IOException
@@ -95,6 +85,7 @@ public class ChecksummedSequentialWriterTest extends SequentialWriterTest
         protected void assertAborted() throws Exception
         {
             super.assertAborted();
+            Assert.assertFalse(crcFile.exists());
         }
     }
 

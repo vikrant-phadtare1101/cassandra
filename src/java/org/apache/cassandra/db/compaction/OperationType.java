@@ -33,30 +33,13 @@ public enum OperationType
     UNKNOWN("Unknown compaction type"),
     ANTICOMPACTION("Anticompaction after repair"),
     VERIFY("Verify"),
-    FLUSH("Flush"),
-    STREAM("Stream"),
-    WRITE("Write"),
-    VIEW_BUILD("View build"),
-    INDEX_SUMMARY("Index summary redistribution"),
-    RELOCATE("Relocate sstables to correct disk"),
-    GARBAGE_COLLECT("Remove deleted data");
+    INDEX_SUMMARY("Index summary redistribution");
 
-    public final String type;
-    public final String fileName;
+    private final String type;
 
     OperationType(String type)
     {
         this.type = type;
-        this.fileName = type.toLowerCase().replace(" ", "");
-    }
-
-    public static OperationType fromFileName(String fileName)
-    {
-        for (OperationType opType : OperationType.values())
-            if (opType.fileName.equals(fileName))
-                return opType;
-
-        throw new IllegalArgumentException("Invalid fileName for operation type: " + fileName);
     }
 
     public String toString()

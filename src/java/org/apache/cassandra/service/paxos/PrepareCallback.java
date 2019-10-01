@@ -21,22 +21,21 @@ package org.apache.cassandra.service.paxos;
  */
 
 
+import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
-
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.ConsistencyLevel;
-import org.apache.cassandra.db.DecoratedKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.utils.UUIDGen;
 
 public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
@@ -48,21 +47,21 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
     public Commit mostRecentInProgressCommit;
     public Commit mostRecentInProgressCommitWithUpdate;
 
-    private final Map<InetAddressAndPort, Commit> commitsByReplica = new ConcurrentHashMap<>();
+    private final Map<InetAddress, Commit> commitsByReplica = new ConcurrentHashMap<InetAddress, Commit>();
 
-    public PrepareCallback(DecoratedKey key, TableMetadata metadata, int targets, ConsistencyLevel consistency, long queryStartNanoTime)
+    public PrepareCallback(ByteBuffer key, CFMetaData metadata, int targets, ConsistencyLevel consistency)
     {
-        super(targets, consistency, queryStartNanoTime);
-        // need to inject the right key in the empty commit so comparing with empty commits in the response works as expected
+        super(targets, consistency);
+        // need to inject the right key in the empty commit so comparing with empty commits in the reply works as expected
         mostRecentCommit = Commit.emptyCommit(key, metadata);
         mostRecentInProgressCommit = Commit.emptyCommit(key, metadata);
         mostRecentInProgressCommitWithUpdate = Commit.emptyCommit(key, metadata);
     }
 
-    public synchronized void onResponse(Message<PrepareResponse> message)
+    public synchronized void response(MessageIn<PrepareResponse> message)
     {
         PrepareResponse response = message.payload;
-        logger.trace("Prepare response {} from {}", response, message.from());
+        logger.trace("Prepare response {} from {}", response, message.from);
 
         // In case of clock skew, another node could be proposing with ballot that are quite a bit
         // older than our own. In that case, we record the more recent commit we've received to make
@@ -78,7 +77,7 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
             return;
         }
 
-        commitsByReplica.put(message.from(), response.mostRecentCommit);
+        commitsByReplica.put(message.from, response.mostRecentCommit);
         if (response.mostRecentCommit.isAfter(mostRecentCommit))
             mostRecentCommit = response.mostRecentCommit;
 
@@ -90,7 +89,7 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
         latch.countDown();
     }
 
-    public Iterable<InetAddressAndPort> replicasMissingMostRecentCommit(TableMetadata metadata, int nowInSec)
+    public Iterable<InetAddress> replicasMissingMostRecentCommit(CFMetaData metadata, long now)
     {
         // In general, we need every replicas that have answered to the prepare (a quorum) to agree on the MRC (see
         // coment in StorageProxy.beginAndRepairPaxos(), but basically we need to make sure at least a quorum of nodes
@@ -101,13 +100,13 @@ public class PrepareCallback extends AbstractPaxosCallback<PrepareResponse>
         // explained on CASSANDRA-12043. To avoid that, we ignore a MRC that is too old, i.e. older than the TTL we set
         // on paxos tables. For such old commit, we rely on hints and repair to ensure the commit has indeed be
         // propagated to all nodes.
-        long paxosTtlSec = SystemKeyspace.paxosTtlSec(metadata);
-        if (UUIDGen.unixTimestampInSec(mostRecentCommit.ballot) + paxosTtlSec < nowInSec)
+        long paxosTtlMicros = SystemKeyspace.paxosTtl(metadata) * 1000 * 1000;
+        if (UUIDGen.microsTimestamp(mostRecentCommit.ballot) + paxosTtlMicros < now)
             return Collections.emptySet();
 
-        return Iterables.filter(commitsByReplica.keySet(), new Predicate<InetAddressAndPort>()
+        return Iterables.filter(commitsByReplica.keySet(), new Predicate<InetAddress>()
         {
-            public boolean apply(InetAddressAndPort inetAddress)
+            public boolean apply(InetAddress inetAddress)
             {
                 return (!commitsByReplica.get(inetAddress).ballot.equals(mostRecentCommit.ballot));
             }

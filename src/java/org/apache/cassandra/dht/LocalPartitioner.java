@@ -21,18 +21,16 @@ import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.CachedHashDecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.ObjectSizes;
-import org.apache.cassandra.utils.memory.HeapAllocator;
 
 public class LocalPartitioner implements IPartitioner
 {
-    private static final long EMPTY_SIZE = ObjectSizes.measure(new LocalPartitioner(null).new LocalToken());
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new LocalPartitioner(null).new LocalToken(null));
 
     final AbstractType<?> comparator;   // package-private to avoid access workarounds in embedded LocalToken.
 
@@ -47,11 +45,6 @@ public class LocalPartitioner implements IPartitioner
     }
 
     public Token midpoint(Token left, Token right)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    public Token split(Token left, Token right, double ratioToLeft)
     {
         throw new UnsupportedOperationException();
     }
@@ -71,43 +64,10 @@ public class LocalPartitioner implements IPartitioner
         throw new UnsupportedOperationException();
     }
 
-    public LocalToken getRandomToken(Random random)
+    public Token.TokenFactory getTokenFactory()
     {
         throw new UnsupportedOperationException();
     }
-
-    public Token.TokenFactory getTokenFactory()
-    {
-        return tokenFactory;
-    }
-
-    private final Token.TokenFactory tokenFactory = new Token.TokenFactory()
-    {
-        public ByteBuffer toByteArray(Token token)
-        {
-            return ((LocalToken)token).token;
-        }
-
-        public Token fromByteArray(ByteBuffer bytes)
-        {
-            return new LocalToken(bytes);
-        }
-
-        public String toString(Token token)
-        {
-            return comparator.getString(((LocalToken)token).token);
-        }
-
-        public void validate(String token)
-        {
-            comparator.validate(comparator.fromString(token));
-        }
-
-        public Token fromString(String string)
-        {
-            return new LocalToken(comparator.fromString(string));
-        }
-    };
 
     public boolean preservesOrder()
     {
@@ -124,23 +84,13 @@ public class LocalPartitioner implements IPartitioner
         return comparator;
     }
 
-    public AbstractType<?> partitionOrdering()
-    {
-        return comparator;
-    }
-
     public class LocalToken extends ComparableObjectToken<ByteBuffer>
     {
         static final long serialVersionUID = 8437543776403014875L;
 
-        private LocalToken()
-        {
-            super(null);
-        }
-
         public LocalToken(ByteBuffer token)
         {
-            super(HeapAllocator.instance.clone(token));
+            super(token);
         }
 
         @Override

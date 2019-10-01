@@ -18,7 +18,9 @@
 package org.apache.cassandra.serializers;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -41,7 +43,7 @@ public class TupleSerializer extends BytesSerializer
             if (!input.hasRemaining())
                 return;
 
-            if (input.remaining() < Integer.BYTES)
+            if (input.remaining() < 4)
                 throw new MarshalException(String.format("Not enough bytes to read size of %dth component", i));
 
             int size = input.getInt();

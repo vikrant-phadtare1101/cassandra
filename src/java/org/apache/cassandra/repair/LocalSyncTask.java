@@ -17,30 +17,24 @@
  */
 package org.apache.cassandra.repair;
 
-import java.util.Collections;
+import java.net.InetAddress;
 import java.util.List;
-import java.util.UUID;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.locator.RangesAtEndpoint;
-import org.apache.cassandra.streaming.PreviewKind;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.streaming.ProgressInfo;
 import org.apache.cassandra.streaming.StreamEvent;
 import org.apache.cassandra.streaming.StreamEventHandler;
-import org.apache.cassandra.streaming.StreamOperation;
 import org.apache.cassandra.streaming.StreamPlan;
 import org.apache.cassandra.streaming.StreamState;
 import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.MerkleTrees;
 
 /**
  * LocalSyncTask performs streaming between local(coordinator) node and remote replica.
@@ -51,72 +45,41 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
 
     private static final Logger logger = LoggerFactory.getLogger(LocalSyncTask.class);
 
-    private final UUID pendingRepair;
+    private final long repairedAt;
 
-    @VisibleForTesting
-    final boolean requestRanges;
-    @VisibleForTesting
-    final boolean transferRanges;
-
-    public LocalSyncTask(RepairJobDesc desc, InetAddressAndPort local, InetAddressAndPort remote,
-                         List<Range<Token>> diff, UUID pendingRepair,
-                         boolean requestRanges, boolean transferRanges, PreviewKind previewKind)
+    public LocalSyncTask(RepairJobDesc desc, TreeResponse r1, TreeResponse r2, long repairedAt)
     {
-        super(desc, local, remote, diff, previewKind);
-        Preconditions.checkArgument(requestRanges || transferRanges, "Nothing to do in a sync job");
-        Preconditions.checkArgument(local.equals(FBUtilities.getBroadcastAddressAndPort()));
-
-        this.pendingRepair = pendingRepair;
-        this.requestRanges = requestRanges;
-        this.transferRanges = transferRanges;
-    }
-
-    @VisibleForTesting
-    StreamPlan createStreamPlan()
-    {
-        InetAddressAndPort remote =  nodePair.peer;
-
-        StreamPlan plan = new StreamPlan(StreamOperation.REPAIR, 1, false, pendingRepair, previewKind)
-                          .listeners(this)
-                          .flushBeforeTransfer(pendingRepair == null);
-
-        if (requestRanges)
-        {
-            // see comment on RangesAtEndpoint.toDummyList for why we synthesize replicas here
-            plan.requestRanges(remote, desc.keyspace, RangesAtEndpoint.toDummyList(rangesToSync),
-                               RangesAtEndpoint.toDummyList(Collections.emptyList()), desc.columnFamily);
-        }
-
-        if (transferRanges)
-        {
-            // send ranges to the remote node if we are not performing a pull repair
-            // see comment on RangesAtEndpoint.toDummyList for why we synthesize replicas here
-            plan.transferRanges(remote, desc.keyspace, RangesAtEndpoint.toDummyList(rangesToSync), desc.columnFamily);
-        }
-
-        return plan;
+        super(desc, r1, r2);
+        this.repairedAt = repairedAt;
     }
 
     /**
      * Starts sending/receiving our list of differences to/from the remote endpoint: creates a callback
      * that will be called out of band once the streams complete.
      */
-    @Override
-    protected void startSync()
+    protected void startSync(List<Range<Token>> differences)
     {
-        InetAddressAndPort remote = nodePair.peer;
+        InetAddress local = FBUtilities.getBroadcastAddress();
+        // We can take anyone of the node as source or destination, however if one is localhost, we put at source to avoid a forwarding
+        InetAddress dst = r2.endpoint.equals(local) ? r1.endpoint : r2.endpoint;
+        InetAddress preferred = SystemKeyspace.getPreferredIP(dst);
 
-        String message = String.format("Performing streaming repair of %d ranges with %s", rangesToSync.size(), remote);
-        logger.info("{} {}", previewKind.logPrefix(desc.sessionId), message);
+        String message = String.format("Performing streaming repair of %d ranges with %s", differences.size(), dst);
+        logger.info("[repair #{}] {}", desc.sessionId, message);
+        boolean isIncremental = false;
+        if (desc.parentSessionId != null)
+        {
+            ActiveRepairService.ParentRepairSession prs = ActiveRepairService.instance.getParentRepairSession(desc.parentSessionId);
+            isIncremental = prs.isIncremental;
+        }
         Tracing.traceRepair(message);
-
-        createStreamPlan().execute();
-    }
-
-    @Override
-    public boolean isLocal()
-    {
-        return true;
+        new StreamPlan("Repair", repairedAt, 1, false, isIncremental).listeners(this)
+                                            .flushBeforeTransfer(true)
+                                            // request ranges from the remote node
+                                            .requestRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily)
+                                            // send ranges to the remote node
+                                            .transferRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily)
+                                            .execute();
     }
 
     public void handleStreamEvent(StreamEvent event)
@@ -135,9 +98,9 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
                 break;
             case FILE_PROGRESS:
                 ProgressInfo pi = ((StreamEvent.ProgressEvent) event).progress;
-                state.trace("{}/{} ({}%) {} idx:{}{}",
-                            new Object[] { FBUtilities.prettyPrintMemory(pi.currentBytes),
-                                           FBUtilities.prettyPrintMemory(pi.totalBytes),
+                state.trace("{}/{} bytes ({}%) {} idx:{}{}",
+                            new Object[] { pi.currentBytes,
+                                           pi.totalBytes,
                                            pi.currentBytes * 100 / pi.totalBytes,
                                            pi.direction == ProgressInfo.Direction.OUT ? "sent to" : "received from",
                                            pi.sessionIndex,
@@ -147,27 +110,14 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
 
     public void onSuccess(StreamState result)
     {
-        String message = String.format("Sync complete using session %s between %s and %s on %s", desc.sessionId, nodePair.coordinator, nodePair.peer, desc.columnFamily);
-        logger.info("{} {}", previewKind.logPrefix(desc.sessionId), message);
+        String message = String.format("Sync complete using session %s between %s and %s on %s", desc.sessionId, r1.endpoint, r2.endpoint, desc.columnFamily);
+        logger.info("[repair #{}] {}", desc.sessionId, message);
         Tracing.traceRepair(message);
-        set(stat.withSummaries(result.createSummaries()));
-        finished();
+        set(stat);
     }
 
     public void onFailure(Throwable t)
     {
         setException(t);
-        finished();
-    }
-
-    @Override
-    public String toString()
-    {
-        return "LocalSyncTask{" +
-               "requestRanges=" + requestRanges +
-               ", transferRanges=" + transferRanges +
-               ", rangesToSync=" + rangesToSync +
-               ", nodePair=" + nodePair +
-               '}';
     }
 }

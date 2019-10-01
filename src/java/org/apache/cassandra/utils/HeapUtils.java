@@ -35,13 +35,14 @@ public final class HeapUtils
     private static final Logger logger = LoggerFactory.getLogger(HeapUtils.class);
 
     /**
-     * Generates a HEAP histogram in the log file.
+     * Generates a HEAP dump in the directory specified by the <code>HeapDumpPath</code> JVM option
+     * or in the <code>CASSANDRA_HOME</code> directory.
      */
     public static void logHeapHistogram()
     {
         try
         {
-            logger.info("Trying to log the heap histogram using jcmd");
+            logger.info("Trying to log the heap histogram using jmap");
 
             Long processId = getProcessId();
             if (processId == null)
@@ -50,14 +51,14 @@ public final class HeapUtils
                 return;
             }
 
-            String jcmdPath = getJcmdPath();
+            String jmapPath = getJmapPath();
 
-            // The jcmd file could not be found. In this case let's default to jcmd in the hope that it is in the path.
-            String jcmdCommand = jcmdPath == null ? "jcmd" : jcmdPath;
+            // The jmap file could not be found. In this case let's default to jmap in the hope that it is in the path.
+            String jmapCommand = jmapPath == null ? "jmap" : jmapPath;
 
-            String[] histoCommands = new String[] {jcmdCommand,
-                    processId.toString(),
-                    "GC.class_histogram"};
+            String[] histoCommands = new String[] {jmapCommand,
+                    "-histo",
+                    processId.toString()};
 
             logProcessOutput(Runtime.getRuntime().exec(histoCommands));
         }
@@ -68,10 +69,10 @@ public final class HeapUtils
     }
 
     /**
-     * Retrieve the path to the JCMD executable.
-     * @return the path to the JCMD executable or null if it cannot be found.
+     * Retrieve the path to the JMAP executable.
+     * @return the path to the JMAP executable or null if it cannot be found.
      */
-    private static String getJcmdPath()
+    private static String getJmapPath()
     {
         // Searching in the JAVA_HOME is safer than searching into System.getProperty("java.home") as the Oracle
         // JVM might use the JRE which do not contains jmap.
@@ -84,7 +85,7 @@ public final class HeapUtils
         {
             public boolean accept(File dir, String name)
             {
-                return name.startsWith("jcmd");
+                return name.startsWith("jmap");
             }
         });
         return ArrayUtils.isEmpty(files) ? null : files[0].getPath();
@@ -98,16 +99,15 @@ public final class HeapUtils
      */
     private static void logProcessOutput(Process p) throws IOException
     {
-        try (BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream())))
+        BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream()));
+
+        StrBuilder builder = new StrBuilder();
+        String line;
+        while ((line = input.readLine()) != null)
         {
-            StrBuilder builder = new StrBuilder();
-            String line;
-            while ((line = input.readLine()) != null)
-            {
-                builder.appendln(line);
-            }
-            logger.info(builder.toString());
+            builder.appendln(line);
         }
+        logger.info(builder.toString());
     }
 
     /**
@@ -116,9 +116,11 @@ public final class HeapUtils
      */
     private static Long getProcessId()
     {
-        long pid = NativeLibrary.getProcessID();
+        // Once Java 9 is ready the process API should provide a better way to get the process ID.
+        long pid = SigarLibrary.instance.getPid();
+
         if (pid >= 0)
-            return pid;
+            return Long.valueOf(pid);
 
         return getProcessIdFromJvmName();
     }
@@ -133,7 +135,7 @@ public final class HeapUtils
         String jvmName = ManagementFactory.getRuntimeMXBean().getName();
         try
         {
-            return Long.valueOf(jvmName.split("@")[0]);
+            return Long.parseLong(jvmName.split("@")[0]);
         }
         catch (NumberFormatException e)
         {

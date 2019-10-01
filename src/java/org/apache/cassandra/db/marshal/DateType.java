@@ -29,7 +29,6 @@ import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.TimestampSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -43,11 +42,19 @@ public class DateType extends AbstractType<Date>
 
     public static final DateType instance = new DateType();
 
-    DateType() {super(ComparisonType.BYTE_ORDER);} // singleton
+    DateType() {} // singleton
 
     public boolean isEmptyValueMeaningless()
     {
         return true;
+    }
+
+    public int compare(ByteBuffer o1, ByteBuffer o2)
+    {
+        if (!o1.hasRemaining() || !o2.hasRemaining())
+            return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
+
+        return ByteBufferUtil.compareUnsigned(o1, o2);
     }
 
     public ByteBuffer fromString(String source) throws MarshalException
@@ -78,7 +85,7 @@ public class DateType extends AbstractType<Date>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
     {
         return '"' + TimestampSerializer.getJsonDateFormatter().format(TimestampSerializer.instance.deserialize(buffer)) + '"';
     }
@@ -101,6 +108,11 @@ public class DateType extends AbstractType<Date>
         return false;
     }
 
+    public boolean isByteOrderComparable()
+    {
+        return true;
+    }
+
     @Override
     public boolean isValueCompatibleWithInternal(AbstractType<?> otherType)
     {
@@ -116,11 +128,5 @@ public class DateType extends AbstractType<Date>
     public TypeSerializer<Date> getSerializer()
     {
         return TimestampSerializer.instance;
-    }
-
-    @Override
-    public int valueLengthIfFixed()
-    {
-        return 8;
     }
 }

@@ -17,80 +17,73 @@
  */
 package org.apache.cassandra.streaming;
 
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.schema.TableId;
-import org.apache.cassandra.utils.JVMStabilityInspector;
 
-import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
-import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.dht.Bounds;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
+import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.Pair;
+
+import org.apache.cassandra.utils.concurrent.Refs;
 
 /**
  * Task that manages receiving files for the session for certain ColumnFamily.
  */
 public class StreamReceiveTask extends StreamTask
 {
+    private static final ExecutorService executor = Executors.newCachedThreadPool(new NamedThreadFactory("StreamReceiveTask"));
     private static final Logger logger = LoggerFactory.getLogger(StreamReceiveTask.class);
 
-    private static final ExecutorService executor = Executors.newCachedThreadPool(new NamedThreadFactory("StreamReceiveTask"));
-
-    private final StreamReceiver receiver;
-
-    // number of streams to receive
-    private final int totalStreams;
-
-    // total size of streams to receive
+    // number of files to receive
+    private final int totalFiles;
+    // total size of files to receive
     private final long totalSize;
 
     // true if task is done (either completed or aborted)
-    private volatile boolean done = false;
+    private boolean done = false;
 
-    private int remoteStreamsReceived = 0;
-    private long bytesReceived = 0;
+    //  holds references to SSTables received
+    protected Collection<SSTableWriter> sstables;
 
-    public StreamReceiveTask(StreamSession session, TableId tableId, int totalStreams, long totalSize)
+    public StreamReceiveTask(StreamSession session, UUID cfId, int totalFiles, long totalSize)
     {
-        super(session, tableId);
-        this.receiver = ColumnFamilyStore.getIfExists(tableId).getStreamManager().createStreamReceiver(session, totalStreams);
-        this.totalStreams = totalStreams;
+        super(session, cfId);
+        this.totalFiles = totalFiles;
         this.totalSize = totalSize;
+        this.sstables = new ArrayList<>(totalFiles);
     }
 
     /**
-     * Process received stream.
+     * Process received file.
      *
-     * @param stream Stream received.
+     * @param sstable SSTable file received.
      */
-    public synchronized void received(IncomingStream stream)
+    public synchronized void received(SSTableWriter sstable)
     {
-        Preconditions.checkState(!session.isPreview(), "we should never receive sstables when previewing");
-
         if (done)
-        {
-            logger.warn("[{}] Received stream {} on already finished stream received task. Aborting stream.", session.planId(),
-                        stream.getName());
-            receiver.discardStream(stream);
             return;
-        }
 
-        remoteStreamsReceived++;
-        bytesReceived += stream.getSize();
-        Preconditions.checkArgument(tableId.equals(stream.getTableId()));
-        logger.debug("received {} of {} total files {} of total bytes {}", remoteStreamsReceived, totalStreams,
-                     bytesReceived, totalSize);
+        assert cfId.equals(sstable.metadata.cfId);
 
-        receiver.received(stream);
+        sstables.add(sstable);
 
-        if (remoteStreamsReceived == totalStreams)
+        if (sstables.size() == totalFiles)
         {
             done = true;
             executor.submit(new OnCompletionRunnable(this));
@@ -99,19 +92,12 @@ public class StreamReceiveTask extends StreamTask
 
     public int getTotalNumberOfFiles()
     {
-        return totalStreams;
+        return totalFiles;
     }
 
     public long getTotalSize()
     {
         return totalSize;
-    }
-
-    public synchronized StreamReceiver getReceiver()
-    {
-        if (done)
-            throw new RuntimeException(String.format("Stream receive task %s of cf %s already finished.", session.planId(), tableId));
-        return receiver;
     }
 
     private static class OnCompletionRunnable implements Runnable
@@ -127,25 +113,67 @@ public class StreamReceiveTask extends StreamTask
         {
             try
             {
-                if (ColumnFamilyStore.getIfExists(task.tableId) == null)
+                Pair<String, String> kscf = Schema.instance.getCF(task.cfId);
+                if (kscf == null)
                 {
                     // schema was dropped during streaming
-                    task.receiver.abort();
-                    task.session.taskCompleted(task);
+                    for (SSTableWriter writer : task.sstables)
+                        writer.abort();
+                    task.sstables.clear();
                     return;
                 }
+                ColumnFamilyStore cfs = Keyspace.open(kscf.left).getColumnFamilyStore(kscf.right);
 
-                task.receiver.finished();
+                File lockfiledir = cfs.directories.getWriteableLocationAsFile(task.sstables.size() * 256L);
+                StreamLockfile lockfile = new StreamLockfile(lockfiledir, UUID.randomUUID());
+                lockfile.create(task.sstables);
+                List<SSTableReader> readers = new ArrayList<>();
+                for (SSTableWriter writer : task.sstables)
+                    readers.add(writer.finish(true));
+                lockfile.delete();
+                task.sstables.clear();
+
+                try (Refs<SSTableReader> refs = Refs.ref(readers))
+                {
+                    // add sstables and build secondary indexes
+                    cfs.addSSTables(readers);
+                    cfs.indexManager.maybeBuildSecondaryIndexes(readers, cfs.indexManager.allIndexesNames());
+
+                    //invalidate row and counter cache
+                    if (cfs.isRowCacheEnabled() || cfs.metadata.isCounter())
+                    {
+                        List<Bounds<Token>> boundsToInvalidate = new ArrayList<>(readers.size());
+                        for (SSTableReader sstable : readers)
+                            boundsToInvalidate.add(new Bounds<Token>(sstable.first.getToken(), sstable.last.getToken()));
+                        Set<Bounds<Token>> nonOverlappingBounds = Bounds.getNonOverlappingBounds(boundsToInvalidate);
+
+                        if (cfs.isRowCacheEnabled())
+                        {
+                            int invalidatedKeys = cfs.invalidateRowCache(nonOverlappingBounds);
+                            if (invalidatedKeys > 0)
+                                logger.debug("[Stream #{}] Invalidated {} row cache entries on table {}.{} after stream " +
+                                             "receive task completed.", task.session.planId(), invalidatedKeys,
+                                             cfs.keyspace.getName(), cfs.getColumnFamilyName());
+                        }
+
+                        if (cfs.metadata.isCounter())
+                        {
+                            int invalidatedKeys = cfs.invalidateCounterCache(nonOverlappingBounds);
+                            if (invalidatedKeys > 0)
+                                logger.debug("[Stream #{}] Invalidated {} counter cache entries on table {}.{} after stream " +
+                                             "receive task completed.", task.session.planId(), invalidatedKeys,
+                                             cfs.keyspace.getName(), cfs.getColumnFamilyName());
+                        }
+                    }
+                }
+
                 task.session.taskCompleted(task);
             }
             catch (Throwable t)
             {
+                logger.error("Error applying streamed data: ", t);
                 JVMStabilityInspector.inspectThrowable(t);
                 task.session.onError(t);
-            }
-            finally
-            {
-                task.receiver.cleanup();
             }
         }
     }
@@ -162,13 +190,8 @@ public class StreamReceiveTask extends StreamTask
             return;
 
         done = true;
-        receiver.abort();
-    }
-
-    @VisibleForTesting
-    public static void shutdownAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
-    {
-        shutdown(executor);
-        awaitTermination(timeout, unit, executor);
+        for (SSTableWriter writer : sstables)
+            writer.abort();
+        sstables.clear();
     }
 }

@@ -36,13 +36,11 @@ import com.google.common.util.concurrent.RateLimiter;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.UpdateBuilder;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.db.commitlog.CommitLogUpgradeTest.*;
@@ -92,18 +90,17 @@ public class CommitLogUpgradeTestMaker
         }
 
         SchemaLoader.loadSchema();
-        SchemaLoader.createKeyspace(KEYSPACE, KeyspaceParams.simple(1), metadata);
+        SchemaLoader.schemaDefinition("");
     }
 
     public void makeLog() throws IOException, InterruptedException
     {
         CommitLog commitLog = CommitLog.instance;
-        System.out.format("\nUsing commit log size: %dmb, compressor: %s, encryption: %s, sync: %s, %s\n",
+        System.out.format("\nUsing commit log size %dmb, compressor %s, sync %s%s\n",
                           mb(DatabaseDescriptor.getCommitLogSegmentSize()),
                           commitLog.configuration.getCompressorName(),
-                          commitLog.configuration.useEncryption(),
                           commitLog.executor.getClass().getSimpleName(),
-                          randomSize ? "random size" : "");
+                          randomSize ? " random size" : "");
         final List<CommitlogExecutor> threads = new ArrayList<>();
         ScheduledExecutorService scheduled = startThreads(commitLog, threads);
 
@@ -132,7 +129,7 @@ public class CommitLogUpgradeTestMaker
             FileUtils.createHardLink(f, new File(dataDir, f.getName()));
 
         Properties prop = new Properties();
-        prop.setProperty(CFID_PROPERTY, Schema.instance.getTableMetadata(KEYSPACE, TABLE).id.toString());
+        prop.setProperty(CFID_PROPERTY, Schema.instance.getId(KEYSPACE, TABLE).toString());
         prop.setProperty(CELLS_PROPERTY, Integer.toString(cells));
         prop.setProperty(HASH_PROPERTY, Integer.toString(hash));
         prop.store(new FileOutputStream(new File(dataDir, PROPERTIES_FILE)),
@@ -217,7 +214,7 @@ public class CommitLogUpgradeTestMaker
         int dataSize = 0;
         final CommitLog commitLog;
 
-        volatile CommitLogPosition clsp;
+        volatile ReplayPosition rp;
 
         public CommitlogExecutor(CommitLog commitLog)
         {
@@ -232,21 +229,20 @@ public class CommitLogUpgradeTestMaker
             {
                 if (rl != null)
                     rl.acquire();
+                String ks = KEYSPACE;
                 ByteBuffer key = randomBytes(16, tlr);
-
-                UpdateBuilder builder = UpdateBuilder.create(Schema.instance.getTableMetadata(KEYSPACE, TABLE), Util.dk(key));
+                Mutation mutation = new Mutation(ks, key);
 
                 for (int ii = 0; ii < numCells; ii++)
                 {
                     int sz = randomSize ? tlr.nextInt(cellSize) : cellSize;
                     ByteBuffer bytes = randomBytes(sz, tlr);
-                    builder.newRow(CommitLogUpgradeTest.CELLNAME + ii).add("val", bytes);
+                    mutation.add(TABLE, Util.cellname(CELLNAME + ii), bytes, System.currentTimeMillis());
                     hash = hash(hash, bytes);
                     ++cells;
                     dataSize += sz;
                 }
-
-                clsp = commitLog.add((Mutation)builder.makeMutation());
+                rp = commitLog.add(mutation);
                 counter.incrementAndGet();
             }
         }

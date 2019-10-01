@@ -17,24 +17,24 @@
  */
 package org.apache.cassandra.metrics;
 
+import java.net.InetAddress;
 import java.util.Map.Entry;
 
-import com.google.common.util.concurrent.MoreExecutors;
-
 import com.codahale.metrics.Counter;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
-
+import org.apache.cassandra.db.HintedHandOffManager;
 import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+
 import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
 /**
- * Metrics for {@link org.apache.cassandra.hints.HintsService}.
+ * Metrics for {@link HintedHandOffManager}.
  */
 public class HintedHandoffMetrics
 {
@@ -43,28 +43,36 @@ public class HintedHandoffMetrics
     private static final MetricNameFactory factory = new DefaultNameFactory("HintedHandOffManager");
 
     /** Total number of hints which are not stored, This is not a cache. */
-    private final LoadingCache<InetAddressAndPort, DifferencingCounter> notStored = Caffeine.newBuilder()
-                                                                                            .executor(MoreExecutors.directExecutor())
-                                                                                            .build(DifferencingCounter::new);
+    private final LoadingCache<InetAddress, DifferencingCounter> notStored = CacheBuilder.newBuilder().build(new CacheLoader<InetAddress, DifferencingCounter>()
+    {
+        public DifferencingCounter load(InetAddress address)
+        {
+            return new DifferencingCounter(address);
+        }
+    });
 
     /** Total number of hints that have been created, This is not a cache. */
-    private final LoadingCache<InetAddressAndPort, Counter> createdHintCounts = Caffeine.newBuilder()
-                                                                                        .executor(MoreExecutors.directExecutor())
-                                                                                        .build(address -> Metrics.counter(factory.createMetricName("Hints_created-" + address.toString().replace(':', '.'))));
-
-    public void incrCreatedHints(InetAddressAndPort address)
+    private final LoadingCache<InetAddress, Counter> createdHintCounts = CacheBuilder.newBuilder().build(new CacheLoader<InetAddress, Counter>()
     {
-        createdHintCounts.get(address).inc();
+        public Counter load(InetAddress address)
+        {
+            return Metrics.counter(factory.createMetricName("Hints_created-" + address.getHostAddress().replace(':', '.')));
+        }
+    });
+
+    public void incrCreatedHints(InetAddress address)
+    {
+        createdHintCounts.getUnchecked(address).inc();
     }
 
-    public void incrPastWindow(InetAddressAndPort address)
+    public void incrPastWindow(InetAddress address)
     {
-        notStored.get(address).mark();
+        notStored.getUnchecked(address).mark();
     }
 
     public void log()
     {
-        for (Entry<InetAddressAndPort, DifferencingCounter> entry : notStored.asMap().entrySet())
+        for (Entry<InetAddress, DifferencingCounter> entry : notStored.asMap().entrySet())
         {
             long difference = entry.getValue().difference();
             if (difference == 0)
@@ -79,10 +87,9 @@ public class HintedHandoffMetrics
         private final Counter meter;
         private long reported = 0;
 
-        public DifferencingCounter(InetAddressAndPort address)
+        public DifferencingCounter(InetAddress address)
         {
-            //This changes the name of the metric, people can update their monitoring when upgrading?
-            this.meter = Metrics.counter(factory.createMetricName("Hints_not_stored-" + address.toString().replace(':', '.')));
+            this.meter = Metrics.counter(factory.createMetricName("Hints_not_stored-" + address.getHostAddress().replace(':', '.')));
         }
 
         public long difference()

@@ -18,7 +18,12 @@
 */
 package org.apache.cassandra.utils;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -26,63 +31,49 @@ import java.util.Random;
 import java.util.Set;
 
 import org.junit.*;
-
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
-import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
 import org.apache.cassandra.utils.IFilter.FilterKey;
 import org.apache.cassandra.utils.KeyGenerator.RandomStringGenerator;
-import org.apache.cassandra.utils.obs.IBitSet;
-
-import static org.junit.Assert.assertEquals;
 
 public class BloomFilterTest
 {
-    public IFilter bfInvHashes;
+    public IFilter bf;
 
+    public BloomFilterTest()
+    {
 
+    }
 
-    public static IFilter testSerialize(IFilter f, boolean oldBfFormat) throws IOException
+    public static IFilter testSerialize(IFilter f) throws IOException
     {
         f.add(FilterTestHelper.bytes("a"));
         DataOutputBuffer out = new DataOutputBuffer();
-        if (oldBfFormat)
-        {
-            SerializationsTest.serializeOldBfFormat((BloomFilter) f, out);
-        }
-        else
-        {
-            BloomFilterSerializer.serialize((BloomFilter) f, out);
-        }
+        FilterFactory.serialize(f, out);
 
         ByteArrayInputStream in = new ByteArrayInputStream(out.getData(), 0, out.getLength());
-        IFilter f2 = BloomFilterSerializer.deserialize(new DataInputStream(in), oldBfFormat);
+        IFilter f2 = FilterFactory.deserialize(new DataInputStream(in), true);
 
         assert f2.isPresent(FilterTestHelper.bytes("a"));
         assert !f2.isPresent(FilterTestHelper.bytes("b"));
         return f2;
     }
 
-    static void compare(IBitSet bs, IBitSet newbs)
-    {
-        assertEquals(bs.capacity(), newbs.capacity());
-        for (long i = 0; i < bs.capacity(); i++)
-            assertEquals(bs.get(i), newbs.get(i));
-    }
 
     @Before
     public void setup()
     {
-        bfInvHashes = FilterFactory.getFilter(10000L, FilterTestHelper.MAX_FAILURE_RATE);
+        bf = FilterFactory.getFilter(10000L, FilterTestHelper.MAX_FAILURE_RATE, true);
     }
 
     @After
     public void destroy()
     {
-        bfInvHashes.close();
+        bf.close();
     }
 
     @Test(expected = UnsupportedOperationException.class)
@@ -101,21 +92,21 @@ public class BloomFilterTest
     @Test
     public void testOne()
     {
-        bfInvHashes.add(FilterTestHelper.bytes("a"));
-        assert bfInvHashes.isPresent(FilterTestHelper.bytes("a"));
-        assert !bfInvHashes.isPresent(FilterTestHelper.bytes("b"));
+        bf.add(FilterTestHelper.bytes("a"));
+        assert bf.isPresent(FilterTestHelper.bytes("a"));
+        assert !bf.isPresent(FilterTestHelper.bytes("b"));
     }
 
     @Test
     public void testFalsePositivesInt()
     {
-        FilterTestHelper.testFalsePositives(bfInvHashes, FilterTestHelper.intKeys(), FilterTestHelper.randomKeys2());
+        FilterTestHelper.testFalsePositives(bf, FilterTestHelper.intKeys(), FilterTestHelper.randomKeys2());
     }
 
     @Test
     public void testFalsePositivesRandom()
     {
-        FilterTestHelper.testFalsePositives(bfInvHashes, FilterTestHelper.randomKeys(), FilterTestHelper.randomKeys2());
+        FilterTestHelper.testFalsePositives(bf, FilterTestHelper.randomKeys(), FilterTestHelper.randomKeys2());
     }
 
     @Test
@@ -125,7 +116,7 @@ public class BloomFilterTest
         {
             return;
         }
-        IFilter bf2 = FilterFactory.getFilter(KeyGenerator.WordGenerator.WORDS / 2, FilterTestHelper.MAX_FAILURE_RATE);
+        IFilter bf2 = FilterFactory.getFilter(KeyGenerator.WordGenerator.WORDS / 2, FilterTestHelper.MAX_FAILURE_RATE, true);
         int skipEven = KeyGenerator.WordGenerator.WORDS % 2 == 0 ? 0 : 2;
         FilterTestHelper.testFalsePositives(bf2,
                                             new KeyGenerator.WordGenerator(skipEven, 2),
@@ -136,27 +127,19 @@ public class BloomFilterTest
     @Test
     public void testSerialize() throws IOException
     {
-        BloomFilterTest.testSerialize(bfInvHashes, true).close();
-        BloomFilterTest.testSerialize(bfInvHashes, false).close();
+        BloomFilterTest.testSerialize(bf).close();
     }
 
-    @Test
-    @Ignore
-    public void testManyRandom()
-    {
-        testManyRandom(FilterTestHelper.randomKeys());
-    }
-
-    private static void testManyRandom(Iterator<ByteBuffer> keys)
+    public void testManyHashes(Iterator<ByteBuffer> keys)
     {
         int MAX_HASH_COUNT = 128;
-        Set<Long> hashes = new HashSet<>();
+        Set<Long> hashes = new HashSet<Long>();
         long collisions = 0;
         while (keys.hasNext())
         {
             hashes.clear();
             FilterKey buf = FilterTestHelper.wrap(keys.next());
-            BloomFilter bf = (BloomFilter) FilterFactory.getFilter(10, 1);
+            BloomFilter bf = (BloomFilter) FilterFactory.getFilter(10, 1, false);
             for (long hashIndex : bf.getHashBuckets(buf, MAX_HASH_COUNT, 1024 * 1024))
             {
                 hashes.add(hashIndex);
@@ -164,41 +147,46 @@ public class BloomFilterTest
             collisions += (MAX_HASH_COUNT - hashes.size());
             bf.close();
         }
-        Assert.assertTrue("collisions=" + collisions, collisions <= 100);
+        assert collisions <= 100;
+    }
+
+    @Test
+    public void testManyRandom()
+    {
+        testManyHashes(FilterTestHelper.randomKeys());
     }
 
     @Test(expected = UnsupportedOperationException.class)
     public void testOffHeapException()
     {
-        long numKeys = ((long)Integer.MAX_VALUE) * 64L + 1L; // approx 128 Billion
-        FilterFactory.getFilter(numKeys, 0.01d).close();
+        long numKeys = (Integer.MAX_VALUE * 64) + 1; // approx 128 Billion
+        FilterFactory.getFilter(numKeys, 0.01d, true);
     }
 
     @Test
     public void compareCachedKey()
     {
-        try (BloomFilter bf1 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE);
-             BloomFilter bf2 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE);
-             BloomFilter bf3 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE))
+        BloomFilter bf1 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE, false);
+        BloomFilter bf2 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE, false);
+        BloomFilter bf3 = (BloomFilter) FilterFactory.getFilter(FilterTestHelper.ELEMENTS / 2, FilterTestHelper.MAX_FAILURE_RATE, false);
+
+        RandomStringGenerator gen1 = new KeyGenerator.RandomStringGenerator(new Random().nextInt(), FilterTestHelper.ELEMENTS);
+
+        // make sure all bitsets are empty.
+        BitSetTest.compare(bf1.bitset, bf2.bitset);
+        BitSetTest.compare(bf1.bitset, bf3.bitset);
+
+        while (gen1.hasNext())
         {
-            RandomStringGenerator gen1 = new KeyGenerator.RandomStringGenerator(new Random().nextInt(), FilterTestHelper.ELEMENTS);
-
-            // make sure all bitsets are empty.
-            compare(bf1.bitset, bf2.bitset);
-            compare(bf1.bitset, bf3.bitset);
-
-            while (gen1.hasNext())
-            {
-                ByteBuffer key = gen1.next();
-                FilterKey cached = FilterTestHelper.wrapCached(key);
-                bf1.add(FilterTestHelper.wrap(key));
-                bf2.add(cached);
-                bf3.add(cached);
-            }
-
-            compare(bf1.bitset, bf2.bitset);
-            compare(bf1.bitset, bf3.bitset);
+            ByteBuffer key = gen1.next();
+            FilterKey cached = FilterTestHelper.wrapCached(key);
+            bf1.add(FilterTestHelper.wrap(key));
+            bf2.add(cached);
+            bf3.add(cached);
         }
+
+        BitSetTest.compare(bf1.bitset, bf2.bitset);
+        BitSetTest.compare(bf1.bitset, bf3.bitset);
     }
 
     @Test
@@ -207,19 +195,19 @@ public class BloomFilterTest
     {
         ByteBuffer test = ByteBuffer.wrap(new byte[] {0, 1});
 
-        File file = FileUtils.createDeletableTempFile("bloomFilterTest-", ".dat");
-        BloomFilter filter = (BloomFilter) FilterFactory.getFilter(((long) Integer.MAX_VALUE / 8) + 1, 0.01d);
+        File file = FileUtils.createTempFile("bloomFilterTest-", ".dat");
+        BloomFilter filter = (BloomFilter) FilterFactory.getFilter(((long)Integer.MAX_VALUE / 8) + 1, 0.01d, true);
         filter.add(FilterTestHelper.wrap(test));
         DataOutputStreamPlus out = new BufferedDataOutputStreamPlus(new FileOutputStream(file));
-        BloomFilterSerializer.serialize(filter, out);
+        FilterFactory.serialize(filter, out);
+        filter.bitset.serialize(out);
         out.close();
         filter.close();
 
         DataInputStream in = new DataInputStream(new FileInputStream(file));
-        BloomFilter filter2 = BloomFilterSerializer.deserialize(in, false);
+        BloomFilter filter2 = (BloomFilter) FilterFactory.deserialize(in, true);
         Assert.assertTrue(filter2.isPresent(FilterTestHelper.wrap(test)));
         FileUtils.closeQuietly(in);
-        filter2.close();
     }
 
     @Test

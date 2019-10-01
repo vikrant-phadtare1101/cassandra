@@ -19,15 +19,12 @@ package org.apache.cassandra.utils;
 
 import java.io.FileNotFoundException;
 import java.net.SocketException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.annotations.VisibleForTesting;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSError;
@@ -53,12 +50,7 @@ public final class JVMStabilityInspector
      * @param t
      *      The Throwable to check for server-stop conditions
      */
-    public static void inspectThrowable(Throwable t) throws OutOfMemoryError
-    {
-        inspectThrowable(t, true);
-    }
-
-    public static void inspectThrowable(Throwable t, boolean propagateOutOfMemory) throws OutOfMemoryError
+    public static void inspectThrowable(Throwable t)
     {
         boolean isUnstable = false;
         if (t instanceof OutOfMemoryError)
@@ -81,9 +73,6 @@ public final class JVMStabilityInspector
             StorageService.instance.removeShutdownHook();
             // We let the JVM handle the error. The startup checks should have warned the user if it did not configure
             // the JVM behavior in case of OOM (CASSANDRA-13006).
-            if (!propagateOutOfMemory)
-                return;
-
             throw (OutOfMemoryError) t;
         }
 
@@ -105,12 +94,11 @@ public final class JVMStabilityInspector
 
     public static void inspectCommitLogThrowable(Throwable t)
     {
-        if (!StorageService.instance.isDaemonSetupCompleted())
+        if (!StorageService.instance.isSetupCompleted())
         {
             logger.error("Exiting due to error while processing commit log during initialization.", t);
             killer.killCurrentJVM(t, true);
-        }
-        else if (DatabaseDescriptor.getCommitFailurePolicy() == Config.CommitFailurePolicy.die)
+        } else if (DatabaseDescriptor.getCommitFailurePolicy() == Config.CommitFailurePolicy.die)
             killer.killCurrentJVM(t);
         else
             inspectThrowable(t);
@@ -121,26 +109,8 @@ public final class JVMStabilityInspector
         killer.killCurrentJVM(t, quiet);
     }
 
-    public static void userFunctionTimeout(Throwable t)
-    {
-        switch (DatabaseDescriptor.getUserFunctionTimeoutPolicy())
-        {
-            case die:
-                // policy to give 250ms grace time to
-                ScheduledExecutors.nonPeriodicTasks.schedule(() -> killer.killCurrentJVM(t), 250, TimeUnit.MILLISECONDS);
-                break;
-            case die_immediate:
-                killer.killCurrentJVM(t);
-                break;
-            case ignore:
-                logger.error(t.getMessage());
-                break;
-        }
-    }
-
     @VisibleForTesting
-    public static Killer replaceKiller(Killer newKiller)
-    {
+    public static Killer replaceKiller(Killer newKiller) {
         Killer oldKiller = JVMStabilityInspector.killer;
         JVMStabilityInspector.killer = newKiller;
         return oldKiller;
@@ -149,8 +119,6 @@ public final class JVMStabilityInspector
     @VisibleForTesting
     public static class Killer
     {
-        private final AtomicBoolean killing = new AtomicBoolean();
-
         /**
         * Certain situations represent "Die" conditions for the server, and if so, the reason is logged and the current JVM is killed.
         *
@@ -169,11 +137,8 @@ public final class JVMStabilityInspector
                 t.printStackTrace(System.err);
                 logger.error("JVM state determined to be unstable.  Exiting forcefully due to:", t);
             }
-            if (killing.compareAndSet(false, true))
-            {
-                StorageService.instance.removeShutdownHook();
-                System.exit(100);
-            }
+            StorageService.instance.removeShutdownHook();
+            System.exit(100);
         }
     }
 }

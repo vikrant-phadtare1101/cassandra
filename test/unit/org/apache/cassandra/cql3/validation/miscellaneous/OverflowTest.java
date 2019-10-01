@@ -21,6 +21,7 @@ import java.math.BigInteger;
 
 import org.junit.Test;
 
+import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNull;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -107,19 +108,23 @@ public class OverflowTest extends CQLTester
     {
         createTable("CREATE TABLE %s ( k int PRIMARY KEY, c int ) WITH "
                     + "comment = 'My comment' "
+                    + "AND read_repair_chance = 0.5 "
+                    + "AND dclocal_read_repair_chance = 0.5 "
                     + "AND gc_grace_seconds = 4 "
                     + "AND bloom_filter_fp_chance = 0.01 "
-                    + "AND compaction = { 'class' : 'LeveledCompactionStrategy', 'sstable_size_in_mb' : 10, 'fanout_size' : 5 } "
-                    + "AND compression = { 'enabled': false } "
-                    + "AND caching = { 'keys': 'ALL', 'rows_per_partition': 'ALL' }");
+                    + "AND compaction = { 'class' : 'LeveledCompactionStrategy', 'sstable_size_in_mb' : 10 } "
+                    + "AND compression = { 'sstable_compression' : '' } "
+                    + "AND caching = 'all' ");
 
         execute("ALTER TABLE %s WITH "
                 + "comment = 'other comment' "
+                + "AND read_repair_chance = 0.3 "
+                + "AND dclocal_read_repair_chance = 0.3 "
                 + "AND gc_grace_seconds = 100 "
                 + "AND bloom_filter_fp_chance = 0.1 "
                 + "AND compaction = { 'class': 'SizeTieredCompactionStrategy', 'min_sstable_size' : 42 } "
-                + "AND compression = { 'class' : 'SnappyCompressor' } "
-                + "AND caching = { 'rows_per_partition': 'ALL' }");
+                + "AND compression = { 'sstable_compression' : 'SnappyCompressor' } "
+                + "AND caching = 'rows_only' ");
     }
 
     /**
@@ -160,6 +165,20 @@ public class OverflowTest extends CQLTester
         execute("INSERT INTO %s (k, d, f) VALUES (0, 3E+10, 3.4E3)");
         execute("INSERT INTO %s (k, d, f) VALUES (1, 3.E10, -23.44E-3)");
         execute("INSERT INTO %s (k, d, f) VALUES (2, 3, -2)");
+    }
+
+    /**
+     * Test regression from #5189,
+     * migrated from cql_tests.py:TestCQL.compact_metadata_test()
+     */
+    @Test
+    public void testCompactMetadata() throws Throwable
+    {
+        createTable("CREATE TABLE %s (id int primary key, i int ) WITH COMPACT STORAGE");
+
+        execute("INSERT INTO %s (id, i) VALUES (1, 2)");
+        assertRows(execute("SELECT * FROM %s"),
+                   row(1, 2));
     }
 
     /**
@@ -209,6 +228,22 @@ public class OverflowTest extends CQLTester
         Object[][] rows = fill();
 
         // Test empty IN() in SELECT
+        assertEmpty(execute("SELECT v FROM %s WHERE k1 IN ()"));
+        assertEmpty(execute("SELECT v FROM %s WHERE k1 = 0 AND k2 IN ()"));
+
+        // Test empty IN() in DELETE
+        execute("DELETE FROM %s WHERE k1 IN ()");
+        assertArrayEquals(rows, getRows(execute("SELECT * FROM %s")));
+
+        // Test empty IN() in UPDATE
+        execute("UPDATE %s SET v = 3 WHERE k1 IN () AND k2 = 2");
+        assertArrayEquals(rows, getRows(execute("SELECT * FROM %s")));
+
+        // Same test, but for compact
+        createTable("CREATE TABLE %s (k1 int, k2 int, v int, PRIMARY KEY (k1, k2)) WITH COMPACT STORAGE");
+
+        rows = fill();
+
         assertEmpty(execute("SELECT v FROM %s WHERE k1 IN ()"));
         assertEmpty(execute("SELECT v FROM %s WHERE k1 = 0 AND k2 IN ()"));
 

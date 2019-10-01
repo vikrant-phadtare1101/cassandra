@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.gms;
 
+import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,21 +25,18 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IVerbHandler;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 
-import static org.apache.cassandra.net.Verb.GOSSIP_DIGEST_ACK2;
-
-public class GossipDigestAckVerbHandler extends GossipVerbHandler<GossipDigestAck>
+public class GossipDigestAckVerbHandler implements IVerbHandler<GossipDigestAck>
 {
-    public static final GossipDigestAckVerbHandler instance = new GossipDigestAckVerbHandler();
-
     private static final Logger logger = LoggerFactory.getLogger(GossipDigestAckVerbHandler.class);
 
-    public void doVerb(Message<GossipDigestAck> message)
+    public void doVerb(MessageIn<GossipDigestAck> message, int id)
     {
-        InetAddressAndPort from = message.from();
+        InetAddress from = message.from;
         if (logger.isTraceEnabled())
             logger.trace("Received a GossipDigestAckMessage from {}", from);
         if (!Gossiper.instance.isEnabled() && !Gossiper.instance.isInShadowRound())
@@ -50,16 +48,14 @@ public class GossipDigestAckVerbHandler extends GossipVerbHandler<GossipDigestAc
 
         GossipDigestAck gDigestAckMessage = message.payload;
         List<GossipDigest> gDigestList = gDigestAckMessage.getGossipDigestList();
-        Map<InetAddressAndPort, EndpointState> epStateMap = gDigestAckMessage.getEndpointStateMap();
+        Map<InetAddress, EndpointState> epStateMap = gDigestAckMessage.getEndpointStateMap();
         logger.trace("Received ack with {} digests and {} states", gDigestList.size(), epStateMap.size());
 
         if (Gossiper.instance.isInShadowRound())
         {
             if (logger.isDebugEnabled())
-                logger.debug("Received an ack from {}, which may trigger exit from shadow round", from);
-
-            // if the ack is completely empty, then we can infer that the respondent is also in a shadow round
-            Gossiper.instance.maybeFinishShadowRound(from, gDigestList.isEmpty() && epStateMap.isEmpty(), epStateMap);
+                logger.debug("Finishing shadow round with {}", from);
+            Gossiper.instance.finishShadowRound(epStateMap);
             return; // don't bother doing anything else, we have what we came for
         }
 
@@ -81,20 +77,20 @@ public class GossipDigestAckVerbHandler extends GossipVerbHandler<GossipDigestAc
         }
 
         /* Get the state required to send to this gossipee - construct GossipDigestAck2Message */
-        Map<InetAddressAndPort, EndpointState> deltaEpStateMap = new HashMap<InetAddressAndPort, EndpointState>();
+        Map<InetAddress, EndpointState> deltaEpStateMap = new HashMap<InetAddress, EndpointState>();
         for (GossipDigest gDigest : gDigestList)
         {
-            InetAddressAndPort addr = gDigest.getEndpoint();
+            InetAddress addr = gDigest.getEndpoint();
             EndpointState localEpStatePtr = Gossiper.instance.getStateForVersionBiggerThan(addr, gDigest.getMaxVersion());
             if (localEpStatePtr != null)
                 deltaEpStateMap.put(addr, localEpStatePtr);
         }
 
-        Message<GossipDigestAck2> gDigestAck2Message = Message.out(GOSSIP_DIGEST_ACK2, new GossipDigestAck2(deltaEpStateMap));
+        MessageOut<GossipDigestAck2> gDigestAck2Message = new MessageOut<GossipDigestAck2>(MessagingService.Verb.GOSSIP_DIGEST_ACK2,
+                                                                                           new GossipDigestAck2(deltaEpStateMap),
+                                                                                           GossipDigestAck2.serializer);
         if (logger.isTraceEnabled())
             logger.trace("Sending a GossipDigestAck2Message to {}", from);
-        MessagingService.instance().send(gDigestAck2Message, from);
-
-        super.doVerb(message);
+        MessagingService.instance().sendOneWay(gDigestAck2Message, from);
     }
 }
