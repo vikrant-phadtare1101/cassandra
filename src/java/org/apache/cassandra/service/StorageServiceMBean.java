@@ -27,12 +27,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import javax.annotation.Nullable;
 import javax.management.NotificationEmitter;
-import javax.management.openmbean.CompositeData;
-import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
-
-import org.apache.cassandra.db.ColumnFamilyStoreMBean;
-import org.apache.cassandra.exceptions.ConfigurationException;
 
 public interface StorageServiceMBean extends NotificationEmitter
 {
@@ -105,11 +100,6 @@ public interface StorageServiceMBean extends NotificationEmitter
      */
     public String getSchemaVersion();
 
-    /**
-     * Fetch the replication factor for a given keyspace.
-     * @return An integer that represents replication factor for the given keyspace.
-     */
-    public String getKeyspaceReplicationInfo(String keyspaceName);
 
     /**
      * Get the list of all data file locations from conf
@@ -217,8 +207,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     @Deprecated public List<InetAddress> getNaturalEndpoints(String keyspaceName, ByteBuffer key);
     public List<String> getNaturalEndpointsWithPort(String keysapceName, ByteBuffer key);
 
-    public List<String> getReplicas(String keyspaceName, String cf, String key);
-
     /**
      * @deprecated use {@link #takeSnapshot(String tag, Map options, String... entities)} instead.
      */
@@ -271,11 +259,6 @@ public interface StorageServiceMBean extends NotificationEmitter
      * Forces refresh of values stored in system.size_estimates of all column families.
      */
     public void refreshSizeEstimates() throws ExecutionException;
-
-    /**
-     * Removes extraneous entries in system.size_estimates.
-     */
-    public void cleanupSizeEstimates();
 
     /**
      * Forces major compaction of a single keyspace
@@ -358,10 +341,6 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int repairAsync(String keyspace, Map<String, String> options);
 
     public void forceTerminateAllRepairSessions();
-
-    public void setRepairSessionMaxTreeDepth(int depth);
-
-    public int getRepairSessionMaxTreeDepth();
 
     /**
      * Get the status of a given parent repair session.
@@ -517,20 +496,12 @@ public interface StorageServiceMBean extends NotificationEmitter
     public void stopNativeTransport();
     public void startNativeTransport();
     public boolean isNativeTransportRunning();
-    public void enableNativeTransportOldProtocolVersions();
-    public void disableNativeTransportOldProtocolVersions();
 
     // allows a node that have been started without joining the ring to join it
     public void joinRing() throws IOException;
     public boolean isJoined();
     public boolean isDrained();
     public boolean isDraining();
-    /** Check if currently bootstrapping.
-     * Note this becomes false before {@link org.apache.cassandra.db.SystemKeyspace#bootstrapComplete()} is called,
-     * as setting bootstrap to complete is called only when the node joins the ring.
-     * @return True prior to bootstrap streaming completing. False prior to start of bootstrap and post streaming.
-     */
-    public boolean isBootstrapMode();
 
     public void setRpcTimeout(long value);
     public long getRpcTimeout();
@@ -543,12 +514,6 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public void setWriteRpcTimeout(long value);
     public long getWriteRpcTimeout();
-
-    public void setInternodeTcpConnectTimeoutInMS(int value);
-    public int getInternodeTcpConnectTimeoutInMS();
-
-    public void setInternodeTcpUserTimeoutInMS(int value);
-    public int getInternodeTcpUserTimeoutInMS();
 
     public void setCounterWriteRpcTimeout(long value);
     public long getCounterWriteRpcTimeout();
@@ -576,12 +541,6 @@ public interface StorageServiceMBean extends NotificationEmitter
 
     public int getConcurrentValidators();
     public void setConcurrentValidators(int value);
-
-    public int getSSTablePreemptiveOpenIntervalInMB();
-    public void setSSTablePreemptiveOpenIntervalInMB(int intervalInMB);
-
-    public boolean getMigrateKeycacheOnCompaction();
-    public void setMigrateKeycacheOnCompaction(boolean invalidateKeyCacheOnCompaction);
 
     public int getConcurrentViewBuilders();
     public void setConcurrentViewBuilders(int value);
@@ -624,10 +583,7 @@ public interface StorageServiceMBean extends NotificationEmitter
      *
      * @param ksName The parent keyspace name
      * @param tableName The ColumnFamily name where SSTables belong
-     *
-     * @see ColumnFamilyStoreMBean#loadNewSSTables()
      */
-    @Deprecated
     public void loadNewSSTables(String ksName, String tableName);
 
     /**
@@ -657,8 +613,6 @@ public interface StorageServiceMBean extends NotificationEmitter
      *            disable tracing and 1 will enable tracing for all requests (which mich severely cripple the system)
      */
     public void setTraceProbability(double probability);
-
-    public Map<String, List<CompositeData>> samplePartitions(int duration, int capacity, int count, List<String> samplers) throws OpenDataException;
 
     /**
      * Returns the configured tracing probability.
@@ -706,13 +660,4 @@ public interface StorageServiceMBean extends NotificationEmitter
      * @return true if the node successfully starts resuming. (this does not mean bootstrap streaming was success.)
      */
     public boolean resumeBootstrap();
-
-
-    /** Clears the history of clients that have connected in the past **/
-    void clearConnectionHistory();
-    public void disableAuditLog();
-    public void enableAuditLog(String loggerName, String includedKeyspaces, String excludedKeyspaces, String includedCategories, String excludedCategories, String includedUsers, String excludedUsers) throws ConfigurationException;
-    public boolean isAuditLogEnabled();
-    public String getCorruptedTombstoneStrategy();
-    public void setCorruptedTombstoneStrategy(String strategy);
 }

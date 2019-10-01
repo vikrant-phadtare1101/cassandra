@@ -17,8 +17,10 @@
  */
 package org.apache.cassandra.streaming;
 
-import java.util.Collection;
-import java.util.UUID;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.google.common.util.concurrent.AbstractFuture;
@@ -76,7 +78,7 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
         this(planId, streamOperation, new StreamCoordinator(streamOperation, 0, new DefaultConnectionFactory(), false, pendingRepair, previewKind));
     }
 
-    public static StreamResultFuture init(UUID planId, StreamOperation streamOperation, Collection<StreamEventHandler> listeners,
+    static StreamResultFuture init(UUID planId, StreamOperation streamOperation, Collection<StreamEventHandler> listeners,
                                    StreamCoordinator coordinator)
     {
         StreamResultFuture future = createAndRegister(planId, streamOperation, coordinator);
@@ -110,17 +112,14 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
         StreamResultFuture future = StreamManager.instance.getReceivingStream(planId);
         if (future == null)
         {
-            logger.info("[Stream #{} ID#{}] Creating new streaming plan for {} from {} channel.remote {} channel.local {}" +
-                        " channel.id {}", planId, sessionIndex, streamOperation.getDescription(),
-                        from, channel.remoteAddress(), channel.localAddress(), channel.id());
+            logger.info("[Stream #{} ID#{}] Creating new streaming plan for {}", planId, sessionIndex, streamOperation.getDescription());
 
             // The main reason we create a StreamResultFuture on the receiving side is for JMX exposure.
             future = new StreamResultFuture(planId, streamOperation, pendingRepair, previewKind);
             StreamManager.instance.registerReceiving(future);
         }
         future.attachConnection(from, sessionIndex, channel);
-        logger.info("[Stream #{}, ID#{}] Received streaming plan for {} from {} channel.remote {} channel.local {} channel.id {}",
-                    planId, sessionIndex, streamOperation.getDescription(), from, channel.remoteAddress(), channel.localAddress(), channel.id());
+        logger.info("[Stream #{}, ID#{}] Received streaming plan for {}", planId, sessionIndex, streamOperation.getDescription());
         return future;
     }
 
@@ -138,7 +137,13 @@ public final class StreamResultFuture extends AbstractFuture<StreamState>
 
     private void attachConnection(InetAddressAndPort from, int sessionIndex, Channel channel)
     {
-        StreamSession session = coordinator.getOrCreateSessionById(from, sessionIndex);
+        SocketAddress addr = channel.remoteAddress();
+        //In the case of unit tests, if you use the EmbeddedChannel, channel.remoteAddress()
+        //does not return an InetSocketAddress, but an EmbeddedSocketAddress. Hence why we need the type check here
+        InetAddress connecting = (addr instanceof InetSocketAddress ? ((InetSocketAddress) addr).getAddress() : from.address);
+        //Need to turn connecting into a InetAddressAndPort with the correct port. I think getting the port from "from"
+        //Will work since we don't actually have ports diverge across network interfaces
+        StreamSession session = coordinator.getOrCreateSessionById(from, sessionIndex, InetAddressAndPort.getByAddressOverrideDefaults(connecting, from.port));
         session.init(this);
         session.attach(channel);
     }

@@ -53,7 +53,7 @@ public class BufferPoolTest
     @After
     public void cleanUp()
     {
-        BufferPool.unsafeReset();
+        BufferPool.reset();
     }
 
     @Test
@@ -66,12 +66,12 @@ public class BufferPoolTest
         assertEquals(size, buffer.capacity());
         assertEquals(true, buffer.isDirect());
 
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
         assertEquals(BufferPool.GlobalPool.MACRO_CHUNK_SIZE, BufferPool.sizeInBytes());
 
         BufferPool.put(buffer);
-        assertEquals(null, BufferPool.unsafeCurrentChunk());
+        assertEquals(null, BufferPool.currentChunk());
         assertEquals(BufferPool.GlobalPool.MACRO_CHUNK_SIZE, BufferPool.sizeInBytes());
     }
 
@@ -81,7 +81,7 @@ public class BufferPoolTest
     {
         final int size = 1024;
         for (int i = size;
-                 i <= BufferPool.NORMAL_CHUNK_SIZE;
+                 i <= BufferPool.CHUNK_SIZE;
                  i += size)
         {
             checkPageAligned(i);
@@ -115,14 +115,14 @@ public class BufferPoolTest
         assertNotNull(buffer2);
         assertEquals(size2, buffer2.capacity());
 
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
         assertEquals(BufferPool.GlobalPool.MACRO_CHUNK_SIZE, BufferPool.sizeInBytes());
 
         BufferPool.put(buffer1);
         BufferPool.put(buffer2);
 
-        assertEquals(null, BufferPool.unsafeCurrentChunk());
+        assertEquals(null, BufferPool.currentChunk());
         assertEquals(BufferPool.GlobalPool.MACRO_CHUNK_SIZE, BufferPool.sizeInBytes());
     }
 
@@ -165,7 +165,7 @@ public class BufferPoolTest
     @Test
     public void testRecycle()
     {
-        requestUpToSize(RandomAccessReader.DEFAULT_BUFFER_SIZE, 3 * BufferPool.NORMAL_CHUNK_SIZE);
+        requestUpToSize(RandomAccessReader.DEFAULT_BUFFER_SIZE, 3 * BufferPool.CHUNK_SIZE);
     }
 
     private void requestDoubleMaxMemory()
@@ -192,12 +192,13 @@ public class BufferPoolTest
 
         for (ByteBuffer buffer : buffers)
             BufferPool.put(buffer);
+
     }
 
     @Test
     public void testBigRequest()
     {
-        final int size = BufferPool.NORMAL_CHUNK_SIZE + 1;
+        final int size = BufferPool.CHUNK_SIZE + 1;
 
         ByteBuffer buffer = BufferPool.get(size);
         assertNotNull(buffer);
@@ -209,30 +210,30 @@ public class BufferPoolTest
     public void testFillUpChunks()
     {
         final int size = RandomAccessReader.DEFAULT_BUFFER_SIZE;
-        final int numBuffers = BufferPool.NORMAL_CHUNK_SIZE / size;
+        final int numBuffers = BufferPool.CHUNK_SIZE / size;
 
         List<ByteBuffer> buffers1 = new ArrayList<>(numBuffers);
         List<ByteBuffer> buffers2 = new ArrayList<>(numBuffers);
         for (int i = 0; i < numBuffers; i++)
             buffers1.add(BufferPool.get(size));
 
-        BufferPool.Chunk chunk1 = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk1 = BufferPool.currentChunk();
         assertNotNull(chunk1);
 
         for (int i = 0; i < numBuffers; i++)
             buffers2.add(BufferPool.get(size));
 
-        assertEquals(2, BufferPool.unsafeNumChunks());
+        assertEquals(2, BufferPool.numChunks());
 
         for (ByteBuffer buffer : buffers1)
             BufferPool.put(buffer);
 
-        assertEquals(1, BufferPool.unsafeNumChunks());
+        assertEquals(1, BufferPool.numChunks());
 
         for (ByteBuffer buffer : buffers2)
             BufferPool.put(buffer);
 
-        assertEquals(0, BufferPool.unsafeNumChunks());
+        assertEquals(0, BufferPool.numChunks());
 
         buffers2.clear();
     }
@@ -241,7 +242,7 @@ public class BufferPoolTest
     public void testOutOfOrderFrees()
     {
         final int size = 4096;
-        final int maxFreeSlots = BufferPool.NORMAL_CHUNK_SIZE / size;
+        final int maxFreeSlots = BufferPool.CHUNK_SIZE / size;
 
         final int[] idxs = new int[maxFreeSlots];
         for (int i = 0; i < maxFreeSlots; i++)
@@ -254,7 +255,7 @@ public class BufferPoolTest
     public void testInOrderFrees()
     {
         final int size = 4096;
-        final int maxFreeSlots = BufferPool.NORMAL_CHUNK_SIZE / size;
+        final int maxFreeSlots = BufferPool.CHUNK_SIZE / size;
 
         final int[] idxs = new int[maxFreeSlots];
         for (int i = 0; i < maxFreeSlots; i++)
@@ -268,23 +269,23 @@ public class BufferPoolTest
     {
         doTestRandomFrees(12345567878L);
 
-        BufferPool.unsafeReset();
+        BufferPool.reset();
         doTestRandomFrees(20452249587L);
 
-        BufferPool.unsafeReset();
+        BufferPool.reset();
         doTestRandomFrees(82457252948L);
 
-        BufferPool.unsafeReset();
+        BufferPool.reset();
         doTestRandomFrees(98759284579L);
 
-        BufferPool.unsafeReset();
+        BufferPool.reset();
         doTestRandomFrees(19475257244L);
     }
 
     private void doTestRandomFrees(long seed)
     {
         final int size = 4096;
-        final int maxFreeSlots = BufferPool.NORMAL_CHUNK_SIZE / size;
+        final int maxFreeSlots = BufferPool.CHUNK_SIZE / size;
 
         final int[] idxs = new int[maxFreeSlots];
         for (int i = 0; i < maxFreeSlots; i++)
@@ -311,10 +312,10 @@ public class BufferPoolTest
             buffers.add(BufferPool.get(size));
         }
 
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertFalse(chunk.isFree());
 
-        int freeSize = BufferPool.NORMAL_CHUNK_SIZE - maxFreeSlots * size;
+        int freeSize = BufferPool.CHUNK_SIZE - maxFreeSlots * size;
         assertEquals(freeSize, chunk.free());
 
         for (int i : toReleaseIdxs)
@@ -351,34 +352,33 @@ public class BufferPoolTest
             assertTrue(buffer.capacity() >= sizes[i]);
             buffers.add(buffer);
 
-            sum += BufferPool.unsafeCurrentChunk().roundUp(buffer.capacity());
+            sum += BufferPool.currentChunk().roundUp(buffer.capacity());
         }
 
         // else the test will fail, adjust sizes as required
         assertTrue(sum <= BufferPool.GlobalPool.MACRO_CHUNK_SIZE);
 
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
 
         Random rnd = new Random();
         rnd.setSeed(298347529L);
-        while (buffers.size() > 1)
+        while (!buffers.isEmpty())
         {
             int index = rnd.nextInt(buffers.size());
             ByteBuffer buffer = buffers.remove(index);
 
             BufferPool.put(buffer);
         }
-        BufferPool.put(buffers.remove(0));
 
-        assertEquals(null, BufferPool.unsafeCurrentChunk());
+        assertEquals(null, BufferPool.currentChunk());
         assertEquals(0, chunk.free());
     }
 
     @Test
     public void testChunkExhausted()
     {
-        final int size = BufferPool.NORMAL_CHUNK_SIZE / 64; // 1kbit
+        final int size = BufferPool.CHUNK_SIZE / 64; // 1kbit
         int[] sizes = new int[128];
         Arrays.fill(sizes, size);
 
@@ -397,7 +397,7 @@ public class BufferPoolTest
         // else the test will fail, adjust sizes as required
         assertTrue(sum <= BufferPool.GlobalPool.MACRO_CHUNK_SIZE);
 
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
 
         for (int i = 0; i < sizes.length; i++)
@@ -405,7 +405,7 @@ public class BufferPoolTest
             BufferPool.put(buffers.get(i));
         }
 
-        assertEquals(null, BufferPool.unsafeCurrentChunk());
+        assertEquals(null, BufferPool.currentChunk());
         assertEquals(0, chunk.free());
     }
 
@@ -505,9 +505,9 @@ public class BufferPoolTest
         ByteBuffer buffer = BufferPool.get(size);
         assertEquals(size, buffer.capacity());
 
-        if (size > 0 && size < BufferPool.NORMAL_CHUNK_SIZE)
+        if (size > 0 && size < BufferPool.CHUNK_SIZE)
         {
-            BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+            BufferPool.Chunk chunk = BufferPool.currentChunk();
             assertNotNull(chunk);
             assertEquals(chunk.capacity(), chunk.free() + chunk.roundUp(size));
         }
@@ -552,7 +552,7 @@ public class BufferPoolTest
         ByteBuffer buffer = BufferPool.get(size);
 
         // now get the current chunk and override the free slots mask
-        BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
         long oldFreeSlots = chunk.setFreeSlots(freeSlots);
 
@@ -561,7 +561,7 @@ public class BufferPoolTest
         assertEquals(size, buffer.capacity());
         BufferPool.put(buffer2);
 
-        // unsafeReset the free slots
+        // reset the free slots
         chunk.setFreeSlots(oldFreeSlots);
         BufferPool.put(buffer);
     }
@@ -587,22 +587,22 @@ public class BufferPoolTest
         BufferPool.DISABLED = true;
         BufferPool.ALLOCATE_ON_HEAP_WHEN_EXAHUSTED = true;
         ByteBuffer buffer = BufferPool.get(1024);
-        assertEquals(0, BufferPool.unsafeNumChunks());
+        assertEquals(0, BufferPool.numChunks());
         assertNotNull(buffer);
         assertEquals(1024, buffer.capacity());
         assertFalse(buffer.isDirect());
         assertNotNull(buffer.array());
         BufferPool.put(buffer);
-        assertEquals(0, BufferPool.unsafeNumChunks());
+        assertEquals(0, BufferPool.numChunks());
 
         BufferPool.ALLOCATE_ON_HEAP_WHEN_EXAHUSTED = false;
         buffer = BufferPool.get(1024);
-        assertEquals(0, BufferPool.unsafeNumChunks());
+        assertEquals(0, BufferPool.numChunks());
         assertNotNull(buffer);
         assertEquals(1024, buffer.capacity());
         assertTrue(buffer.isDirect());
         BufferPool.put(buffer);
-        assertEquals(0, BufferPool.unsafeNumChunks());
+        assertEquals(0, BufferPool.numChunks());
 
         // clean-up
         BufferPool.DISABLED = false;
@@ -794,10 +794,10 @@ public class BufferPoolTest
             buffers[i] = BufferPool.get(sizes[i]);
             assertNotNull(buffers[i]);
             assertEquals(sizes[i], buffers[i].capacity());
-            sum += BufferPool.unsafeCurrentChunk().roundUp(buffers[i].capacity());
+            sum += BufferPool.currentChunk().roundUp(buffers[i].capacity());
         }
 
-        final BufferPool.Chunk chunk = BufferPool.unsafeCurrentChunk();
+        final BufferPool.Chunk chunk = BufferPool.currentChunk();
         assertNotNull(chunk);
         assertFalse(chunk.isFree());
 
@@ -819,7 +819,7 @@ public class BufferPoolTest
                 {
                     try
                     {
-                        assertNotSame(chunk, BufferPool.unsafeCurrentChunk());
+                        assertNotSame(chunk, BufferPool.currentChunk());
                         BufferPool.put(buffer);
                     }
                     catch (AssertionError ex)
@@ -849,7 +849,7 @@ public class BufferPoolTest
         System.gc();
         System.gc();
 
-        assertTrue(BufferPool.unsafeCurrentChunk().isFree());
+        assertTrue(BufferPool.currentChunk().isFree());
 
         //make sure the main thread can still allocate buffers
         ByteBuffer buffer = BufferPool.get(sizes[0]);

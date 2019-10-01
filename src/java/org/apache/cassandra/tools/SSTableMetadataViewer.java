@@ -398,7 +398,7 @@ public class SSTableMetadataViewer
                                                       String::valueOf);
             rowSize.printHistogram(out, color, unicode);
             field("Column Count", "");
-            TermHistogram cellCount = new TermHistogram(stats.estimatedCellPerPartitionCount,
+            TermHistogram cellCount = new TermHistogram(stats.estimatedColumnCount,
                                                         "Columns",
                                                         String::valueOf,
                                                         String::valueOf);

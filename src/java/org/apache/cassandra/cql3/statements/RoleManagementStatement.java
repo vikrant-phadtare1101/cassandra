@@ -25,8 +25,6 @@ import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.RequestValidationException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.service.ClientState;
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
 
 public abstract class RoleManagementStatement extends AuthenticationStatement
 {
@@ -39,7 +37,7 @@ public abstract class RoleManagementStatement extends AuthenticationStatement
         this.grantee = RoleResource.role(grantee.getName());
     }
 
-    public void authorize(ClientState state) throws UnauthorizedException
+    public void checkAccess(ClientState state) throws UnauthorizedException
     {
         super.checkPermission(state, Permission.AUTHORIZE, role);
     }
@@ -53,11 +51,5 @@ public abstract class RoleManagementStatement extends AuthenticationStatement
 
         if (!DatabaseDescriptor.getRoleManager().isExistingRole(grantee))
             throw new InvalidRequestException(String.format("%s doesn't exist", grantee.getRoleName()));
-    }
-    
-    @Override
-    public String toString()
-    {
-        return ToStringBuilder.reflectionToString(this, ToStringStyle.SHORT_PREFIX_STYLE);
     }
 }
