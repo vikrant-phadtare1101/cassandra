@@ -29,7 +29,9 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
+import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
@@ -43,7 +45,7 @@ import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.repair.SyncNodePair;
+import org.apache.cassandra.repair.NodePair;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.schema.TableId;
@@ -118,7 +120,7 @@ public class RepairMessageSerializationsTest
     @Test
     public void validationCompleteMessage_NoMerkleTree() throws IOException
     {
-        ValidationResponse deserialized = validationCompleteMessage(null);
+        ValidationComplete deserialized = validationCompleteMessage(null);
         Assert.assertNull(deserialized.trees);
     }
 
@@ -127,19 +129,19 @@ public class RepairMessageSerializationsTest
     {
         MerkleTrees trees = new MerkleTrees(Murmur3Partitioner.instance);
         trees.addMerkleTree(256, new Range<>(new LongToken(1000), new LongToken(1001)));
-        ValidationResponse deserialized = validationCompleteMessage(trees);
+        ValidationComplete deserialized = validationCompleteMessage(trees);
 
         // a simple check to make sure we got some merkle trees back.
         Assert.assertEquals(trees.size(), deserialized.trees.size());
     }
 
-    private ValidationResponse validationCompleteMessage(MerkleTrees trees) throws IOException
+    private ValidationComplete validationCompleteMessage(MerkleTrees trees) throws IOException
     {
         RepairJobDesc jobDesc = buildRepairJobDesc();
-        ValidationResponse msg = trees == null ?
-                                 new ValidationResponse(jobDesc) :
-                                 new ValidationResponse(jobDesc, trees);
-        ValidationResponse deserialized = serializeRoundTrip(msg, ValidationResponse.serializer);
+        ValidationComplete msg = trees == null ?
+                                 new ValidationComplete(jobDesc) :
+                                 new ValidationComplete(jobDesc, trees);
+        ValidationComplete deserialized = serializeRoundTrip(msg, ValidationComplete.serializer);
         return deserialized;
     }
 
@@ -164,8 +166,8 @@ public class RepairMessageSerializationsTest
                                          Lists.newArrayList(new StreamSummary(TableId.fromUUID(UUIDGen.getTimeUUID()), 5, 100)),
                                          Lists.newArrayList(new StreamSummary(TableId.fromUUID(UUIDGen.getTimeUUID()), 500, 10))
         ));
-        SyncResponse msg = new SyncResponse(buildRepairJobDesc(), new SyncNodePair(src, dst), true, summaries);
-        serializeRoundTrip(msg, SyncResponse.serializer);
+        SyncComplete msg = new SyncComplete(buildRepairJobDesc(), new NodePair(src, dst), true, summaries);
+        serializeRoundTrip(msg, SyncComplete.serializer);
     }
 
     @Test

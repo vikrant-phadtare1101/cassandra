@@ -247,8 +247,8 @@ public class IndexSummaryBuilder implements AutoCloseable
     {
         // this method should only be called when we've finished appending records, so we truncate the
         // memory we're using to the exact amount required to represent it before building our summary
-        entries.trim();
-        offsets.trim();
+        entries.setCapacity(entries.length());
+        offsets.setCapacity(offsets.length());
     }
 
     public IndexSummary build(IPartitioner partitioner)
