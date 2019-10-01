@@ -20,9 +20,7 @@ package org.apache.cassandra.streaming;
 
 import java.io.IOException;
 
-import com.google.common.annotations.VisibleForTesting;
-
-import org.apache.cassandra.locator.InetAddressAndPort;
+import org.apache.cassandra.net.async.OutboundConnectionIdentifier;
 import org.apache.cassandra.streaming.messages.StreamMessage;
 
 public interface StreamingMessageSender
@@ -30,6 +28,8 @@ public interface StreamingMessageSender
     void initialize() throws IOException;
 
     void sendMessage(StreamMessage message) throws IOException;
+
+    OutboundConnectionIdentifier getConnectionId();
 
     boolean connected();
 
