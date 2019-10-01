@@ -88,11 +88,11 @@ public class SSTableRepairedAtSetter
             if (setIsRepaired)
             {
                 FileTime f = Files.getLastModifiedTime(new File(descriptor.filenameFor(Component.DATA)).toPath());
-                descriptor.getMetadataSerializer().mutateRepairMetadata(descriptor, f.toMillis(), null, false);
+                descriptor.getMetadataSerializer().mutateRepaired(descriptor, f.toMillis(), null);
             }
             else
             {
-                descriptor.getMetadataSerializer().mutateRepairMetadata(descriptor, 0, null, false);
+                descriptor.getMetadataSerializer().mutateRepaired(descriptor, 0, null);
             }
         }
     }

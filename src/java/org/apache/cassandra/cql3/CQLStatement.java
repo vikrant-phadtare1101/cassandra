@@ -17,58 +17,34 @@
  */
 package org.apache.cassandra.cql3;
 
-import java.util.Collections;
-import java.util.List;
-
-import org.apache.cassandra.audit.AuditLogContext;
+import org.apache.cassandra.audit.IAuditLogContext;
 import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.messages.ResultMessage;
 
-public interface CQLStatement
+public interface CQLStatement extends IAuditLogContext
 {
     /**
-     * Returns all bind variables for the statement
+     * Returns the number of bound terms in this statement.
      */
-    default List<ColumnSpecification> getBindVariables()
-    {
-        return Collections.emptyList();
-    }
-
-    /**
-     * Returns an array with the same length as the number of partition key columns for the table corresponding
-     * to table.  Each short in the array represents the bind index of the marker that holds the value for that
-     * partition key column. If there are no bind markers for any of the partition key columns, null is returned.
-     */
-    default short[] getPartitionKeyBindVariableIndexes()
-    {
-        return null;
-    }
-
-    /**
-     * Return an Iterable over all of the functions (both native and user-defined) used by any component of the statement
-     *
-     * @return functions all functions found (may contain duplicates)
-     */
-    default Iterable<Function> getFunctions()
-    {
-        return Collections.emptyList();
-    }
+    public int getBoundTerms();
 
     /**
      * Perform any access verification necessary for the statement.
      *
      * @param state the current client state
      */
-    public void authorize(ClientState state);
+    public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException;
 
     /**
-     * Perform additional validation required by the statment. To be overriden by subclasses if needed.
+     * Perform additional validation required by the statment.
+     * To be overriden by subclasses if needed.
      *
      * @param state the current client state
      */
-    public void validate(ClientState state);
+    public void validate(ClientState state) throws RequestValidationException;
 
     /**
      * Execute the statement and return the resulting result or null if there is no result.
@@ -77,19 +53,21 @@ public interface CQLStatement
      * @param options options for this query (consistency, variables, pageSize, ...)
      * @param queryStartNanoTime the timestamp returned by System.nanoTime() when this statement was received
      */
-    public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime);
+    public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException;
 
     /**
      * Variant of execute used for internal query against the system tables, and thus only query the local node.
      *
      * @param state the current query state
      */
-    public ResultMessage executeLocally(QueryState state, QueryOptions options);
+    public ResultMessage executeInternal(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
 
     /**
-     * Provides the context needed for audit logging statements.
+     * Return an Iterable over all of the functions (both native and user-defined) used by any component
+     * of the statement
+     * @return functions all functions found (may contain duplicates)
      */
-    AuditLogContext getAuditLogContext();
+    public Iterable<Function> getFunctions();
 
     /**
      * Whether or not this CQL Statement has LWT conditions
@@ -97,17 +75,5 @@ public interface CQLStatement
     default public boolean hasConditions()
     {
         return false;
-    }
-
-    public static abstract class Raw
-    {
-        protected VariableSpecifications bindVariables;
-
-        public void setBindVariables(List<ColumnIdentifier> variables)
-        {
-            bindVariables = new VariableSpecifications(variables);
-        }
-
-        public abstract CQLStatement prepare(ClientState state);
     }
 }

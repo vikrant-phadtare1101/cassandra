@@ -38,12 +38,6 @@ import org.apache.cassandra.stress.util.JavaDriverClient;
 
 public abstract class SchemaStatement extends PartitionOperation
 {
-    public enum ArgSelect
-    {
-        MULTIROW, SAMEROW;
-        //TODO: FIRSTROW, LASTROW
-    }
-
     final PreparedStatement statement;
     final ConsistencyLevel cl;
     final int[] argumentIndex;

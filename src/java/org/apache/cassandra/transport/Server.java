@@ -23,13 +23,13 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
@@ -44,20 +44,15 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
-import io.netty.handler.timeout.IdleState;
-import io.netty.handler.timeout.IdleStateEvent;
-import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.Version;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.util.internal.logging.Slf4JLoggerFactory;
-import org.apache.cassandra.auth.AuthenticatedUser;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.ResourceLimits;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaChangeListener;
 import org.apache.cassandra.security.SSLFactory;
@@ -90,6 +85,7 @@ public class Server implements CassandraDaemon.Server
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
     private EventLoopGroup workerGroup;
+    private EventExecutor eventExecutorGroup;
 
     private Server (Builder builder)
     {
@@ -106,6 +102,8 @@ public class Server implements CassandraDaemon.Server
             else
                 workerGroup = new NioEventLoopGroup();
         }
+        if (builder.eventExecutorGroup != null)
+            eventExecutorGroup = builder.eventExecutorGroup;
         EventNotifier notifier = new EventNotifier(this);
         StorageService.instance.register(notifier);
         Schema.instance.registerListener(notifier);
@@ -165,38 +163,69 @@ public class Server implements CassandraDaemon.Server
 
         ChannelFuture bindFuture = bootstrap.bind(socket);
         if (!bindFuture.awaitUninterruptibly().isSuccess())
-            throw new IllegalStateException(String.format("Failed to bind port %d on %s.", socket.getPort(), socket.getAddress().getHostAddress()),
-                                            bindFuture.cause());
+            throw new IllegalStateException(String.format("Failed to bind port %d on %s.", socket.getPort(), socket.getAddress().getHostAddress()));
 
         connectionTracker.allChannels.add(bindFuture.channel());
         isRunning.set(true);
     }
 
-    public int countConnectedClients()
+    public int getConnectedClients()
     {
-        return connectionTracker.countConnectedClients();
+        return connectionTracker.getConnectedClients();
     }
 
-    public Map<String, Integer> countConnectedClientsByUser()
+    public Map<String, Integer> getConnectedClientsByUser()
     {
-        return connectionTracker.countConnectedClientsByUser();
+        return connectionTracker.getConnectedClientsByUser();
     }
 
-    public List<ConnectedClient> getConnectedClients()
+    public List<Map<String, String>> getConnectionStates()
     {
-        List<ConnectedClient> result = new ArrayList<>();
-        for (Channel c : connectionTracker.allChannels)
+        List<Map<String, String>> result = new ArrayList<>();
+        for(Channel c : connectionTracker.allChannels)
         {
-            Connection conn = c.attr(Connection.attributeKey).get();
-            if (conn instanceof ServerConnection)
-                result.add(new ConnectedClient((ServerConnection) conn));
+            Connection connection = c.attr(Connection.attributeKey).get();
+            if (connection instanceof ServerConnection)
+            {
+                ServerConnection conn = (ServerConnection) connection;
+                SslHandler sslHandler = conn.channel().pipeline().get(SslHandler.class);
+
+                result.add(new ImmutableMap.Builder<String, String>()
+                        .put("user", conn.getClientState().getUser().getName())
+                        .put("keyspace", conn.getClientState().getRawKeyspace() == null ? "" : conn.getClientState().getRawKeyspace())
+                        .put("address", conn.getClientState().getRemoteAddress().toString())
+                        .put("version", String.valueOf(conn.getVersion().asInt()))
+                        .put("requests", String.valueOf(conn.requests.getCount()))
+                        .put("ssl", Boolean.toString(sslHandler == null))
+                        .put("cipher", sslHandler != null ? sslHandler.engine().getSession().getCipherSuite() : "undefined")
+                        .put("protocol", sslHandler != null ? sslHandler.engine().getSession().getProtocol() : "undefined")
+                        .put("driverName", conn.getClientState().getDriverName().orElse("undefined"))
+                        .put("driverVersion", conn.getClientState().getDriverVersion().orElse("undefined"))
+                        .build());
+            }
         }
         return result;
     }
 
-    public List<ClientStat> recentClientStats()
+    public List<Map<String, String>> getClientsByProtocolVersion()
     {
-        return connectionTracker.protocolVersionTracker.getAll();
+        LinkedHashMap<ProtocolVersion, ImmutableSet<ProtocolVersionTracker.ClientIPAndTime>> all = connectionTracker.protocolVersionTracker.getAll();
+        List<Map<String, String>> result = new ArrayList<>();
+
+        for (Map.Entry<ProtocolVersion, ImmutableSet<ProtocolVersionTracker.ClientIPAndTime>> entry : all.entrySet())
+        {
+            ProtocolVersion protoVersion = entry.getKey();
+
+            for (ProtocolVersionTracker.ClientIPAndTime client : entry.getValue())
+            {
+                result.add(new ImmutableMap.Builder<String, String>()
+                           .put("protocolVersion", protoVersion.toString())
+                           .put("inetAddress", client.inetAddress.toString())
+                           .put("lastSeenTime", String.valueOf(client.lastSeen))
+                           .build());
+            }
+        }
+        return result;
     }
 
     @Override
@@ -231,6 +260,12 @@ public class Server implements CassandraDaemon.Server
         public Builder withEventLoopGroup(EventLoopGroup eventLoopGroup)
         {
             this.workerGroup = eventLoopGroup;
+            return this;
+        }
+
+        public Builder withEventExecutor(EventExecutor eventExecutor)
+        {
+            this.eventExecutorGroup = eventExecutor;
             return this;
         }
 
@@ -301,12 +336,12 @@ public class Server implements CassandraDaemon.Server
             groups.get(event.type).writeAndFlush(new EventMessage(event));
         }
 
-        void closeAll()
+        public void closeAll()
         {
             allChannels.close().awaitUninterruptibly();
         }
 
-        int countConnectedClients()
+        public int getConnectedClients()
         {
             /*
               - When server is running: allChannels contains all clients' connections (channels)
@@ -316,17 +351,16 @@ public class Server implements CassandraDaemon.Server
             return allChannels.size() != 0 ? allChannels.size() - 1 : 0;
         }
 
-        Map<String, Integer> countConnectedClientsByUser()
+        public Map<String, Integer> getConnectedClientsByUser()
         {
             Map<String, Integer> result = new HashMap<>();
-            for (Channel c : allChannels)
+            for(Channel c : allChannels)
             {
                 Connection connection = c.attr(Connection.attributeKey).get();
                 if (connection instanceof ServerConnection)
                 {
                     ServerConnection conn = (ServerConnection) connection;
-                    AuthenticatedUser user = conn.getClientState().getUser();
-                    String name = (null != user) ? user.getName() : null;
+                    String name = conn.getClientState().getUser().getName();
                     result.put(name, result.getOrDefault(name, 0) + 1);
                 }
             }
@@ -335,58 +369,16 @@ public class Server implements CassandraDaemon.Server
 
     }
 
-    // global inflight payload across all channels across all endpoints
-    private static final ResourceLimits.Concurrent globalRequestPayloadInFlight = new ResourceLimits.Concurrent(DatabaseDescriptor.getNativeTransportMaxConcurrentRequestsInBytes());
-
-    public static class EndpointPayloadTracker
-    {
-        // inflight payload per endpoint across corresponding channels
-        private static final ConcurrentMap<InetAddress, EndpointPayloadTracker> requestPayloadInFlightPerEndpoint = new ConcurrentHashMap<>();
-
-        private final AtomicInteger refCount = new AtomicInteger(0);
-        private final InetAddress endpoint;
-
-        final ResourceLimits.EndpointAndGlobal endpointAndGlobalPayloadsInFlight = new ResourceLimits.EndpointAndGlobal(new ResourceLimits.Concurrent(DatabaseDescriptor.getNativeTransportMaxConcurrentRequestsInBytesPerIp()),
-                                                                                                                         globalRequestPayloadInFlight);
-
-        private EndpointPayloadTracker(InetAddress endpoint)
-        {
-            this.endpoint = endpoint;
-        }
-
-        public static EndpointPayloadTracker get(InetAddress endpoint)
-        {
-            while (true)
-            {
-                EndpointPayloadTracker result = requestPayloadInFlightPerEndpoint.computeIfAbsent(endpoint, EndpointPayloadTracker::new);
-                if (result.acquire())
-                    return result;
-
-                requestPayloadInFlightPerEndpoint.remove(endpoint, result);
-            }
-        }
-
-        private boolean acquire()
-        {
-            return 0 < refCount.updateAndGet(i -> i < 0 ? i : i + 1);
-        }
-
-        public void release()
-        {
-            if (-1 == refCount.updateAndGet(i -> i == 1 ? -1 : i - 1))
-                requestPayloadInFlightPerEndpoint.remove(endpoint, this);
-        }
-    }
-
     private static class Initializer extends ChannelInitializer<Channel>
     {
         // Stateless handlers
         private static final Message.ProtocolDecoder messageDecoder = new Message.ProtocolDecoder();
         private static final Message.ProtocolEncoder messageEncoder = new Message.ProtocolEncoder();
-        private static final Frame.InboundBodyTransformer inboundFrameTransformer = new Frame.InboundBodyTransformer();
-        private static final Frame.OutboundBodyTransformer outboundFrameTransformer = new Frame.OutboundBodyTransformer();
+        private static final Frame.Decompressor frameDecompressor = new Frame.Decompressor();
+        private static final Frame.Compressor frameCompressor = new Frame.Compressor();
         private static final Frame.Encoder frameEncoder = new Frame.Encoder();
         private static final Message.ExceptionHandler exceptionHandler = new Message.ExceptionHandler();
+        private static final Message.Dispatcher dispatcher = new Message.Dispatcher();
         private static final ConnectionLimitHandler connectionLimitHandler = new ConnectionLimitHandler();
 
         private final Server server;
@@ -408,33 +400,16 @@ public class Server implements CassandraDaemon.Server
                 pipeline.addFirst("connectionLimitHandler", connectionLimitHandler);
             }
 
-            long idleTimeout = DatabaseDescriptor.nativeTransportIdleTimeout();
-            if (idleTimeout > 0)
-            {
-                pipeline.addLast("idleStateHandler", new IdleStateHandler(false, 0, 0, idleTimeout, TimeUnit.MILLISECONDS)
-                {
-                    @Override
-                    protected void channelIdle(ChannelHandlerContext ctx, IdleStateEvent evt)
-                    {
-                        logger.info("Closing client connection {} after timeout of {}ms", channel.remoteAddress(), idleTimeout);
-                        ctx.close();
-                    }
-                });
-            }
-
             //pipeline.addLast("debug", new LoggingHandler());
 
             pipeline.addLast("frameDecoder", new Frame.Decoder(server.connectionFactory));
             pipeline.addLast("frameEncoder", frameEncoder);
 
-            pipeline.addLast("inboundFrameTransformer", inboundFrameTransformer);
-            pipeline.addLast("outboundFrameTransformer", outboundFrameTransformer);
+            pipeline.addLast("frameDecompressor", frameDecompressor);
+            pipeline.addLast("frameCompressor", frameCompressor);
 
             pipeline.addLast("messageDecoder", messageDecoder);
             pipeline.addLast("messageEncoder", messageEncoder);
-
-            pipeline.addLast("executor", new Message.Dispatcher(DatabaseDescriptor.useNativeTransportLegacyFlusher(),
-                                                                EndpointPayloadTracker.get(((InetSocketAddress) channel.remoteAddress()).getAddress())));
 
             // The exceptionHandler will take care of handling exceptionCaught(...) events while still running
             // on the same EventLoop as all previous added handlers in the pipeline. This is important as the used
@@ -443,6 +418,11 @@ public class Server implements CassandraDaemon.Server
             // correctly handled before the handler itself is removed.
             // See https://issues.apache.org/jira/browse/CASSANDRA-13649
             pipeline.addLast("exceptionHandler", exceptionHandler);
+
+            if (server.eventExecutorGroup != null)
+                pipeline.addLast(server.eventExecutorGroup, "executor", dispatcher);
+            else
+                pipeline.addLast("executor", dispatcher);
         }
     }
 
@@ -458,7 +438,8 @@ public class Server implements CassandraDaemon.Server
 
         protected final SslHandler createSslHandler(ByteBufAllocator allocator) throws IOException
         {
-            SslContext sslContext = SSLFactory.getOrCreateSslContext(encryptionOptions, encryptionOptions.require_client_auth, SSLFactory.SocketType.SERVER);
+            SslContext sslContext = SSLFactory.getSslContext(encryptionOptions, encryptionOptions.require_client_auth,
+                                                             SSLFactory.ConnectionType.NATIVE_TRANSPORT, SSLFactory.SocketType.SERVER);
             return sslContext.newHandler(allocator);
         }
     }
