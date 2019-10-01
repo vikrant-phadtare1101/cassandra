@@ -18,25 +18,36 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import com.google.common.base.Objects;
-import com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.cql3.*;
+import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.FieldIdentifier;
+import org.apache.cassandra.cql3.Json;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.cql3.UserTypes;
 import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.CellPath;
-import org.apache.cassandra.schema.Difference;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.UserTypeSerializer;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
-
-import static com.google.common.collect.Iterables.any;
-import static com.google.common.collect.Iterables.transform;
 
 /**
  * A user defined type.
@@ -45,6 +56,8 @@ import static com.google.common.collect.Iterables.transform;
  */
 public class UserType extends TupleType
 {
+    private static final Logger logger = LoggerFactory.getLogger(UserType.class);
+
     public final String keyspace;
     public final ByteBuffer name;
     private final List<FieldIdentifier> fieldNames;
@@ -72,7 +85,7 @@ public class UserType extends TupleType
         this.serializer = new UserTypeSerializer(fieldSerializers);
     }
 
-    public static UserType getInstance(TypeParser parser)
+    public static UserType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
         Pair<Pair<String, ByteBuffer>, List<Pair<ByteBuffer, AbstractType>>> params = parser.getUserTypeParameters();
         String keyspace = params.left.left;
@@ -332,44 +345,38 @@ public class UserType extends TupleType
     @Override
     public boolean equals(Object o)
     {
+        return o instanceof UserType && equals(o, false);
+    }
+
+    @Override
+    public boolean equals(Object o, boolean ignoreFreezing)
+    {
+        if (this == o)
+        {
+            return true;
+        }
         if(!(o instanceof UserType))
             return false;
 
         UserType that = (UserType)o;
 
-        return equalsWithoutTypes(that) && types.equals(that.types);
-    }
+        if (!keyspace.equals(that.keyspace) || !name.equals(that.name) || !fieldNames.equals(that.fieldNames))
+            return false;
 
-    private boolean equalsWithoutTypes(UserType other)
-    {
-        return name.equals(other.name)
-            && fieldNames.equals(other.fieldNames)
-            && keyspace.equals(other.keyspace)
-            && isMultiCell == other.isMultiCell;
-    }
+        if (!ignoreFreezing && isMultiCell != that.isMultiCell)
+            return false;
 
-    public Optional<Difference> compare(UserType other)
-    {
-        if (!equalsWithoutTypes(other))
-            return Optional.of(Difference.SHALLOW);
+        if (this.types.size() != that.types.size())
+            return false;
 
-        boolean differsDeeply = false;
-
-        for (int i = 0; i < fieldTypes().size(); i++)
+        Iterator<AbstractType<?>> otherTypeIter = that.types.iterator();
+        for (AbstractType<?> type : types)
         {
-            AbstractType<?> thisType = fieldType(i);
-            AbstractType<?> thatType = other.fieldType(i);
-
-            if (!thisType.equals(thatType))
-            {
-                if (thisType.asCQL3Type().toString().equals(thatType.asCQL3Type().toString()))
-                    differsDeeply = true;
-                else
-                    return Optional.of(Difference.SHALLOW);
-            }
+            if (!type.equals(otherTypeIter.next(), ignoreFreezing))
+                return false;
         }
 
-        return differsDeeply ? Optional.of(Difference.DEEP) : Optional.empty();
+        return true;
     }
 
     @Override
@@ -379,30 +386,10 @@ public class UserType extends TupleType
     }
 
     @Override
-    public boolean referencesUserType(ByteBuffer name)
+    public boolean referencesUserType(String userTypeName)
     {
-        return this.name.equals(name) || any(fieldTypes(), t -> t.referencesUserType(name));
-    }
-
-    @Override
-    public UserType withUpdatedUserType(UserType udt)
-    {
-        if (!referencesUserType(udt.name))
-            return this;
-
-        // preserve frozen/non-frozen status of the updated UDT
-        if (name.equals(udt.name))
-        {
-            return isMultiCell == udt.isMultiCell
-                 ? udt
-                 : new UserType(keyspace, name, udt.fieldNames(), udt.fieldTypes(), isMultiCell);
-        }
-
-        return new UserType(keyspace,
-                            name,
-                            fieldNames,
-                            Lists.newArrayList(transform(fieldTypes(), t -> t.withUpdatedUserType(udt))),
-                            isMultiCell());
+        return getNameAsString().equals(userTypeName) ||
+               fieldTypes().stream().anyMatch(f -> f.referencesUserType(userTypeName));
     }
 
     @Override

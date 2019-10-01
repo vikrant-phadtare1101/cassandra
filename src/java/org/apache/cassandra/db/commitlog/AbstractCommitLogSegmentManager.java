@@ -109,7 +109,7 @@ public abstract class AbstractCommitLogSegmentManager
                     try
                     {
                         assert availableSegment == null;
-                        logger.trace("No segments in reserve; creating a fresh one");
+                        logger.debug("No segments in reserve; creating a fresh one");
                         availableSegment = createSegment();
                         if (shutdown)
                         {

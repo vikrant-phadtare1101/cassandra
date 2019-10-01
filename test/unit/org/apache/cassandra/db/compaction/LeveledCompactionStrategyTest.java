@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.UUID;
 
-import org.junit.Assert;
+import junit.framework.Assert;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -51,7 +51,6 @@ import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.notifications.SSTableAddedNotification;
 import org.apache.cassandra.notifications.SSTableRepairStatusChanged;
-import org.apache.cassandra.repair.ValidationManager;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.repair.Validator;
@@ -205,8 +204,7 @@ public class LeveledCompactionStrategyTest
                                                                  PreviewKind.NONE);
         RepairJobDesc desc = new RepairJobDesc(parentRepSession, UUID.randomUUID(), KEYSPACE1, CF_STANDARDDLEVELED, Arrays.asList(range));
         Validator validator = new Validator(desc, FBUtilities.getBroadcastAddressAndPort(), gcBefore, PreviewKind.NONE);
-
-        ValidationManager.instance.submitValidation(cfs, validator).get();
+        CompactionManager.instance.submitValidation(cfs, validator).get();
     }
 
     /**
@@ -340,7 +338,7 @@ public class LeveledCompactionStrategyTest
         waitForLeveling(cfs);
         cfs.disableAutoCompaction();
 
-        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs), (sstable) -> true))
+        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs)))
             Thread.sleep(100);
 
         CompactionStrategyManager manager = cfs.getCompactionStrategyManager();
@@ -364,7 +362,7 @@ public class LeveledCompactionStrategyTest
         SSTableReader sstable1 = unrepaired.manifest.generations[2].get(0);
         SSTableReader sstable2 = unrepaired.manifest.generations[1].get(0);
 
-        sstable1.descriptor.getMetadataSerializer().mutateRepairMetadata(sstable1.descriptor, System.currentTimeMillis(), null, false);
+        sstable1.descriptor.getMetadataSerializer().mutateRepaired(sstable1.descriptor, System.currentTimeMillis(), null);
         sstable1.reloadSSTableMetadata();
         assertTrue(sstable1.isRepaired());
 
@@ -437,7 +435,7 @@ public class LeveledCompactionStrategyTest
         Collection<Range<Token>> tokenRanges = new ArrayList<>(Arrays.asList(tokenRange));
         cfs.forceCompactionForTokenRange(tokenRanges);
 
-        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs), (sstable) -> true)) {
+        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs))) {
             Thread.sleep(100);
         }
 
@@ -450,44 +448,11 @@ public class LeveledCompactionStrategyTest
         cfs.forceCompactionForTokenRange(tokenRanges2);
 
 
-        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs), (sstable) -> true)) {
+        while(CompactionManager.instance.isCompacting(Arrays.asList(cfs))) {
             Thread.sleep(100);
         }
 
         // the 11 tables containing key1 should all compact to 1 table
         assertEquals(1, cfs.getLiveSSTables().size());
-    }
-
-    @Test
-    public void testCompactionCandidateOrdering() throws Exception
-    {
-        // add some data
-        byte [] b = new byte[100 * 1024];
-        new Random().nextBytes(b);
-        ByteBuffer value = ByteBuffer.wrap(b);
-        int rows = 4;
-        int columns = 10;
-        // Just keep sstables in L0 for this test
-        cfs.disableAutoCompaction();
-        for (int r = 0; r < rows; r++)
-        {
-            UpdateBuilder update = UpdateBuilder.create(cfs.metadata(), String.valueOf(r));
-            for (int c = 0; c < columns; c++)
-                update.newRow("column" + c).add("val", value);
-            update.applyUnsafe();
-            cfs.forceBlockingFlush();
-        }
-        LeveledCompactionStrategy strategy = (LeveledCompactionStrategy) (cfs.getCompactionStrategyManager()).getStrategies().get(1).get(0);
-        // get readers for level 0 sstables
-        Collection<SSTableReader> sstables = strategy.manifest.getLevel(0);
-        Collection<SSTableReader> sortedCandidates = strategy.manifest.ageSortedSSTables(sstables);
-        assertTrue(String.format("More than 1 sstable required for test, found: %d .", sortedCandidates.size()), sortedCandidates.size() > 1);
-        long lastMaxTimeStamp = Long.MIN_VALUE;
-        for (SSTableReader sstable : sortedCandidates)
-        {
-            assertTrue(String.format("SStables not sorted into oldest to newest by maxTimestamp. Current sstable: %d , last sstable: %d", sstable.getMaxTimestamp(), lastMaxTimeStamp),
-                       sstable.getMaxTimestamp() > lastMaxTimeStamp);
-            lastMaxTimeStamp = sstable.getMaxTimestamp();
-        }
     }
 }
