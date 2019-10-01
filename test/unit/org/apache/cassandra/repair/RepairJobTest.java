@@ -54,7 +54,6 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.repair.messages.RepairMessage;
 import org.apache.cassandra.repair.messages.SyncRequest;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -182,14 +181,14 @@ public class RepairJobTest
         assertEquals(0, result.stats.size());
 
         // RepairJob should send out SNAPSHOTS -> VALIDATIONS -> done
-        List<Verb> expectedTypes = new ArrayList<>();
+        List<RepairMessage.Type> expectedTypes = new ArrayList<>();
         for (int i = 0; i < 3; i++)
-            expectedTypes.add(Verb.SNAPSHOT_MSG);
+            expectedTypes.add(RepairMessage.Type.SNAPSHOT);
         for (int i = 0; i < 3; i++)
-            expectedTypes.add(Verb.VALIDATION_REQ);
+            expectedTypes.add(RepairMessage.Type.VALIDATION_REQUEST);
 
         assertEquals(expectedTypes, observedMessages.stream()
-                                                    .map(Message::verb)
+                                                    .map(k -> ((RepairMessage) k.payload).messageType)
                                                     .collect(Collectors.toList()));
     }
 
@@ -252,7 +251,7 @@ public class RepairJobTest
         assertTrue(results.stream().allMatch(s -> s.numberOfDifferences == 1));
 
         assertEquals(2, messages.size());
-        assertTrue(messages.stream().allMatch(m -> m.verb() == Verb.SYNC_REQ));
+        assertTrue(messages.stream().allMatch(m -> ((RepairMessage) m.payload).messageType == RepairMessage.Type.SYNC_REQUEST));
     }
 
     @Test
@@ -775,6 +774,10 @@ public class RepairJobTest
         MerkleTrees tree = new MerkleTrees(MURMUR3_PARTITIONER);
         tree.addMerkleTrees((int) Math.pow(2, 15), fullRange);
         tree.init();
+        for (MerkleTree.TreeRange r : tree.invalids())
+        {
+            r.ensureHashInitialised();
+        }
 
         if (invalidate)
         {
@@ -801,16 +804,17 @@ public class RepairJobTest
                 messageCapture.add(message);
             }
 
-            switch (message.verb())
+            RepairMessage rm = (RepairMessage) message.payload;
+            switch (rm.messageType)
             {
-                case SNAPSHOT_MSG:
+                case SNAPSHOT:
                     MessagingService.instance().callbacks.removeAndRespond(message.id(), to, message.emptyResponse());
                     break;
-                case VALIDATION_REQ:
+                case VALIDATION_REQUEST:
                     session.validationComplete(sessionJobDesc, to, mockTrees.get(to));
                     break;
-                case SYNC_REQ:
-                    SyncRequest syncRequest = (SyncRequest) message.payload;
+                case SYNC_REQUEST:
+                    SyncRequest syncRequest = (SyncRequest) rm;
                     session.syncComplete(sessionJobDesc, new SyncNodePair(syncRequest.src, syncRequest.dst),
                                          true, Collections.emptyList());
                     break;

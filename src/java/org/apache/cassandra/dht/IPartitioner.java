@@ -135,9 +135,4 @@ public interface IPartitioner
     {
         return Optional.empty();
     }
-
-    default public int getMaxTokenSize()
-    {
-        return Integer.MIN_VALUE;
-    }
 }

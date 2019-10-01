@@ -18,11 +18,12 @@
 
 package org.apache.cassandra.utils;
 
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+
+import com.google.common.collect.ImmutableList;
 
 import org.apache.cassandra.concurrent.InfiniteLoopExecutor;
 
@@ -47,47 +48,29 @@ public class ExecutorUtils
         };
     }
 
-    public static void shutdownNow(Iterable<?> executors)
-    {
-        shutdown(true, executors);
-    }
-
-    public static void shutdown(Iterable<?> executors)
-    {
-        shutdown(false, executors);
-    }
-
-    public static void shutdown(boolean interrupt, Iterable<?> executors)
+    public static void shutdownNow(Collection<?> executors)
     {
         for (Object executor : executors)
         {
             if (executor instanceof ExecutorService)
-            {
-                if (interrupt) ((ExecutorService) executor).shutdownNow();
-                else ((ExecutorService) executor).shutdown();
-            }
+                ((ExecutorService) executor).shutdownNow();
             else if (executor instanceof InfiniteLoopExecutor)
                 ((InfiniteLoopExecutor) executor).shutdownNow();
-            else if (executor instanceof Thread)
-                ((Thread) executor).interrupt();
             else if (executor != null)
                 throw new IllegalArgumentException(executor.toString());
         }
     }
 
+    public static void shutdown(Collection<? extends ExecutorService> executors)
+    {
+        for (ExecutorService executor : executors)
+            executor.shutdown();
+    }
+
     public static void shutdown(ExecutorService ... executors)
     {
-        shutdown(Arrays.asList(executors));
-    }
-
-    public static void shutdownNow(ExecutorService ... executors)
-    {
-        shutdownNow(Arrays.asList(executors));
-    }
-
-    public static void awaitTermination(long timeout, TimeUnit unit, ExecutorService ... executors) throws InterruptedException, TimeoutException
-    {
-        awaitTermination(timeout, unit, Arrays.asList(executors));
+        for (ExecutorService executor : executors)
+            executor.shutdown();
     }
 
     public static void awaitTermination(long timeout, TimeUnit unit, Collection<?> executors) throws InterruptedException, TimeoutException
@@ -111,15 +94,6 @@ public class ExecutorUtils
                 if (wait <= 0 || !((InfiniteLoopExecutor)executor).awaitTermination(wait, NANOSECONDS))
                     throw new TimeoutException(executor + " did not terminate on time");
             }
-            else if (executor instanceof Thread)
-            {
-                Thread t = (Thread) executor;
-                if (wait <= 0)
-                    throw new TimeoutException(executor + " did not terminate on time");
-                t.join((wait + 999999) / 1000000L, (int) (wait % 1000000L));
-                if (t.isAlive())
-                    throw new TimeoutException(executor + " did not terminate on time");
-            }
             else if (executor != null)
             {
                 throw new IllegalArgumentException(executor.toString());
@@ -127,25 +101,9 @@ public class ExecutorUtils
         }
     }
 
-    public static void shutdownAndWait(long timeout, TimeUnit unit, Collection<?> executors) throws TimeoutException, InterruptedException
+    public static void awaitTermination(long timeout, TimeUnit unit, ExecutorService ... executors) throws InterruptedException, TimeoutException
     {
-        shutdown(executors);
-        awaitTermination(timeout, unit, executors);
+        awaitTermination(timeout, unit, ImmutableList.copyOf(executors));
     }
 
-    public static void shutdownNowAndWait(long timeout, TimeUnit unit, Collection<?> executors) throws TimeoutException, InterruptedException
-    {
-        shutdownNow(executors);
-        awaitTermination(timeout, unit, executors);
-    }
-
-    public static void shutdownAndWait(long timeout, TimeUnit unit, Object ... executors) throws TimeoutException, InterruptedException
-    {
-        shutdownAndWait(timeout, unit, Arrays.asList(executors));
-    }
-
-    public static void shutdownNowAndWait(long timeout, TimeUnit unit, Object ... executors) throws TimeoutException, InterruptedException
-    {
-        shutdownNowAndWait(timeout, unit, Arrays.asList(executors));
-    }
 }

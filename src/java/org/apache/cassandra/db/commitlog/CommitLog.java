@@ -402,7 +402,6 @@ public class CommitLog implements CommitLogMBean
 
     /**
      * Shuts down the threads used by the commit log, blocking until completion.
-     * TODO this should accept a timeout, and throw TimeoutException
      */
     public void shutdownBlocking() throws InterruptedException
     {
