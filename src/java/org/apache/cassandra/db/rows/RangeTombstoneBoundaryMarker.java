@@ -142,12 +142,12 @@ public class RangeTombstoneBoundaryMarker extends AbstractRangeTombstoneMarker<C
 
     public RangeTombstoneBoundMarker createCorrespondingCloseMarker(boolean reversed)
     {
-        return new RangeTombstoneBoundMarker(closeBound(reversed), closeDeletionTime(reversed));
+        return new RangeTombstoneBoundMarker(closeBound(reversed), endDeletion);
     }
 
     public RangeTombstoneBoundMarker createCorrespondingOpenMarker(boolean reversed)
     {
-        return new RangeTombstoneBoundMarker(openBound(reversed), openDeletionTime(reversed));
+        return new RangeTombstoneBoundMarker(openBound(reversed), startDeletion);
     }
 
     public void digest(Hasher hasher)

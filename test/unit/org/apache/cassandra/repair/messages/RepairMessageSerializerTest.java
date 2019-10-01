@@ -24,7 +24,6 @@ import com.google.common.collect.Sets;
 import org.junit.Assert;
 import org.junit.Test;
 
-import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.locator.InetAddressAndPort;
@@ -38,16 +37,16 @@ public class RepairMessageSerializerTest
 {
     private static int MS_VERSION = MessagingService.current_version;
 
-    private static <T extends RepairMessage> T serdes(IVersionedSerializer<T> serializer, T message)
+    static RepairMessage serdes(RepairMessage message)
     {
-        int expectedSize = (int) serializer.serializedSize(message, MS_VERSION);
+        int expectedSize = (int) RepairMessage.serializer.serializedSize(message, MS_VERSION);
         try (DataOutputBuffer out = new DataOutputBuffer(expectedSize))
         {
-            serializer.serialize(message, out, MS_VERSION);
+            RepairMessage.serializer.serialize(message, out, MS_VERSION);
             Assert.assertEquals(expectedSize, out.buffer().limit());
             try (DataInputBuffer in = new DataInputBuffer(out.buffer(), false))
             {
-                return serializer.deserialize(in, MS_VERSION);
+                return RepairMessage.serializer.deserialize(in, MS_VERSION);
             }
         }
         catch (IOException e)
@@ -63,50 +62,54 @@ public class RepairMessageSerializerTest
         InetAddressAndPort peer1 = InetAddressAndPort.getByName("10.0.0.2");
         InetAddressAndPort peer2 = InetAddressAndPort.getByName("10.0.0.3");
         InetAddressAndPort peer3 = InetAddressAndPort.getByName("10.0.0.4");
-        PrepareConsistentRequest expected =
-            new PrepareConsistentRequest(UUIDGen.getTimeUUID(), coordinator, Sets.newHashSet(peer1, peer2, peer3));
-        PrepareConsistentRequest actual = serdes(PrepareConsistentRequest.serializer, expected);
+        RepairMessage expected = new PrepareConsistentRequest(UUIDGen.getTimeUUID(),
+                                                              coordinator,
+                                                              Sets.newHashSet(peer1, peer2, peer3));
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);
     }
 
     @Test
     public void prepareConsistentResponse() throws Exception
     {
-        PrepareConsistentResponse expected =
-            new PrepareConsistentResponse(UUIDGen.getTimeUUID(), InetAddressAndPort.getByName("10.0.0.2"), true);
-        PrepareConsistentResponse actual = serdes(PrepareConsistentResponse.serializer, expected);
+        RepairMessage expected = new PrepareConsistentResponse(UUIDGen.getTimeUUID(),
+                                                               InetAddressAndPort.getByName("10.0.0.2"),
+                                                               true);
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);
     }
 
     @Test
     public void failSession() throws Exception
     {
-        FailSession expected = new FailSession(UUIDGen.getTimeUUID());
-        FailSession actual = serdes(FailSession.serializer, expected);
+        RepairMessage expected = new FailSession(UUIDGen.getTimeUUID());
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);;
     }
 
     @Test
     public void finalizeCommit() throws Exception
     {
-        FinalizeCommit expected = new FinalizeCommit(UUIDGen.getTimeUUID());
-        FinalizeCommit actual = serdes(FinalizeCommit.serializer, expected);
+        RepairMessage expected = new FinalizeCommit(UUIDGen.getTimeUUID());
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);;
     }
 
     @Test
     public void finalizePromise() throws Exception
     {
-        FinalizePromise expected = new FinalizePromise(UUIDGen.getTimeUUID(), InetAddressAndPort.getByName("10.0.0.2"), true);
-        FinalizePromise actual = serdes(FinalizePromise.serializer, expected);
+        RepairMessage expected = new FinalizePromise(UUIDGen.getTimeUUID(),
+                                                     InetAddressAndPort.getByName("10.0.0.2"),
+                                                     true);
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);
     }
 
     @Test
     public void finalizePropose() throws Exception
     {
-        FinalizePropose expected = new FinalizePropose(UUIDGen.getTimeUUID());
-        FinalizePropose actual = serdes(FinalizePropose.serializer, expected);
+        RepairMessage expected = new FinalizePropose(UUIDGen.getTimeUUID());
+        RepairMessage actual = serdes(expected);
         Assert.assertEquals(expected, actual);;
     }
 }

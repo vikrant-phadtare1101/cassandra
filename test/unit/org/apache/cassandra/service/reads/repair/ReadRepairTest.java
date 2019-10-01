@@ -27,7 +27,6 @@ import com.google.common.collect.Iterables;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.locator.Endpoints;
 import org.apache.cassandra.locator.EndpointsForRange;
-import org.apache.cassandra.locator.ReplicaPlan;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -51,7 +50,7 @@ import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
 import org.apache.cassandra.locator.ReplicaLayout;
 import org.apache.cassandra.locator.ReplicaUtils;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.schema.MigrationManager;
@@ -71,20 +70,24 @@ public class ReadRepairTest
     static Replica target3;
     static EndpointsForRange targets;
 
-    private static class InstrumentedReadRepairHandler<E extends Endpoints<E>, P extends ReplicaPlan.ForRead<E>>
-            extends BlockingPartitionRepair<E, P>
+    private static class InstrumentedReadRepairHandler<E extends Endpoints<E>, L extends ReplicaLayout<E, L>> extends BlockingPartitionRepair<E, L>
     {
-        public InstrumentedReadRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor, P replicaPlan)
+        public InstrumentedReadRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor, L replicaLayout)
         {
-            super(Util.dk("not a valid key"), repairs, maxBlockFor, replicaPlan,
-                    e -> replicaPlan.consistencyLevel().isDatacenterLocal() && targets.endpoints().contains(e));
+            super(Util.dk("not a valid key"), repairs, maxBlockFor, replicaLayout);
         }
 
         Map<InetAddressAndPort, Mutation> mutationsSent = new HashMap<>();
 
-        protected void sendRR(Message<Mutation> message, InetAddressAndPort endpoint)
+        protected void sendRR(MessageOut<Mutation> message, InetAddressAndPort endpoint)
         {
             mutationsSent.put(endpoint, message.payload);
+        }
+
+        @Override
+        protected boolean isLocal(InetAddressAndPort endpoint)
+        {
+            return targets.endpoints().contains(endpoint);
         }
     }
 
@@ -163,8 +166,8 @@ public class ReadRepairTest
 
     private static InstrumentedReadRepairHandler createRepairHandler(Map<Replica, Mutation> repairs, int maxBlockFor, EndpointsForRange all, EndpointsForRange targets)
     {
-        ReplicaPlan.ForRangeRead replicaPlan = AbstractReadRepairTest.replicaPlan(ks, ConsistencyLevel.LOCAL_QUORUM, all, targets);
-        return new InstrumentedReadRepairHandler<>(repairs, maxBlockFor, replicaPlan);
+        ReplicaLayout.ForRange replicaLayout = new ReplicaLayout.ForRange(ks, ConsistencyLevel.LOCAL_QUORUM, ReplicaUtils.FULL_BOUNDS, all, targets);
+        return new InstrumentedReadRepairHandler(repairs, maxBlockFor, replicaLayout);
     }
 
     @Test

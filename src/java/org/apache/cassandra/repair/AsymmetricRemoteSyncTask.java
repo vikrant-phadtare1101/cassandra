@@ -24,15 +24,14 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.RepairException;
 import org.apache.cassandra.locator.InetAddressAndPort;
-import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.messages.AsymmetricSyncRequest;
+import org.apache.cassandra.repair.messages.SyncRequest;
 import org.apache.cassandra.streaming.PreviewKind;
 import org.apache.cassandra.streaming.SessionSummary;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.FBUtilities;
-
-import static org.apache.cassandra.net.Verb.ASYMMETRIC_SYNC_REQ;
+import org.apache.cassandra.utils.MerkleTrees;
 
 /**
  * AsymmetricRemoteSyncTask sends {@link AsymmetricSyncRequest} to target node to repair(stream)
@@ -42,9 +41,15 @@ import static org.apache.cassandra.net.Verb.ASYMMETRIC_SYNC_REQ;
  */
 public class AsymmetricRemoteSyncTask extends SyncTask implements CompletableRemoteSyncTask
 {
-    public AsymmetricRemoteSyncTask(RepairJobDesc desc, InetAddressAndPort to, InetAddressAndPort from, List<Range<Token>> differences, PreviewKind previewKind)
+    public AsymmetricRemoteSyncTask(RepairJobDesc desc, InetAddressAndPort fetchNode, InetAddressAndPort fetchFrom,
+                                    List<Range<Token>> rangesToFetch, PreviewKind previewKind)
     {
-        super(desc, to, from, differences, previewKind);
+        super(desc, fetchNode, fetchFrom, rangesToFetch, previewKind);
+    }
+
+    public AsymmetricRemoteSyncTask(RepairJobDesc desc, TreeResponse to, TreeResponse from, PreviewKind previewKind)
+    {
+        this(desc, to.endpoint, from.endpoint, MerkleTrees.difference(to.trees, from.trees), previewKind);
     }
 
     public void startSync()
@@ -53,7 +58,7 @@ public class AsymmetricRemoteSyncTask extends SyncTask implements CompletableRem
         AsymmetricSyncRequest request = new AsymmetricSyncRequest(desc, local, nodePair.coordinator, nodePair.peer, rangesToSync, previewKind);
         String message = String.format("Forwarding streaming repair of %d ranges to %s (to be streamed with %s)", request.ranges.size(), request.fetchingNode, request.fetchFrom);
         Tracing.traceRepair(message);
-        MessagingService.instance().send(Message.out(ASYMMETRIC_SYNC_REQ, request), request.fetchingNode);
+        MessagingService.instance().sendOneWay(request.createMessage(), request.fetchingNode);
     }
 
     public void syncComplete(boolean success, List<SessionSummary> summaries)
@@ -66,14 +71,5 @@ public class AsymmetricRemoteSyncTask extends SyncTask implements CompletableRem
         {
             setException(new RepairException(desc, previewKind, String.format("Sync failed between %s and %s", nodePair.coordinator, nodePair.peer)));
         }
-    }
-
-    @Override
-    public String toString()
-    {
-        return "AsymmetricRemoteSyncTask{" +
-               "rangesToSync=" + rangesToSync +
-               ", nodePair=" + nodePair +
-               '}';
     }
 }

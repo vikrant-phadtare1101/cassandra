@@ -32,11 +32,6 @@ import org.junit.After;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.apache.cassandra.utils.ApproximateTime;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -44,8 +39,8 @@ import static org.junit.Assert.fail;
 
 public class MonitoringTaskTest
 {
-    private static final long timeout = MILLISECONDS.toNanos(100);
-    private static final long slowTimeout = MILLISECONDS.toNanos(10);
+    private static final long timeout = 100;
+    private static final long slowTimeout = 10;
 
     private static final long MAX_SPIN_TIME_NANOS = TimeUnit.SECONDS.toNanos(5);
 
@@ -95,8 +90,8 @@ public class MonitoringTaskTest
 
     private static void waitForOperationsToComplete(List<Monitorable> operations) throws InterruptedException
     {
-        long timeout = operations.stream().map(Monitorable::timeoutNanos).reduce(0L, Long::max);
-        Thread.sleep(NANOSECONDS.toMillis(timeout * 2 + approxTime.error()));
+        long timeout = operations.stream().map(Monitorable::timeout).reduce(0L, Long::max);
+        Thread.sleep(timeout * 2 + ApproximateTime.precision());
 
         long start = System.nanoTime();
         while(System.nanoTime() - start <= MAX_SPIN_TIME_NANOS)
@@ -114,8 +109,8 @@ public class MonitoringTaskTest
 
     private static void waitForOperationsToBeReportedAsSlow(List<Monitorable> operations) throws InterruptedException
     {
-        long timeout = operations.stream().map(Monitorable::slowTimeoutNanos).reduce(0L, Long::max);
-        Thread.sleep(NANOSECONDS.toMillis(timeout * 2 + approxTime.error()));
+        long timeout = operations.stream().map(Monitorable::slowTimeout).reduce(0L, Long::max);
+        Thread.sleep(timeout * 2 + ApproximateTime.precision());
 
         long start = System.nanoTime();
         while(System.nanoTime() - start <= MAX_SPIN_TIME_NANOS)
@@ -129,7 +124,7 @@ public class MonitoringTaskTest
     @Test
     public void testAbort() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test abort", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test abort", System.currentTimeMillis(), false, timeout, slowTimeout);
         waitForOperationsToComplete(operation);
 
         assertTrue(operation.isAborted());
@@ -140,7 +135,7 @@ public class MonitoringTaskTest
     @Test
     public void testAbortIdemPotent() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test abort", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test abort", System.currentTimeMillis(), false, timeout, slowTimeout);
         waitForOperationsToComplete(operation);
 
         assertTrue(operation.abort());
@@ -153,7 +148,7 @@ public class MonitoringTaskTest
     @Test
     public void testAbortCrossNode() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test for cross node", System.nanoTime(), true, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test for cross node", System.currentTimeMillis(), true, timeout, slowTimeout);
         waitForOperationsToComplete(operation);
 
         assertTrue(operation.isAborted());
@@ -164,7 +159,7 @@ public class MonitoringTaskTest
     @Test
     public void testComplete() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test complete", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test complete", System.currentTimeMillis(), false, timeout, slowTimeout);
         operation.complete();
         waitForOperationsToComplete(operation);
 
@@ -176,7 +171,7 @@ public class MonitoringTaskTest
     @Test
     public void testCompleteIdemPotent() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test complete", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test complete", System.currentTimeMillis(), false, timeout, slowTimeout);
         operation.complete();
         waitForOperationsToComplete(operation);
 
@@ -190,7 +185,7 @@ public class MonitoringTaskTest
     @Test
     public void testReportSlow() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test report slow", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test report slow", System.currentTimeMillis(), false, timeout, slowTimeout);
         waitForOperationsToBeReportedAsSlow(operation);
 
         assertTrue(operation.isSlow());
@@ -204,7 +199,7 @@ public class MonitoringTaskTest
     public void testNoReportSlowIfZeroSlowTimeout() throws InterruptedException
     {
         // when the slow timeout is set to zero then operation won't be reported as slow
-        Monitorable operation = new TestMonitor("Test report slow disabled", System.nanoTime(), false, timeout, 0);
+        Monitorable operation = new TestMonitor("Test report slow disabled", System.currentTimeMillis(), false, timeout, 0);
         waitForOperationsToBeReportedAsSlow(operation);
 
         assertTrue(operation.isSlow());
@@ -217,7 +212,7 @@ public class MonitoringTaskTest
     @Test
     public void testReport() throws InterruptedException
     {
-        Monitorable operation = new TestMonitor("Test report", System.nanoTime(), false, timeout, slowTimeout);
+        Monitorable operation = new TestMonitor("Test report", System.currentTimeMillis(), false, timeout, slowTimeout);
         waitForOperationsToComplete(operation);
 
         assertTrue(operation.isSlow());
@@ -225,10 +220,10 @@ public class MonitoringTaskTest
         assertFalse(operation.isCompleted());
 
         // aborted operations are not logged as slow
-        assertFalse(MonitoringTask.instance.logSlowOperations(approxTime.now()));
+        assertFalse(MonitoringTask.instance.logSlowOperations(ApproximateTime.currentTimeMillis()));
         assertEquals(0, MonitoringTask.instance.getSlowOperations().size());
 
-        assertTrue(MonitoringTask.instance.logFailedOperations(approxTime.now()));
+        assertTrue(MonitoringTask.instance.logFailedOperations(ApproximateTime.currentTimeMillis()));
         assertEquals(0, MonitoringTask.instance.getFailedOperations().size());
     }
 
@@ -238,20 +233,20 @@ public class MonitoringTaskTest
         MonitoringTask.instance = MonitoringTask.make(10, -1);
         try
         {
-            Monitorable operation1 = new TestMonitor("Test report 1", System.nanoTime(), false, timeout, slowTimeout);
+            Monitorable operation1 = new TestMonitor("Test report 1", System.currentTimeMillis(), false, timeout, slowTimeout);
             waitForOperationsToComplete(operation1);
 
             assertTrue(operation1.isAborted());
             assertFalse(operation1.isCompleted());
 
-            Monitorable operation2 = new TestMonitor("Test report 2", System.nanoTime(), false, timeout, slowTimeout);
+            Monitorable operation2 = new TestMonitor("Test report 2", System.currentTimeMillis(), false, timeout, slowTimeout);
             waitForOperationsToBeReportedAsSlow(operation2);
 
             operation2.complete();
             assertFalse(operation2.isAborted());
             assertTrue(operation2.isCompleted());
 
-            Thread.sleep(2 * NANOSECONDS.toMillis(approxTime.error()) + 500);
+            Thread.sleep(ApproximateTime.precision() + 500);
             assertEquals(0, MonitoringTask.instance.getFailedOperations().size());
             assertEquals(0, MonitoringTask.instance.getSlowOperations().size());
         }
@@ -271,7 +266,7 @@ public class MonitoringTaskTest
         for (int i = 0; i < opCount; i++)
         {
             executorService.submit(() ->
-                operations.add(new TestMonitor(UUID.randomUUID().toString(), System.nanoTime(), false, timeout, slowTimeout))
+                operations.add(new TestMonitor(UUID.randomUUID().toString(), System.currentTimeMillis(), false, timeout, slowTimeout))
             );
         }
 
@@ -316,14 +311,14 @@ public class MonitoringTaskTest
                         for (int j = 0; j < numTimes; j++)
                         {
                             Monitorable operation1 = new TestMonitor(operationName,
-                                                                     System.nanoTime(),
+                                                                     System.currentTimeMillis(),
                                                                      false,
                                                                      timeout,
                                                                      slowTimeout);
                             waitForOperationsToComplete(operation1);
 
                             Monitorable operation2 = new TestMonitor(operationName,
-                                                                     System.nanoTime(),
+                                                                     System.currentTimeMillis(),
                                                                      false,
                                                                      timeout,
                                                                      slowTimeout);
@@ -371,7 +366,7 @@ public class MonitoringTaskTest
                 try
                 {
                     Monitorable operation = new TestMonitor("Test testMultipleThreadsSameName failed",
-                                                            System.nanoTime(),
+                                                            System.currentTimeMillis(),
                                                             false,
                                                             timeout,
                                                             slowTimeout);
@@ -405,7 +400,7 @@ public class MonitoringTaskTest
                 try
                 {
                     Monitorable operation = new TestMonitor("Test testMultipleThreadsSameName slow",
-                                                            System.nanoTime(),
+                                                            System.currentTimeMillis(),
                                                             false,
                                                             timeout,
                                                             slowTimeout);
@@ -441,7 +436,7 @@ public class MonitoringTaskTest
                 try
                 {
                     Monitorable operation = new TestMonitor("Test thread " + Thread.currentThread().getName(),
-                                                            System.nanoTime(),
+                                                            System.currentTimeMillis(),
                                                             false,
                                                             timeout,
                                                             slowTimeout);

@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.UUID;
 
-import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Multimap;
 
@@ -30,17 +29,17 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import static junit.framework.Assert.assertNotNull;
+import static org.junit.Assert.assertEquals;
+
+import static org.apache.cassandra.Util.token;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageService;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import static org.apache.cassandra.Util.token;
 
 
 @RunWith(OrderedJUnit4ClassRunner.class)
@@ -141,7 +140,7 @@ public class TokenMetadataTest
         assertTrue(allEndpoints.get(DATA_CENTER).contains(first));
         assertTrue(allEndpoints.get(DATA_CENTER).contains(second));
 
-        Map<String, ImmutableMultimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
+        Map<String, Multimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
         assertNotNull(racks);
         assertTrue(racks.size() == 1);
         assertTrue(racks.containsKey(DATA_CENTER));
@@ -173,7 +172,7 @@ public class TokenMetadataTest
         });
 
         tokenMetadata.updateTopology(first);
-        topology = tokenMetadata.updateTopology(second);
+        tokenMetadata.updateTopology(second);
 
         allEndpoints = topology.getDatacenterEndpoints();
         assertNotNull(allEndpoints);
@@ -239,7 +238,7 @@ public class TokenMetadataTest
         assertTrue(allEndpoints.get(DATA_CENTER).contains(first));
         assertTrue(allEndpoints.get(DATA_CENTER).contains(second));
 
-        Map<String, ImmutableMultimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
+        Map<String, Multimap<String, InetAddressAndPort>> racks = topology.getDatacenterRacks();
         assertNotNull(racks);
         assertTrue(racks.size() == 1);
         assertTrue(racks.containsKey(DATA_CENTER));
@@ -270,7 +269,7 @@ public class TokenMetadataTest
             }
         });
 
-        topology = tokenMetadata.updateTopology();
+        tokenMetadata.updateTopology();
 
         allEndpoints = topology.getDatacenterEndpoints();
         assertNotNull(allEndpoints);
