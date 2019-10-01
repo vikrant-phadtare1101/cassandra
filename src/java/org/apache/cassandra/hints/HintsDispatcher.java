@@ -20,6 +20,7 @@ package org.apache.cassandra.hints;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
@@ -27,21 +28,19 @@ import com.google.common.util.concurrent.RateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.net.RequestCallback;
+import org.apache.cassandra.db.monitoring.ApproximateTime;
 import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.metrics.HintsServiceMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.concurrent.SimpleCondition;
-
-import static org.apache.cassandra.net.Verb.HINT_REQ;
-import static org.apache.cassandra.utils.MonotonicClock.approxTime;
 
 /**
  * Dispatches a single hints file to a specified node in a batched manner.
  *
- * Uses either {@link HintMessage.Encoded} - when dispatching hints into a node with the same messaging version as the hints file,
+ * Uses either {@link EncodedHintMessage} - when dispatching hints into a node with the same messaging version as the hints file,
  * or {@link HintMessage}, when conversion is required.
  */
 final class HintsDispatcher implements AutoCloseable
@@ -71,7 +70,7 @@ final class HintsDispatcher implements AutoCloseable
 
     static HintsDispatcher create(File file, RateLimiter rateLimiter, InetAddressAndPort address, UUID hostId, BooleanSupplier abortRequested)
     {
-        int messagingVersion = MessagingService.instance().versions.get(address);
+        int messagingVersion = MessagingService.instance().getVersion(address);
         HintsDispatcher dispatcher = new HintsDispatcher(HintsReader.open(file, rateLimiter), hostId, address, messagingVersion, abortRequested);
         HintDiagnostics.dispatcherCreated(dispatcher);
         return dispatcher;
@@ -188,8 +187,8 @@ final class HintsDispatcher implements AutoCloseable
     private Callback sendHint(Hint hint)
     {
         Callback callback = new Callback(hint.creationTime);
-        Message<?> message = Message.out(HINT_REQ, new HintMessage(hostId, hint));
-        MessagingService.instance().sendWithCallback(message, address, callback);
+        HintMessage message = new HintMessage(hostId, hint);
+        MessagingService.instance().sendRRWithFailure(message.createMessageOut(), address, callback);
         return callback;
     }
 
@@ -199,32 +198,34 @@ final class HintsDispatcher implements AutoCloseable
 
     private Callback sendEncodedHint(ByteBuffer hint)
     {
-        HintMessage.Encoded message = new HintMessage.Encoded(hostId, hint, messagingVersion);
+        EncodedHintMessage message = new EncodedHintMessage(hostId, hint, messagingVersion);
         Callback callback = new Callback(message.getHintCreationTime());
-        MessagingService.instance().sendWithCallback(Message.out(HINT_REQ, message), address, callback);
+        MessagingService.instance().sendRRWithFailure(message.createMessageOut(), address, callback);
         return callback;
     }
 
-    private static final class Callback implements RequestCallback
+    private static final class Callback implements IAsyncCallbackWithFailure
     {
         enum Outcome { SUCCESS, TIMEOUT, FAILURE, INTERRUPTED }
 
-        private final long start = approxTime.now();
+        private final long start = System.nanoTime();
         private final SimpleCondition condition = new SimpleCondition();
         private volatile Outcome outcome;
-        private final long hintCreationNanoTime;
+        private final long hintCreationTime;
 
-        private Callback(long hintCreationTimeMillisSinceEpoch)
+        private Callback(long hintCreationTime)
         {
-            this.hintCreationNanoTime = approxTime.translate().fromMillisSinceEpoch(hintCreationTimeMillisSinceEpoch);
+            this.hintCreationTime = hintCreationTime;
         }
 
         Outcome await()
         {
+            long timeout = TimeUnit.MILLISECONDS.toNanos(MessagingService.Verb.HINT.getTimeout()) - (System.nanoTime() - start);
             boolean timedOut;
+
             try
             {
-                timedOut = !condition.awaitUntil(HINT_REQ.expiresAtNanos(start));
+                timedOut = !condition.await(timeout, TimeUnit.NANOSECONDS);
             }
             catch (InterruptedException e)
             {
@@ -235,25 +236,22 @@ final class HintsDispatcher implements AutoCloseable
             return timedOut ? Outcome.TIMEOUT : outcome;
         }
 
-        @Override
-        public boolean invokeOnFailure()
-        {
-            return true;
-        }
-
-        @Override
         public void onFailure(InetAddressAndPort from, RequestFailureReason failureReason)
         {
             outcome = Outcome.FAILURE;
             condition.signalAll();
         }
 
-        @Override
-        public void onResponse(Message msg)
+        public void response(MessageIn msg)
         {
-            HintsServiceMetrics.updateDelayMetrics(msg.from(), approxTime.now() - this.hintCreationNanoTime);
+            HintsServiceMetrics.updateDelayMetrics(msg.from, ApproximateTime.currentTimeMillis() - this.hintCreationTime);
             outcome = Outcome.SUCCESS;
             condition.signalAll();
+        }
+
+        public boolean isLatencyForSnitch()
+        {
+            return false;
         }
 
         @Override

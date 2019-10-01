@@ -18,12 +18,9 @@
 package org.apache.cassandra.db;
 
 import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 
 import com.google.common.annotations.VisibleForTesting;
 
-import org.apache.cassandra.net.MessageFlag;
-import org.apache.cassandra.net.Verb;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.filter.*;
@@ -41,7 +38,8 @@ import org.apache.cassandra.io.sstable.format.SSTableReadsListener;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.metrics.TableMetrics;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageOut;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.StorageProxy;
@@ -235,9 +233,9 @@ public class PartitionRangeReadCommand extends ReadCommand implements PartitionR
                                              indexMetadata());
     }
 
-    public long getTimeout(TimeUnit unit)
+    public long getTimeout()
     {
-        return DatabaseDescriptor.getRangeRpcTimeout(unit);
+        return DatabaseDescriptor.getRangeRpcTimeout();
     }
 
     public PartitionIterator execute(ConsistencyLevel consistency, ClientState clientState, long queryStartNanoTime) throws RequestExecutionException
@@ -347,10 +345,9 @@ public class PartitionRangeReadCommand extends ReadCommand implements PartitionR
         return Transformation.apply(iter, new CacheFilter());
     }
 
-    @Override
-    public Verb verb()
+    public MessageOut<ReadCommand> createMessage()
     {
-        return Verb.RANGE_REQ;
+        return new MessageOut<>(MessagingService.Verb.RANGE_SLICE, this, serializer);
     }
 
     protected void appendCQLWhereClause(StringBuilder sb)
@@ -415,11 +412,6 @@ public class PartitionRangeReadCommand extends ReadCommand implements PartitionR
         return dataRange.keyRange instanceof Bounds
             && dataRange.startKey().kind() == PartitionPosition.Kind.ROW_KEY
             && dataRange.startKey().equals(dataRange.stopKey());
-    }
-
-    public boolean isRangeRequest()
-    {
-        return true;
     }
 
     private static class Deserializer extends SelectionDeserializer
